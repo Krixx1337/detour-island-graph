@@ -113,7 +113,32 @@ config.density.spannerPruning.enabled = false;
 ### Mass-Aware Tuning
 Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances.
 
+### Pruning Stage Impact
+On a real-world continent-scale navmesh (~80K polygons, ~4K islands), the density pipeline typically processes candidates in this order:
+
+| Stage | Typical Impact | What It Does |
+|---|---|---|
+| **Candidate Deduplication** | Drops **~78%** of projected candidates | Grid-snaps candidates by start+end position; keeps cheapest link per cell. Tuned via `cellSizeNear`/`cellSizeFar`. |
+| **Global Pruning** | Drops **~90%** of remaining candidates | 3D occupancy grid; keeps first link to occupy each cell. Tuned via `relativeCellSize` (cellSize = linkDistance × ratio). |
+| **Spanner Pruning** | Drops **~3–8%** | Rejects direct leaps when an indirect route exists within `pathRatio`. Increase `pathRatio` to be more permissive. |
+| **Local Pruning** | Drops **~4–10%** | Per-pair Euclidean deduplication within `baseRadius`. Increase `baseRadius` or `distanceScale` for coarser pruning. |
+
+**Real example from a 4,220-island continent-scale map:**
+- 11,822,673 projected candidates → 2,531,680 after deduplication
+- Global pruning rejected 2,291,507; spanner rejected 96,603; local rejected 129,160
+- **Final accepted: 14,410 links** (0.12% of projected)
+
 ### Build Diagnostics
+`BuildStats` now includes per-stage reject counters so you can see exactly where candidates are being dropped:
+
+```cpp
+result.stats.candidates.globalPruningRejectCount;
+result.stats.candidates.spannerPruningRejectCount;
+result.stats.candidates.localPruningRejectCount;
+result.stats.maxOutgoingLinksOnIsland;  // highest out-degree
+result.stats.averageLinkLength;           // mean horizontal distance
+```
+
 `BuildStats::queries.capacityHitCount` reports how often `queryPolygons()` filled the configured `query.maxNearbyPolygons` buffer. Increase that capacity when the counter is non-zero and missing candidates matter for your mesh.
 
 ---
