@@ -395,6 +395,40 @@ int main() {
         builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration,
         "builder should reject density caps below one");
 
+    BuildConfig disabledGlobalPruningConfig = buildConfig;
+    disabledGlobalPruningConfig.density.enabled = true;
+    disabledGlobalPruningConfig.density.globalPruneCellSize = 0.0f;
+    const BuildResult disabledGlobalPruningBuild = builder.build(*navMesh, disabledGlobalPruningConfig);
+    require(static_cast<bool>(disabledGlobalPruningBuild), "disabled global pruning should remain valid");
+    require(
+        disabledGlobalPruningBuild.stats.acceptedLinkCount == buildResult.stats.acceptedLinkCount,
+        "disabled global pruning should preserve baseline accepted links");
+
+    BuildConfig globalPruningConfig = buildConfig;
+    globalPruningConfig.density.enabled = true;
+    globalPruningConfig.density.globalPruneCellSize = 10.0f;
+    const BuildResult globalPruningBuild = builder.build(*navMesh, globalPruningConfig);
+    require(static_cast<bool>(globalPruningBuild), "global pruning builder should process valid configuration");
+    require(
+        globalPruningBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
+        "enabling global pruning should not increase accepted links");
+
+    BuildConfig strongerGlobalPruningConfig = buildConfig;
+    strongerGlobalPruningConfig.density.enabled = true;
+    strongerGlobalPruningConfig.density.globalPruneCellSize = 20.0f;
+    const BuildResult strongerGlobalPruningBuild = builder.build(*navMesh, strongerGlobalPruningConfig);
+    require(static_cast<bool>(strongerGlobalPruningBuild), "stronger global pruning should remain valid");
+    require(
+        strongerGlobalPruningBuild.stats.acceptedLinkCount <= globalPruningBuild.stats.acceptedLinkCount,
+        "increasing global prune cell size should not increase accepted links");
+
+    BuildConfig invalidGlobalPruningConfig;
+    invalidGlobalPruningConfig.density.enabled = true;
+    invalidGlobalPruningConfig.density.globalPruneCellSize = -0.01f;
+    require(
+        builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration,
+        "builder should reject negative global prune cell size");
+
     const auto variedMassNavMesh = buildVariedMassNavMesh();
     const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
     require(static_cast<bool>(geometricMassBuild), "baseline builder should process varied island mass");

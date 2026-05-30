@@ -28,6 +28,7 @@ struct DensityTuning {
     bool enabled = false;
     float distanceScale = 0.0f;
     float maxRadiusScale = 1.0f;
+    float globalPruneCellSize = 0.0f;
 
     float pruneRadiusScaleFor(float horizontalDistance) const noexcept {
         const float scale = 1.0f + (distanceScale * horizontalDistance);

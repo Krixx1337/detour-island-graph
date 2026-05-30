@@ -13,6 +13,7 @@
 #include <memory>
 #include <queue>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace detour_island_graph {
@@ -149,6 +150,26 @@ struct IslandPairHash {
     }
 };
 
+struct GlobalCellKey {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+
+    bool operator==(const GlobalCellKey& other) const {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct GlobalCellKeyHash {
+    std::size_t operator()(const GlobalCellKey& key) const {
+        std::size_t hash = 0;
+        hashCombine(hash, key.x);
+        hashCombine(hash, key.y);
+        hashCombine(hash, key.z);
+        return hash;
+    }
+};
+
 int quantize(float value, float cellSize) {
     return static_cast<int>(std::floor(value / cellSize));
 }
@@ -230,7 +251,9 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(density.distanceScale) &&
         density.distanceScale >= 0.0f &&
         std::isfinite(density.maxRadiusScale) &&
-        density.maxRadiusScale >= 1.0f;
+        density.maxRadiusScale >= 1.0f &&
+        std::isfinite(density.globalPruneCellSize) &&
+        density.globalPruneCellSize >= 0.0f;
     if (!valid) {
         message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
     }
@@ -547,9 +570,26 @@ BuildStatus discoverLinks(
         return isBetterLink(lhs, rhs, graph, config);
     });
 
+    std::unordered_set<GlobalCellKey, GlobalCellKeyHash> occupiedGlobalCells;
     std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
+        if (config.density.enabled && config.density.globalPruneCellSize > 0.0f) {
+            const GlobalCellKey startCell{
+                quantize(candidate.start.x, config.density.globalPruneCellSize),
+                quantize(candidate.start.y, config.density.globalPruneCellSize),
+                quantize(candidate.start.z, config.density.globalPruneCellSize)
+            };
+            const GlobalCellKey endCell{
+                quantize(candidate.end.x, config.density.globalPruneCellSize),
+                quantize(candidate.end.y, config.density.globalPruneCellSize),
+                quantize(candidate.end.z, config.density.globalPruneCellSize)
+            };
+            if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
+                continue;
+            }
+        }
+
         auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
         const float radius = pruneRadius(candidate, graph, config);
         const bool duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
@@ -560,6 +600,21 @@ BuildStatus discoverLinks(
             accepted.push_back(candidate);
             islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
             ++stats.acceptedLinkCount;
+
+            if (config.density.enabled && config.density.globalPruneCellSize > 0.0f) {
+                const GlobalCellKey startCell{
+                    quantize(candidate.start.x, config.density.globalPruneCellSize),
+                    quantize(candidate.start.y, config.density.globalPruneCellSize),
+                    quantize(candidate.start.z, config.density.globalPruneCellSize)
+                };
+                const GlobalCellKey endCell{
+                    quantize(candidate.end.x, config.density.globalPruneCellSize),
+                    quantize(candidate.end.y, config.density.globalPruneCellSize),
+                    quantize(candidate.end.z, config.density.globalPruneCellSize)
+                };
+                occupiedGlobalCells.insert(startCell);
+                occupiedGlobalCells.insert(endCell);
+            }
         }
     }
     stats.pruningMs = elapsedMilliseconds(pruningStart);
