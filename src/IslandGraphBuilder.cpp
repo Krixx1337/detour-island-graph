@@ -248,13 +248,24 @@ bool validate(const BuildConfig& config, std::string& message) {
         massAware.lowMassPruneRadiusScale > 0.0f &&
         std::isfinite(massAware.highMassPruneRadiusScale) &&
         massAware.highMassPruneRadiusScale > 0.0f &&
-        std::isfinite(density.distanceScale) &&
-        density.distanceScale >= 0.0f &&
-        std::isfinite(density.maxRadiusScale) &&
-        density.maxRadiusScale >= 1.0f &&
-        std::isfinite(density.globalPruneCellSize) &&
-        density.globalPruneCellSize >= 0.0f &&
-        (!density.enableSpannerPruning || (std::isfinite(density.spannerPathRatio) && density.spannerPathRatio >= 1.0f));
+        (!density.candidateDeduplication.enabled ||
+            (std::isfinite(density.candidateDeduplication.cellSizeNear) &&
+             density.candidateDeduplication.cellSizeNear > 0.0f &&
+             std::isfinite(density.candidateDeduplication.cellSizeFar) &&
+             density.candidateDeduplication.cellSizeFar > 0.0f)) &&
+        (!density.localPruning.enabled ||
+            (std::isfinite(density.localPruning.distanceScale) &&
+             density.localPruning.distanceScale >= 0.0f &&
+             std::isfinite(density.localPruning.maxRadiusScale) &&
+             density.localPruning.maxRadiusScale >= 1.0f)) &&
+        (!density.globalPruning.enabled ||
+            (std::isfinite(density.globalPruning.cellSize) &&
+             density.globalPruning.cellSize > 0.0f)) &&
+        (!density.spannerPruning.enabled ||
+            (std::isfinite(density.spannerPruning.pathRatio) &&
+             density.spannerPruning.pathRatio >= 1.0f &&
+             std::isfinite(density.spannerPruning.verticalWeight) &&
+             density.spannerPruning.verticalWeight >= 0.0f));
     if (!valid) {
         message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
     }
@@ -296,7 +307,7 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
     for (std::size_t index = 0; index < islands.size(); ++index) {
         const float massLog = std::log((std::max)(rawMasses[index], 1.0f));
         islands[index].massScore = massLog > 0.0f && referenceLog > 0.0f
-            ? massLog / (massLog + referenceLog)
+            ? (std::min)(massLog / referenceLog, 1.0f)
             : 0.0f;
     }
 }
@@ -467,8 +478,8 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
         const float targetMass = graph.islands()[link.toIsland].massScore;
         scale *= config.massAware.pruneRadiusScaleFor(targetMass);
     }
-    if (config.density.enabled) {
-        scale *= config.density.pruneRadiusScaleFor(link.horizontalDistance);
+    if (config.density.localPruning.enabled) {
+        scale *= config.density.localPruning.pruneRadiusScaleFor(link.horizontalDistance);
     }
     return config.linkDeduplicationCellSize * scale;
 }
@@ -476,9 +487,16 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
 bool hasAcceptableIndirectRoute(
     const Link& candidate,
     const std::vector<Island>& islands,
-    float pathRatio) {
+    float pathRatio,
+    float verticalWeight) {
     const auto& outgoing = islands[candidate.fromIsland].outgoingLinks;
-    const float candidateDist = detail::distance(candidate.start, candidate.end);
+    const auto effort = [verticalWeight](const Link& link) {
+        const float weightedVertical = link.verticalDistance * verticalWeight;
+        return std::sqrt(
+            (link.horizontalDistance * link.horizontalDistance) +
+            (weightedVertical * weightedVertical));
+    };
+    const float candidateDist = effort(candidate);
 
     for (const Link& firstHop : outgoing) {
         if (firstHop.toIsland == candidate.toIsland) {
@@ -489,7 +507,7 @@ bool hasAcceptableIndirectRoute(
         float bestSecondHopDist = (std::numeric_limits<float>::max)();
         for (const Link& secondHop : secondOutgoing) {
             if (secondHop.toIsland == candidate.toIsland) {
-                const float dist = detail::distance(secondHop.start, secondHop.end);
+                const float dist = effort(secondHop);
                 if (dist < bestSecondHopDist) {
                     bestSecondHopDist = dist;
                 }
@@ -497,7 +515,7 @@ bool hasAcceptableIndirectRoute(
         }
 
         if (bestSecondHopDist != (std::numeric_limits<float>::max)()) {
-            const float firstHopDist = detail::distance(firstHop.start, firstHop.end);
+            const float firstHopDist = effort(firstHop);
             const float indirectDist = firstHopDist + bestSecondHopDist;
             if (indirectDist <= candidateDist * pathRatio) {
                 return true;
@@ -548,6 +566,9 @@ BuildStatus discoverLinks(
             return BuildStatus::QueryFailed;
         }
         stats.nearbyPolygonCount += static_cast<std::size_t>(nearbyCount);
+        if (nearbyCount >= config.maxNearbyPolygons) {
+            ++stats.queryCapacityHitCount;
+        }
         for (int index = 0; index < nearbyCount; ++index) {
             const dtPolyRef candidatePolygon = nearby[static_cast<std::size_t>(index)];
             if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
@@ -576,7 +597,12 @@ BuildStatus discoverLinks(
                 link.verticalDistance < -config.maxVerticalGapDown) {
                 continue;
             }
-            const float cell = config.linkDeduplicationCellSize;
+            const float cell =
+                config.density.candidateDeduplication.enabled
+                ? config.density.candidateDeduplication.cellSizeFor(
+                    link.horizontalDistance,
+                    config.maxHorizontalGap)
+                : config.linkDeduplicationCellSize;
             const LinkKey key{
                 link.fromIsland,
                 link.toIsland,
@@ -609,24 +635,28 @@ BuildStatus discoverLinks(
     std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
-        if (config.density.enabled && config.density.globalPruneCellSize > 0.0f) {
+        if (config.density.globalPruning.enabled) {
             const GlobalCellKey startCell{
-                quantize(candidate.start.x, config.density.globalPruneCellSize),
-                quantize(candidate.start.y, config.density.globalPruneCellSize),
-                quantize(candidate.start.z, config.density.globalPruneCellSize)
+                quantize(candidate.start.x, config.density.globalPruning.cellSize),
+                quantize(candidate.start.y, config.density.globalPruning.cellSize),
+                quantize(candidate.start.z, config.density.globalPruning.cellSize)
             };
             const GlobalCellKey endCell{
-                quantize(candidate.end.x, config.density.globalPruneCellSize),
-                quantize(candidate.end.y, config.density.globalPruneCellSize),
-                quantize(candidate.end.z, config.density.globalPruneCellSize)
+                quantize(candidate.end.x, config.density.globalPruning.cellSize),
+                quantize(candidate.end.y, config.density.globalPruning.cellSize),
+                quantize(candidate.end.z, config.density.globalPruning.cellSize)
             };
             if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
                 continue;
             }
         }
 
-        if (config.density.enabled && config.density.enableSpannerPruning) {
-            if (hasAcceptableIndirectRoute(candidate, islands, config.density.spannerPathRatio)) {
+        if (config.density.spannerPruning.enabled) {
+            if (hasAcceptableIndirectRoute(
+                    candidate,
+                    islands,
+                    config.density.spannerPruning.pathRatio,
+                    config.density.spannerPruning.verticalWeight)) {
                 continue;
             }
         }
@@ -642,16 +672,16 @@ BuildStatus discoverLinks(
             islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
             ++stats.acceptedLinkCount;
 
-            if (config.density.enabled && config.density.globalPruneCellSize > 0.0f) {
+            if (config.density.globalPruning.enabled) {
                 const GlobalCellKey startCell{
-                    quantize(candidate.start.x, config.density.globalPruneCellSize),
-                    quantize(candidate.start.y, config.density.globalPruneCellSize),
-                    quantize(candidate.start.z, config.density.globalPruneCellSize)
+                    quantize(candidate.start.x, config.density.globalPruning.cellSize),
+                    quantize(candidate.start.y, config.density.globalPruning.cellSize),
+                    quantize(candidate.start.z, config.density.globalPruning.cellSize)
                 };
                 const GlobalCellKey endCell{
-                    quantize(candidate.end.x, config.density.globalPruneCellSize),
-                    quantize(candidate.end.y, config.density.globalPruneCellSize),
-                    quantize(candidate.end.z, config.density.globalPruneCellSize)
+                    quantize(candidate.end.x, config.density.globalPruning.cellSize),
+                    quantize(candidate.end.y, config.density.globalPruning.cellSize),
+                    quantize(candidate.end.z, config.density.globalPruning.cellSize)
                 };
                 occupiedGlobalCells.insert(startCell);
                 occupiedGlobalCells.insert(endCell);

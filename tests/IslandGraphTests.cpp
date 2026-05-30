@@ -328,6 +328,13 @@ TEST_CASE("Builder with disconnected navmesh") {
     SUBCASE("Spatial query count matches retained boundaries") {
         CHECK(buildResult.stats.spatialQueryCount == buildResult.stats.deduplicatedBoundaryCount);
     }
+    SUBCASE("Stats report saturated spatial queries") {
+        BuildConfig constrainedConfig = buildConfig;
+        constrainedConfig.maxNearbyPolygons = 1;
+        const BuildResult constrainedBuild = builder.build(*navMesh, constrainedConfig);
+        REQUIRE(static_cast<bool>(constrainedBuild));
+        CHECK(constrainedBuild.stats.queryCapacityHitCount > 0);
+    }
     SUBCASE("Candidate deduplication stats are ordered") {
         CHECK(buildResult.stats.deduplicatedCandidateCount <= buildResult.stats.projectedCandidateCount);
     }
@@ -396,126 +403,156 @@ TEST_CASE("Builder density tuning") {
 
     SUBCASE("Disabled density preserves baseline") {
         BuildConfig disabledDensityConfig = buildConfig;
-        disabledDensityConfig.density.enabled = false;
-        disabledDensityConfig.density.distanceScale = 10.0f;
-        disabledDensityConfig.density.maxRadiusScale = 100.0f;
+        disabledDensityConfig.density.localPruning.enabled = false;
+        disabledDensityConfig.density.localPruning.distanceScale = 10.0f;
+        disabledDensityConfig.density.localPruning.maxRadiusScale = 100.0f;
         const BuildResult result = builder.build(*navMesh, disabledDensityConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount == baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Density radius scale interpolates continuously") {
         BuildConfig densityConfig;
-        densityConfig.density.enabled = true;
-        densityConfig.density.distanceScale = 0.25f;
-        densityConfig.density.maxRadiusScale = 2.0f;
-        CHECK(densityConfig.density.pruneRadiusScaleFor(2.0f) == 1.5f);
-        CHECK(densityConfig.density.pruneRadiusScaleFor(8.0f) == 2.0f);
+        densityConfig.density.localPruning.enabled = true;
+        densityConfig.density.localPruning.distanceScale = 0.25f;
+        densityConfig.density.localPruning.maxRadiusScale = 2.0f;
+        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(2.0f) == 1.5f);
+        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(8.0f) == 2.0f);
+    }
+    SUBCASE("Candidate deduplication cell size interpolates continuously") {
+        BuildConfig densityConfig;
+        densityConfig.density.candidateDeduplication.enabled = true;
+        densityConfig.density.candidateDeduplication.cellSizeNear = 4.0f;
+        densityConfig.density.candidateDeduplication.cellSizeFar = 10.0f;
+        CHECK(densityConfig.density.candidateDeduplication.cellSizeFor(-1.0f, 30.0f) == 4.0f);
+        CHECK(densityConfig.density.candidateDeduplication.cellSizeFor(0.0f, 30.0f) == 4.0f);
+        CHECK(densityConfig.density.candidateDeduplication.cellSizeFor(15.0f, 30.0f) == 7.0f);
+        CHECK(densityConfig.density.candidateDeduplication.cellSizeFor(60.0f, 30.0f) == 10.0f);
+    }
+    SUBCASE("Enabled distance-scaled candidate deduplication does not increase accepted links") {
+        BuildConfig dynamicCandidateConfig = buildConfig;
+        dynamicCandidateConfig.density.candidateDeduplication.enabled = true;
+        dynamicCandidateConfig.density.candidateDeduplication.cellSizeNear = 0.5f;
+        dynamicCandidateConfig.density.candidateDeduplication.cellSizeFar = 10.0f;
+        const BuildResult result = builder.build(*navMesh, dynamicCandidateConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Enabled density does not increase accepted links") {
         BuildConfig densityConfig = buildConfig;
-        densityConfig.density.enabled = true;
-        densityConfig.density.distanceScale = 0.25f;
-        densityConfig.density.maxRadiusScale = 2.0f;
+        densityConfig.density.localPruning.enabled = true;
+        densityConfig.density.localPruning.distanceScale = 0.25f;
+        densityConfig.density.localPruning.maxRadiusScale = 2.0f;
         const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
         REQUIRE(static_cast<bool>(densityBuild));
         CHECK(densityBuild.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Stronger distance scale does not increase accepted links") {
         BuildConfig densityConfig = buildConfig;
-        densityConfig.density.enabled = true;
-        densityConfig.density.distanceScale = 0.25f;
-        densityConfig.density.maxRadiusScale = 2.0f;
+        densityConfig.density.localPruning.enabled = true;
+        densityConfig.density.localPruning.distanceScale = 0.25f;
+        densityConfig.density.localPruning.maxRadiusScale = 2.0f;
         const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
         REQUIRE(static_cast<bool>(densityBuild));
 
         BuildConfig strongerDistanceScaleConfig = densityConfig;
-        strongerDistanceScaleConfig.density.distanceScale = 0.5f;
+        strongerDistanceScaleConfig.density.localPruning.distanceScale = 0.5f;
         const BuildResult result = builder.build(*navMesh, strongerDistanceScaleConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount);
     }
     SUBCASE("Stronger radius cap does not increase accepted links") {
         BuildConfig densityConfig = buildConfig;
-        densityConfig.density.enabled = true;
-        densityConfig.density.distanceScale = 0.25f;
-        densityConfig.density.maxRadiusScale = 2.0f;
+        densityConfig.density.localPruning.enabled = true;
+        densityConfig.density.localPruning.distanceScale = 0.25f;
+        densityConfig.density.localPruning.maxRadiusScale = 2.0f;
         const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
         REQUIRE(static_cast<bool>(densityBuild));
 
         BuildConfig strongerRadiusCapConfig = densityConfig;
-        strongerRadiusCapConfig.density.maxRadiusScale = 3.0f;
+        strongerRadiusCapConfig.density.localPruning.maxRadiusScale = 3.0f;
         const BuildResult result = builder.build(*navMesh, strongerRadiusCapConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount);
     }
     SUBCASE("Rejects negative density distance scale") {
         BuildConfig invalidDensityConfig;
-        invalidDensityConfig.density.distanceScale = -0.01f;
+        invalidDensityConfig.density.localPruning.enabled = true;
+        invalidDensityConfig.density.localPruning.distanceScale = -0.01f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Rejects invalid candidate deduplication cell sizes") {
+        BuildConfig invalidDensityConfig;
+        invalidDensityConfig.density.candidateDeduplication.enabled = true;
+        invalidDensityConfig.density.candidateDeduplication.cellSizeNear = 0.0f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects density caps below one") {
         BuildConfig invalidDensityConfig;
-        invalidDensityConfig.density.maxRadiusScale = 0.99f;
+        invalidDensityConfig.density.localPruning.enabled = true;
+        invalidDensityConfig.density.localPruning.maxRadiusScale = 0.99f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Disabled global pruning preserves baseline") {
         BuildConfig disabledGlobalPruningConfig = buildConfig;
-        disabledGlobalPruningConfig.density.enabled = true;
-        disabledGlobalPruningConfig.density.globalPruneCellSize = 0.0f;
+        disabledGlobalPruningConfig.density.globalPruning.enabled = false;
+        disabledGlobalPruningConfig.density.globalPruning.cellSize = 0.0f;
         const BuildResult result = builder.build(*navMesh, disabledGlobalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount == baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Enabled global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
-        globalPruningConfig.density.enabled = true;
-        globalPruningConfig.density.globalPruneCellSize = 10.0f;
+        globalPruningConfig.density.globalPruning.enabled = true;
+        globalPruningConfig.density.globalPruning.cellSize = 10.0f;
         const BuildResult result = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Stronger global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
-        globalPruningConfig.density.enabled = true;
-        globalPruningConfig.density.globalPruneCellSize = 10.0f;
+        globalPruningConfig.density.globalPruning.enabled = true;
+        globalPruningConfig.density.globalPruning.cellSize = 10.0f;
         const BuildResult globalPruningBuild = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(globalPruningBuild));
 
         BuildConfig strongerGlobalPruningConfig = buildConfig;
-        strongerGlobalPruningConfig.density.enabled = true;
-        strongerGlobalPruningConfig.density.globalPruneCellSize = 20.0f;
+        strongerGlobalPruningConfig.density.globalPruning.enabled = true;
+        strongerGlobalPruningConfig.density.globalPruning.cellSize = 20.0f;
         const BuildResult result = builder.build(*navMesh, strongerGlobalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount <= globalPruningBuild.stats.acceptedLinkCount);
     }
     SUBCASE("Rejects negative global prune cell size") {
         BuildConfig invalidGlobalPruningConfig;
-        invalidGlobalPruningConfig.density.enabled = true;
-        invalidGlobalPruningConfig.density.globalPruneCellSize = -0.01f;
+        invalidGlobalPruningConfig.density.globalPruning.enabled = true;
+        invalidGlobalPruningConfig.density.globalPruning.cellSize = -0.01f;
         CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Disabled spanner pruning preserves baseline") {
         BuildConfig disabledSpannerConfig = buildConfig;
-        disabledSpannerConfig.density.enabled = true;
-        disabledSpannerConfig.density.enableSpannerPruning = false;
+        disabledSpannerConfig.density.spannerPruning.enabled = false;
         const BuildResult result = builder.build(*navMesh, disabledSpannerConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount == baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Enabled spanner pruning does not increase accepted links") {
         BuildConfig spannerConfig = buildConfig;
-        spannerConfig.density.enabled = true;
-        spannerConfig.density.enableSpannerPruning = true;
-        spannerConfig.density.spannerPathRatio = 2.0f;
+        spannerConfig.density.spannerPruning.enabled = true;
+        spannerConfig.density.spannerPruning.pathRatio = 2.0f;
         const BuildResult result = builder.build(*navMesh, spannerConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
     }
     SUBCASE("Rejects spanner path ratio below one") {
         BuildConfig invalidSpannerConfig;
-        invalidSpannerConfig.density.enabled = true;
-        invalidSpannerConfig.density.enableSpannerPruning = true;
-        invalidSpannerConfig.density.spannerPathRatio = 0.99f;
+        invalidSpannerConfig.density.spannerPruning.enabled = true;
+        invalidSpannerConfig.density.spannerPruning.pathRatio = 0.99f;
+        CHECK(builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Rejects negative spanner vertical weight") {
+        BuildConfig invalidSpannerConfig;
+        invalidSpannerConfig.density.spannerPruning.enabled = true;
+        invalidSpannerConfig.density.spannerPruning.verticalWeight = -0.01f;
         CHECK(builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration);
     }
 }
@@ -549,7 +586,7 @@ TEST_CASE("Builder mass-aware tuning") {
         REQUIRE(static_cast<bool>(massAwareBuild));
         CHECK(massAwareBuild.graph.islands().size() == 2);
         CHECK(massAwareBuild.graph.islands()[0].massScore > massAwareBuild.graph.islands()[1].massScore);
-        CHECK(massAwareBuild.graph.islands()[0].massScore <= 1.0f);
+        CHECK(massAwareBuild.graph.islands()[0].massScore == 1.0f);
         CHECK(massAwareBuild.graph.islands()[1].massScore >= 0.0f);
     }
     SUBCASE("Nearby percentile varies mass score smoothly") {

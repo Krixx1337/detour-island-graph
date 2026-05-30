@@ -42,8 +42,8 @@ config.maxVerticalGapUp = 4.0f;      // Maximum climbable/jumpable height
 config.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls)
 
 // Enable global density pruning to keep the graph clean & sparse
-config.density.enabled = true;
-config.density.globalPruneCellSize = 12.0f; // 12-meter global occupancy grid
+config.density.globalPruning.enabled = true;
+config.density.globalPruning.cellSize = 12.0f; // 12-meter global occupancy grid
 
 // 2. Build the graph
 detour_island_graph::IslandGraphBuilder builder;
@@ -93,13 +93,16 @@ The default geometric link cost uses A* search with a Euclidean heuristic. Suppl
 ### Global & Local Density Tuning
 If your game has large continents, coastlines, or long cliffs, you can enable `density` tuning to prevent the builder from generating hundreds of parallel redundant jump links.
 
-*   `density.distanceScale` (default `0.0f`): Controls how quickly the pruning radius grows with link distance (longer jumps prune more local variants).
-*   `density.globalPruneCellSize` (default `0.0f`): A 3D spatial occupancy grid size. When set to `> 0.0f` (e.g., `12.0f`), only one link start or end point is allowed to occupy each grid cell globally, keeping your graph sparse and performant.
-*   `density.enableSpannerPruning` (default `false`): Enables optional **t-Spanner pruning** (path-shortcut pruning) to discard direct jump links when a multi-hop alternative route with close cost already exists through accepted links.
-*   `density.spannerPathRatio` (default `1.5f`): The path ratio threshold for spanner pruning (e.g., discard direct link $A \to C$ if indirect path cost $A \to B \to C$ is $\le 1.5\times$ the direct cost).
+*   `density.localPruning`: Controls pair-local redundancy pruning. Enable it to grow the pruning radius with link distance using `distanceScale` and `maxRadiusScale`.
+*   `density.globalPruning`: Controls the optional 3D occupancy grid. Enable it and set `cellSize` to keep only one link start or end point in each global cell.
+*   `density.candidateDeduplication`: Controls optional early candidate deduplication. Enable it to interpolate from `cellSizeNear` to `cellSizeFar` as links approach `maxHorizontalGap`.
+*   `density.spannerPruning`: Controls optional **t-Spanner pruning**. Enable it to discard direct jump links when a multi-hop route is close enough according to `pathRatio`; increase `verticalWeight` when elevation is materially harder than horizontal travel.
 
 ### Mass-Aware Tuning
 Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances.
+
+### Build Diagnostics
+`BuildStats::queryCapacityHitCount` reports how often `queryPolygons()` filled the configured `maxNearbyPolygons` buffer. Increase that capacity when the counter is non-zero and missing candidates matter for your mesh.
 
 ---
 
