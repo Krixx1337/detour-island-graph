@@ -1,5 +1,7 @@
 #pragma once
 
+#include <detour_island_graph/Version.h>
+
 #include <DetourNavMesh.h>
 
 #include <cstdint>
