@@ -39,7 +39,8 @@ struct CandidateDeduplicationTuning {
 };
 
 struct LocalPruningTuning {
-    bool enabled = false;
+    float baseRadius = 8.0f;
+    bool enableDistanceScaling = false;
     float distanceScale = 0.0f;
     float maxRadiusScale = 1.0f;
 
@@ -67,35 +68,62 @@ struct DensityTuning {
     SpannerPruningTuning spannerPruning;
 };
 
-struct BuildConfig {
+struct GapDiscoveryTuning {
     float maxHorizontalGap = 30.0f;
     float maxVerticalGapUp = 30.0f;
     float maxVerticalGapDown = 30.0f;
-    float boundaryDeduplicationCellSize = 4.0f;
-    float linkDeduplicationCellSize = 8.0f;
-    int queryMaxNodes = 4096;
+};
+
+struct BoundaryTuning {
+    float deduplicationCellSize = 4.0f;
+};
+
+struct QueryTuning {
+    int maxNodes = 4096;
     int maxNearbyPolygons = 2048;
+};
+
+struct BuildConfig {
+    GapDiscoveryTuning gapDiscovery;
+    BoundaryTuning boundaries;
+    QueryTuning query;
     MassAwareTuning massAware;
     DensityTuning density;
 };
 
-struct BuildStats {
-    double totalBuildMs = 0.0;
+struct TimingStats {
+    double totalMs = 0.0;
     double floodFillMs = 0.0;
     double massScoringMs = 0.0;
     double boundaryExtractionMs = 0.0;
     double linkDiscoveryMs = 0.0;
     double pruningMs = 0.0;
+};
+
+struct BoundaryStats {
+    std::size_t rawCount = 0;
+    std::size_t deduplicatedCount = 0;
+};
+
+struct QueryStats {
+    std::size_t count = 0;
+    std::size_t capacityHitCount = 0;
+    std::size_t nearbyPolygonCount = 0;
+};
+
+struct CandidateStats {
+    std::size_t projectedCount = 0;
+    std::size_t deduplicatedCount = 0;
+    std::size_t acceptedLinkCount = 0;
+};
+
+struct BuildStats {
+    TimingStats timings;
+    BoundaryStats boundaries;
+    QueryStats queries;
+    CandidateStats candidates;
     std::size_t islandCount = 0;
     std::size_t polygonCount = 0;
-    std::size_t rawBoundaryCount = 0;
-    std::size_t deduplicatedBoundaryCount = 0;
-    std::size_t spatialQueryCount = 0;
-    std::size_t queryCapacityHitCount = 0;
-    std::size_t nearbyPolygonCount = 0;
-    std::size_t projectedCandidateCount = 0;
-    std::size_t deduplicatedCandidateCount = 0;
-    std::size_t acceptedLinkCount = 0;
 };
 
 enum class BuildStatus {

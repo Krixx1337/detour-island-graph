@@ -37,9 +37,9 @@ Building the topological graph is as simple as defining your gap tolerances and 
 
 // 1. Configure the builder parameters
 detour_island_graph::BuildConfig config;
-config.maxHorizontalGap = 20.0f;     // Maximum jump distance
-config.maxVerticalGapUp = 4.0f;      // Maximum climbable/jumpable height
-config.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls)
+config.gapDiscovery.maxHorizontalGap = 20.0f;     // Maximum jump distance
+config.gapDiscovery.maxVerticalGapUp = 4.0f;      // Maximum climbable/jumpable height
+config.gapDiscovery.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls)
 
 // Enable global density pruning to keep the graph clean & sparse
 config.density.globalPruning.enabled = true;
@@ -52,7 +52,7 @@ detour_island_graph::BuildResult result = builder.build(*myDetourNavMesh, config
 if (result) {
     // Access the generated graph
     const detour_island_graph::IslandGraph& graph = result.graph;
-    std::cout << "Successfully generated " << result.stats.acceptedLinkCount << " jump links!\n";
+    std::cout << "Successfully generated " << result.stats.candidates.acceptedLinkCount << " jump links!\n";
 }
 ```
 
@@ -102,7 +102,7 @@ If your game has large continents, coastlines, or long cliffs, you can enable `d
 Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances.
 
 ### Build Diagnostics
-`BuildStats::queryCapacityHitCount` reports how often `queryPolygons()` filled the configured `maxNearbyPolygons` buffer. Increase that capacity when the counter is non-zero and missing candidates matter for your mesh.
+`BuildStats::queries.capacityHitCount` reports how often `queryPolygons()` filled the configured `query.maxNearbyPolygons` buffer. Increase that capacity when the counter is non-zero and missing candidates matter for your mesh.
 
 ---
 

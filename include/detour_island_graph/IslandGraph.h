@@ -5,7 +5,6 @@
 #include <DetourNavMesh.h>
 
 #include <cstdint>
-#include <initializer_list>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -32,13 +31,6 @@ struct Vec3 {
     // Export to Detour float[3]
     void copyTo(float* p) const { p[0] = x; p[1] = y; p[2] = z; }
 
-    Vec3& operator=(std::initializer_list<float> ilist) {
-        auto it = ilist.begin();
-        x = *it++;
-        y = *it++;
-        z = *it++;
-        return *this;
-    }
 };
 
 struct Link {

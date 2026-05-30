@@ -232,13 +232,14 @@ bool validate(const BuildConfig& config, std::string& message) {
     const MassAwareTuning& massAware = config.massAware;
     const DensityTuning& density = config.density;
     const bool valid =
-        std::isfinite(config.maxHorizontalGap) && config.maxHorizontalGap > 0.0f &&
-        std::isfinite(config.maxVerticalGapUp) && config.maxVerticalGapUp >= 0.0f &&
-        std::isfinite(config.maxVerticalGapDown) && config.maxVerticalGapDown >= 0.0f &&
-        std::isfinite(config.boundaryDeduplicationCellSize) && config.boundaryDeduplicationCellSize > 0.0f &&
-        std::isfinite(config.linkDeduplicationCellSize) && config.linkDeduplicationCellSize > 0.0f &&
-        config.queryMaxNodes > 0 &&
-        config.maxNearbyPolygons > 0 &&
+        std::isfinite(config.gapDiscovery.maxHorizontalGap) && config.gapDiscovery.maxHorizontalGap > 0.0f &&
+        std::isfinite(config.gapDiscovery.maxVerticalGapUp) && config.gapDiscovery.maxVerticalGapUp >= 0.0f &&
+        std::isfinite(config.gapDiscovery.maxVerticalGapDown) && config.gapDiscovery.maxVerticalGapDown >= 0.0f &&
+        std::isfinite(config.boundaries.deduplicationCellSize) && config.boundaries.deduplicationCellSize > 0.0f &&
+        std::isfinite(density.localPruning.baseRadius) &&
+        density.localPruning.baseRadius > 0.0f &&
+        config.query.maxNodes > 0 &&
+        config.query.maxNearbyPolygons > 0 &&
         std::isfinite(massAware.normalizationPercentile) &&
         massAware.normalizationPercentile > 0.0f &&
         massAware.normalizationPercentile <= 1.0f &&
@@ -253,7 +254,7 @@ bool validate(const BuildConfig& config, std::string& message) {
              density.candidateDeduplication.cellSizeNear > 0.0f &&
              std::isfinite(density.candidateDeduplication.cellSizeFar) &&
              density.candidateDeduplication.cellSizeFar > 0.0f)) &&
-        (!density.localPruning.enabled ||
+        (!density.localPruning.enableDistanceScaling ||
             (std::isfinite(density.localPruning.distanceScale) &&
              density.localPruning.distanceScale >= 0.0f &&
              std::isfinite(density.localPruning.maxRadiusScale) &&
@@ -333,11 +334,11 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
 
             Island island;
             island.id = static_cast<IslandId>(islands.size());
-            island.boundsMin = {
+            island.boundsMin = Vec3{
                 (std::numeric_limits<float>::max)(),
                 (std::numeric_limits<float>::max)(),
                 (std::numeric_limits<float>::max)()};
-            island.boundsMax = {
+            island.boundsMax = Vec3{
                 (std::numeric_limits<float>::lowest)(),
                 (std::numeric_limits<float>::lowest)(),
                 (std::numeric_limits<float>::lowest)()};
@@ -408,13 +409,13 @@ std::vector<Boundary> extractBoundaries(
                 if (!isBoundaryEdge(*tile, *polygon, edge)) {
                     continue;
                 }
-                ++stats.rawBoundaryCount;
+                ++stats.boundaries.rawCount;
                 const Vec3 start = detail::fromDetour(&tile->verts[polygon->verts[edge] * 3]);
                 const Vec3 end = detail::fromDetour(
                     &tile->verts[polygon->verts[(edge + 1) % polygon->vertCount] * 3]);
                 const Vec3 midpoint = detail::divide(detail::add(start, end), 2.0f);
                 const Vec3 direction{end.x - start.x, end.y - start.y, end.z - start.z};
-                const float cell = config.boundaryDeduplicationCellSize;
+                const float cell = config.boundaries.deduplicationCellSize;
                 const BoundaryKey key{
                     island.id,
                     quantize(midpoint.x, cell),
@@ -427,7 +428,7 @@ std::vector<Boundary> extractBoundaries(
             }
         }
     }
-    stats.deduplicatedBoundaryCount = boundaries.size();
+    stats.boundaries.deduplicatedCount = boundaries.size();
 
     std::vector<Boundary> output;
     output.reserve(boundaries.size());
@@ -478,10 +479,10 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
         const float targetMass = graph.islands()[link.toIsland].massScore;
         scale *= config.massAware.pruneRadiusScaleFor(targetMass);
     }
-    if (config.density.localPruning.enabled) {
+    if (config.density.localPruning.enableDistanceScaling) {
         scale *= config.density.localPruning.pruneRadiusScaleFor(link.horizontalDistance);
     }
-    return config.linkDeduplicationCellSize * scale;
+    return config.density.localPruning.baseRadius * scale;
 }
 
 bool hasAcceptableIndirectRoute(
@@ -532,42 +533,42 @@ BuildStatus discoverLinks(
     BuildStats& stats,
     std::string& message) {
     std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
-    if (!query || dtStatusFailed(query->init(&navMesh, config.queryMaxNodes))) {
+    if (!query || dtStatusFailed(query->init(&navMesh, config.query.maxNodes))) {
         message = "Failed to initialize dtNavMeshQuery.";
         return BuildStatus::QueryInitializationFailed;
     }
 
     const Clock::time_point boundaryStart = Clock::now();
     const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
-    stats.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
+    stats.timings.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
 
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
-    std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.maxNearbyPolygons));
+    std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.query.maxNearbyPolygons));
     const float extents[3]{
-        config.maxHorizontalGap,
-        (std::max)(config.maxVerticalGapUp, config.maxVerticalGapDown),
-        config.maxHorizontalGap};
+        config.gapDiscovery.maxHorizontalGap,
+        (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown),
+        config.gapDiscovery.maxHorizontalGap};
     const dtQueryFilter filter;
 
     for (const Boundary& boundary : boundaries) {
         float center[3];
         detail::toDetour(boundary.midpoint, center);
         int nearbyCount = 0;
-        ++stats.spatialQueryCount;
+        ++stats.queries.count;
         if (dtStatusFailed(query->queryPolygons(
                 center,
                 extents,
                 &filter,
                 nearby.data(),
                 &nearbyCount,
-                config.maxNearbyPolygons))) {
+                config.query.maxNearbyPolygons))) {
             message = "dtNavMeshQuery::queryPolygons failed.";
             return BuildStatus::QueryFailed;
         }
-        stats.nearbyPolygonCount += static_cast<std::size_t>(nearbyCount);
-        if (nearbyCount >= config.maxNearbyPolygons) {
-            ++stats.queryCapacityHitCount;
+        stats.queries.nearbyPolygonCount += static_cast<std::size_t>(nearbyCount);
+        if (nearbyCount >= config.query.maxNearbyPolygons) {
+            ++stats.queries.capacityHitCount;
         }
         for (int index = 0; index < nearbyCount; ++index) {
             const dtPolyRef candidatePolygon = nearby[static_cast<std::size_t>(index)];
@@ -583,7 +584,7 @@ BuildStatus discoverLinks(
             if (dtStatusFailed(query->closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
                 continue;
             }
-            ++stats.projectedCandidateCount;
+            ++stats.candidates.projectedCount;
             (void)overPolygon;
             Link link;
             link.fromIsland = boundary.island;
@@ -592,17 +593,17 @@ BuildStatus discoverLinks(
             link.end = detail::fromDetour(projected);
             link.horizontalDistance = detail::horizontalDistance(link.start, link.end);
             link.verticalDistance = link.end.y - link.start.y;
-            if (link.horizontalDistance > config.maxHorizontalGap ||
-                link.verticalDistance > config.maxVerticalGapUp ||
-                link.verticalDistance < -config.maxVerticalGapDown) {
+            if (link.horizontalDistance > config.gapDiscovery.maxHorizontalGap ||
+                link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
+                link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown) {
                 continue;
             }
             const float cell =
                 config.density.candidateDeduplication.enabled
                 ? config.density.candidateDeduplication.cellSizeFor(
                     link.horizontalDistance,
-                    config.maxHorizontalGap)
-                : config.linkDeduplicationCellSize;
+                    config.gapDiscovery.maxHorizontalGap)
+                : config.density.localPruning.baseRadius;
             const LinkKey key{
                 link.fromIsland,
                 link.toIsland,
@@ -618,8 +619,8 @@ BuildStatus discoverLinks(
             }
         }
     }
-    stats.deduplicatedCandidateCount = deduplicated.size();
-    stats.linkDiscoveryMs = elapsedMilliseconds(discoveryStart);
+    stats.candidates.deduplicatedCount = deduplicated.size();
+    stats.timings.linkDiscoveryMs = elapsedMilliseconds(discoveryStart);
 
     const Clock::time_point pruningStart = Clock::now();
     std::vector<Link> candidates;
@@ -670,7 +671,7 @@ BuildStatus discoverLinks(
         if (!duplicate) {
             accepted.push_back(candidate);
             islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
-            ++stats.acceptedLinkCount;
+            ++stats.candidates.acceptedLinkCount;
 
             if (config.density.globalPruning.enabled) {
                 const GlobalCellKey startCell{
@@ -688,7 +689,7 @@ BuildStatus discoverLinks(
             }
         }
     }
-    stats.pruningMs = elapsedMilliseconds(pruningStart);
+    stats.timings.pruningMs = elapsedMilliseconds(pruningStart);
     return BuildStatus::Success;
 }
 
@@ -699,13 +700,13 @@ BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfi
     const Clock::time_point totalStart = Clock::now();
     if (!validate(config, result.message)) {
         result.status = BuildStatus::InvalidConfiguration;
-        result.stats.totalBuildMs = elapsedMilliseconds(totalStart);
+        result.stats.timings.totalMs = elapsedMilliseconds(totalStart);
         return result;
     }
 
     const Clock::time_point floodFillStart = Clock::now();
     floodFill(navMesh, result.graph);
-    result.stats.floodFillMs = elapsedMilliseconds(floodFillStart);
+    result.stats.timings.floodFillMs = elapsedMilliseconds(floodFillStart);
     result.stats.islandCount = result.graph.islands().size();
     for (const Island& island : result.graph.islands()) {
         result.stats.polygonCount += island.polygons.size();
@@ -713,10 +714,10 @@ BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfi
 
     const Clock::time_point massScoringStart = Clock::now();
     calculateMassScores(result.graph, config);
-    result.stats.massScoringMs = elapsedMilliseconds(massScoringStart);
+    result.stats.timings.massScoringMs = elapsedMilliseconds(massScoringStart);
 
     result.status = discoverLinks(navMesh, result.graph, config, result.stats, result.message);
-    result.stats.totalBuildMs = elapsedMilliseconds(totalStart);
+    result.stats.timings.totalMs = elapsedMilliseconds(totalStart);
     return result;
 }
 
