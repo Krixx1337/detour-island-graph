@@ -6,6 +6,7 @@
 #include <DetourNavMeshQuery.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -31,6 +32,12 @@ struct IslandGraphAccess {
 } // namespace detail
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsedMilliseconds(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
 
 struct QueryDeleter {
     void operator()(dtNavMeshQuery* query) const {
@@ -347,7 +354,8 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
 std::vector<Boundary> extractBoundaries(
     const dtNavMesh& navMesh,
     const IslandGraph& graph,
-    const BuildConfig& config) {
+    const BuildConfig& config,
+    BuildStats& stats) {
     std::unordered_map<BoundaryKey, Boundary, BoundaryKeyHash> boundaries;
     for (const Island& island : graph.islands()) {
         for (dtPolyRef reference : island.polygons) {
@@ -360,6 +368,7 @@ std::vector<Boundary> extractBoundaries(
                 if (!isBoundaryEdge(*tile, *polygon, edge)) {
                     continue;
                 }
+                ++stats.rawBoundaryCount;
                 const Vec3 start = detail::fromDetour(&tile->verts[polygon->verts[edge] * 3]);
                 const Vec3 end = detail::fromDetour(
                     &tile->verts[polygon->verts[(edge + 1) % polygon->vertCount] * 3]);
@@ -378,6 +387,7 @@ std::vector<Boundary> extractBoundaries(
             }
         }
     }
+    stats.deduplicatedBoundaryCount = boundaries.size();
 
     std::vector<Boundary> output;
     output.reserve(boundaries.size());
@@ -434,6 +444,7 @@ BuildStatus discoverLinks(
     const dtNavMesh& navMesh,
     IslandGraph& graph,
     const BuildConfig& config,
+    BuildStats& stats,
     std::string& message) {
     std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
     if (!query || dtStatusFailed(query->init(&navMesh, config.queryMaxNodes))) {
@@ -441,7 +452,11 @@ BuildStatus discoverLinks(
         return BuildStatus::QueryInitializationFailed;
     }
 
-    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config);
+    const Clock::time_point boundaryStart = Clock::now();
+    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
+    stats.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
+
+    const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
     std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.maxNearbyPolygons));
     const float extents[3]{
@@ -454,6 +469,7 @@ BuildStatus discoverLinks(
         float center[3];
         detail::toDetour(boundary.midpoint, center);
         int nearbyCount = 0;
+        ++stats.spatialQueryCount;
         if (dtStatusFailed(query->queryPolygons(
                 center,
                 extents,
@@ -464,6 +480,7 @@ BuildStatus discoverLinks(
             message = "dtNavMeshQuery::queryPolygons failed.";
             return BuildStatus::QueryFailed;
         }
+        stats.nearbyPolygonCount += static_cast<std::size_t>(nearbyCount);
         for (int index = 0; index < nearbyCount; ++index) {
             const dtPolyRef candidatePolygon = nearby[static_cast<std::size_t>(index)];
             if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
@@ -478,6 +495,7 @@ BuildStatus discoverLinks(
             if (dtStatusFailed(query->closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
                 continue;
             }
+            ++stats.projectedCandidateCount;
             (void)overPolygon;
             Link link;
             link.fromIsland = boundary.island;
@@ -507,7 +525,10 @@ BuildStatus discoverLinks(
             }
         }
     }
+    stats.deduplicatedCandidateCount = deduplicated.size();
+    stats.linkDiscoveryMs = elapsedMilliseconds(discoveryStart);
 
+    const Clock::time_point pruningStart = Clock::now();
     std::vector<Link> candidates;
     candidates.reserve(deduplicated.size());
     for (const auto& entry : deduplicated) {
@@ -529,8 +550,10 @@ BuildStatus discoverLinks(
         if (!duplicate) {
             accepted.push_back(candidate);
             islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
+            ++stats.acceptedLinkCount;
         }
     }
+    stats.pruningMs = elapsedMilliseconds(pruningStart);
     return BuildStatus::Success;
 }
 
@@ -538,14 +561,27 @@ BuildStatus discoverLinks(
 
 BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfig& config) const {
     BuildResult result;
+    const Clock::time_point totalStart = Clock::now();
     if (!validate(config, result.message)) {
         result.status = BuildStatus::InvalidConfiguration;
+        result.stats.totalBuildMs = elapsedMilliseconds(totalStart);
         return result;
     }
 
+    const Clock::time_point floodFillStart = Clock::now();
     floodFill(navMesh, result.graph);
+    result.stats.floodFillMs = elapsedMilliseconds(floodFillStart);
+    result.stats.islandCount = result.graph.islands().size();
+    for (const Island& island : result.graph.islands()) {
+        result.stats.polygonCount += island.polygons.size();
+    }
+
+    const Clock::time_point massScoringStart = Clock::now();
     calculateMassScores(result.graph, config);
-    result.status = discoverLinks(navMesh, result.graph, config, result.message);
+    result.stats.massScoringMs = elapsedMilliseconds(massScoringStart);
+
+    result.status = discoverLinks(navMesh, result.graph, config, result.stats, result.message);
+    result.stats.totalBuildMs = elapsedMilliseconds(totalStart);
     return result;
 }
 

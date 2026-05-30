@@ -36,6 +36,13 @@ config.massAware.highMassPruneRadiusScale = 0.75f;
 
 Leave `massAware.enabled` as `false` to retain the minimal geometric behavior.
 
+## Build Stats
+
+Each `BuildResult` includes ephemeral `BuildStats` for integration diagnostics and
+benchmarks. Stats report stage timings and pipeline counts such as islands, polygons,
+raw and deduplicated boundaries, spatial queries, projected and deduplicated
+candidates, and accepted links. They do not affect graph behavior or serialization.
+
 ## CMake
 
 Provide Detour as a `Detour` or `RecastNavigation::Detour` CMake target:

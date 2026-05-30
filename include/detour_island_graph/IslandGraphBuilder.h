@@ -35,6 +35,24 @@ struct BuildConfig {
     MassAwareTuning massAware;
 };
 
+struct BuildStats {
+    double totalBuildMs = 0.0;
+    double floodFillMs = 0.0;
+    double massScoringMs = 0.0;
+    double boundaryExtractionMs = 0.0;
+    double linkDiscoveryMs = 0.0;
+    double pruningMs = 0.0;
+    std::size_t islandCount = 0;
+    std::size_t polygonCount = 0;
+    std::size_t rawBoundaryCount = 0;
+    std::size_t deduplicatedBoundaryCount = 0;
+    std::size_t spatialQueryCount = 0;
+    std::size_t nearbyPolygonCount = 0;
+    std::size_t projectedCandidateCount = 0;
+    std::size_t deduplicatedCandidateCount = 0;
+    std::size_t acceptedLinkCount = 0;
+};
+
 enum class BuildStatus {
     Success,
     InvalidConfiguration,
@@ -44,6 +62,7 @@ enum class BuildStatus {
 
 struct BuildResult {
     IslandGraph graph;
+    BuildStats stats;
     BuildStatus status = BuildStatus::Success;
     std::string message;
 

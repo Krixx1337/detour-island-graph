@@ -293,6 +293,25 @@ int main() {
     const BuildResult buildResult = builder.build(*navMesh, buildConfig);
     require(static_cast<bool>(buildResult), "builder should process a valid synthetic navmesh");
     require(buildResult.graph.islands().size() == 3, "flood fill should preserve disconnected islands");
+    require(buildResult.stats.islandCount == 3, "stats should report island count");
+    require(buildResult.stats.polygonCount == 3, "stats should report polygon count");
+    require(buildResult.stats.rawBoundaryCount == 12, "stats should report raw boundary count");
+    require(
+        buildResult.stats.deduplicatedBoundaryCount <= buildResult.stats.rawBoundaryCount,
+        "boundary deduplication stats should be ordered");
+    require(
+        buildResult.stats.spatialQueryCount == buildResult.stats.deduplicatedBoundaryCount,
+        "stats should report one spatial query per retained boundary");
+    require(
+        buildResult.stats.deduplicatedCandidateCount <= buildResult.stats.projectedCandidateCount,
+        "candidate deduplication stats should be ordered");
+    require(buildResult.stats.acceptedLinkCount > 0, "stats should report accepted links");
+    require(buildResult.stats.totalBuildMs >= 0.0, "stats should report total build timing");
+    require(buildResult.stats.floodFillMs >= 0.0, "stats should report flood-fill timing");
+    require(buildResult.stats.massScoringMs >= 0.0, "stats should report mass-scoring timing");
+    require(buildResult.stats.boundaryExtractionMs >= 0.0, "stats should report boundary timing");
+    require(buildResult.stats.linkDiscoveryMs >= 0.0, "stats should report discovery timing");
+    require(buildResult.stats.pruningMs >= 0.0, "stats should report pruning timing");
     require(hasLink(buildResult.graph, 0, 1), "builder should discover the first forward gap");
     require(hasLink(buildResult.graph, 1, 0), "builder should discover the first reverse gap");
     require(!hasLink(buildResult.graph, 1, 2), "upward gap should obey upward limit");
