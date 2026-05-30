@@ -375,7 +375,7 @@ TEST_CASE("Builder with disconnected navmesh") {
     }
     SUBCASE("Builder rejects invalid configuration") {
         BuildConfig invalidConfig;
-        invalidConfig.density.localPruning.baseRadius = 0.0f;
+        invalidConfig.density.localPruning.baseRadius = -0.01f;
         CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
     }
 }
@@ -508,7 +508,7 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Rejects invalid candidate deduplication cell sizes") {
         BuildConfig invalidDensityConfig;
         invalidDensityConfig.density.candidateDeduplication.enabled = true;
-        invalidDensityConfig.density.candidateDeduplication.cellSizeNear = 0.0f;
+        invalidDensityConfig.density.candidateDeduplication.cellSizeNear = -0.01f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects density caps below one") {
@@ -520,7 +520,7 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Disabled global pruning preserves baseline") {
         BuildConfig disabledGlobalPruningConfig = buildConfig;
         disabledGlobalPruningConfig.density.globalPruning.enabled = false;
-        disabledGlobalPruningConfig.density.globalPruning.cellSize = 0.0f;
+        disabledGlobalPruningConfig.density.globalPruning.relativeCellSize = 0.0f;
         const BuildResult result = builder.build(*navMesh, disabledGlobalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount == baseline.stats.candidates.acceptedLinkCount);
@@ -528,7 +528,7 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Enabled global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
         globalPruningConfig.density.globalPruning.enabled = true;
-        globalPruningConfig.density.globalPruning.cellSize = 10.0f;
+        globalPruningConfig.density.globalPruning.relativeCellSize = 2.0f;
         const BuildResult result = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount <= baseline.stats.candidates.acceptedLinkCount);
@@ -536,21 +536,21 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Stronger global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
         globalPruningConfig.density.globalPruning.enabled = true;
-        globalPruningConfig.density.globalPruning.cellSize = 10.0f;
+        globalPruningConfig.density.globalPruning.relativeCellSize = 2.0f;
         const BuildResult globalPruningBuild = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(globalPruningBuild));
 
         BuildConfig strongerGlobalPruningConfig = buildConfig;
         strongerGlobalPruningConfig.density.globalPruning.enabled = true;
-        strongerGlobalPruningConfig.density.globalPruning.cellSize = 20.0f;
+        strongerGlobalPruningConfig.density.globalPruning.relativeCellSize = 4.0f;
         const BuildResult result = builder.build(*navMesh, strongerGlobalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount <= globalPruningBuild.stats.candidates.acceptedLinkCount);
     }
-    SUBCASE("Rejects negative global prune cell size") {
+    SUBCASE("Rejects negative global prune relative cell size") {
         BuildConfig invalidGlobalPruningConfig;
         invalidGlobalPruningConfig.density.globalPruning.enabled = true;
-        invalidGlobalPruningConfig.density.globalPruning.cellSize = -0.01f;
+        invalidGlobalPruningConfig.density.globalPruning.relativeCellSize = -0.01f;
         CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Disabled spanner pruning preserves baseline") {

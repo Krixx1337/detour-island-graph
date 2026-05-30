@@ -237,7 +237,7 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(config.gapDiscovery.maxVerticalGapDown) && config.gapDiscovery.maxVerticalGapDown >= 0.0f &&
         (!config.boundaries.deduplicationEnabled ||
             (std::isfinite(config.boundaries.deduplicationCellSize) &&
-             config.boundaries.deduplicationCellSize > 0.0f)) &&
+             config.boundaries.deduplicationCellSize >= 0.0f)) &&
         config.query.maxNodes > 0 &&
         config.query.maxNearbyPolygons > 0 &&
         std::isfinite(massAware.normalizationPercentile) &&
@@ -251,20 +251,20 @@ bool validate(const BuildConfig& config, std::string& message) {
         massAware.highMassPruneRadiusScale > 0.0f &&
         (!density.candidateDeduplication.enabled ||
             (std::isfinite(density.candidateDeduplication.cellSizeNear) &&
-             density.candidateDeduplication.cellSizeNear > 0.0f &&
+             density.candidateDeduplication.cellSizeNear >= 0.0f &&
              std::isfinite(density.candidateDeduplication.cellSizeFar) &&
-             density.candidateDeduplication.cellSizeFar > 0.0f)) &&
+             density.candidateDeduplication.cellSizeFar >= 0.0f)) &&
         (!density.localPruning.enabled ||
             (std::isfinite(density.localPruning.baseRadius) &&
-             density.localPruning.baseRadius > 0.0f &&
+             density.localPruning.baseRadius >= 0.0f &&
              (!density.localPruning.enableDistanceScaling ||
                 (std::isfinite(density.localPruning.distanceScale) &&
                  density.localPruning.distanceScale >= 0.0f &&
                  std::isfinite(density.localPruning.maxRadiusScale) &&
                  density.localPruning.maxRadiusScale >= 1.0f)))) &&
         (!density.globalPruning.enabled ||
-            (std::isfinite(density.globalPruning.cellSize) &&
-             density.globalPruning.cellSize > 0.0f)) &&
+            (std::isfinite(density.globalPruning.relativeCellSize) &&
+             density.globalPruning.relativeCellSize > 0.0f)) &&
         (!density.spannerPruning.enabled ||
             (std::isfinite(density.spannerPruning.pathRatio) &&
              density.spannerPruning.pathRatio >= 1.0f &&
@@ -421,7 +421,8 @@ std::vector<Boundary> extractBoundaries(
                 const Vec3 direction{end.x - start.x, end.y - start.y, end.z - start.z};
                 const Boundary boundary{island.id, reference, start, end, midpoint};
                 if (config.boundaries.deduplicationEnabled) {
-                    const float cell = config.boundaries.deduplicationCellSize;
+                    const float cell = config.boundaries.effectiveDeduplicationCellSize(
+                        config.gapDiscovery.maxHorizontalGap);
                     const BoundaryKey key{
                         island.id,
                         quantize(midpoint.x, cell),
@@ -491,7 +492,7 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
     if (config.density.localPruning.enableDistanceScaling) {
         scale *= config.density.localPruning.pruneRadiusScaleFor(link.horizontalDistance);
     }
-    return config.density.localPruning.baseRadius * scale;
+    return config.density.localPruning.effectiveBaseRadius(config.gapDiscovery.maxHorizontalGap) * scale;
 }
 
 bool hasAcceptableIndirectRoute(
@@ -649,15 +650,16 @@ BuildStatus discoverLinks(
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
         if (config.density.globalPruning.enabled) {
+            const float cellSize = config.density.globalPruning.cellSizeFor(candidate.horizontalDistance);
             const GlobalCellKey startCell{
-                quantize(candidate.start.x, config.density.globalPruning.cellSize),
-                quantize(candidate.start.y, config.density.globalPruning.cellSize),
-                quantize(candidate.start.z, config.density.globalPruning.cellSize)
+                quantize(candidate.start.x, cellSize),
+                quantize(candidate.start.y, cellSize),
+                quantize(candidate.start.z, cellSize)
             };
             const GlobalCellKey endCell{
-                quantize(candidate.end.x, config.density.globalPruning.cellSize),
-                quantize(candidate.end.y, config.density.globalPruning.cellSize),
-                quantize(candidate.end.z, config.density.globalPruning.cellSize)
+                quantize(candidate.end.x, cellSize),
+                quantize(candidate.end.y, cellSize),
+                quantize(candidate.end.z, cellSize)
             };
             if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
                 continue;
@@ -691,15 +693,16 @@ BuildStatus discoverLinks(
             ++stats.candidates.acceptedLinkCount;
 
             if (config.density.globalPruning.enabled) {
+                const float cellSize = config.density.globalPruning.cellSizeFor(candidate.horizontalDistance);
                 const GlobalCellKey startCell{
-                    quantize(candidate.start.x, config.density.globalPruning.cellSize),
-                    quantize(candidate.start.y, config.density.globalPruning.cellSize),
-                    quantize(candidate.start.z, config.density.globalPruning.cellSize)
+                    quantize(candidate.start.x, cellSize),
+                    quantize(candidate.start.y, cellSize),
+                    quantize(candidate.start.z, cellSize)
                 };
                 const GlobalCellKey endCell{
-                    quantize(candidate.end.x, config.density.globalPruning.cellSize),
-                    quantize(candidate.end.y, config.density.globalPruning.cellSize),
-                    quantize(candidate.end.z, config.density.globalPruning.cellSize)
+                    quantize(candidate.end.x, cellSize),
+                    quantize(candidate.end.y, cellSize),
+                    quantize(candidate.end.z, cellSize)
                 };
                 occupiedGlobalCells.insert(startCell);
                 occupiedGlobalCells.insert(endCell);
