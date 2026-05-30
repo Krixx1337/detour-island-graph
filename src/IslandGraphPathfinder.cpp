@@ -56,6 +56,7 @@ PathResult IslandGraphPathfinder::findPath(
         return result;
     }
 
+    const bool useEuclideanHeuristic = !linkCost;
     if (!linkCost) {
         linkCost = [](const Link& link) {
             return detail::distance(link.start, link.end);
@@ -91,7 +92,7 @@ PathResult IslandGraphPathfinder::findPath(
             continue;
         }
         const float gCost = detail::distance(startPosition, link.start) + gapCost;
-        const float hCost = detail::distance(link.end, endPosition);
+        const float hCost = useEuclideanHeuristic ? detail::distance(link.end, endPosition) : 0.0f;
         states[portalIndex].cost = gCost;
         open.push({portalIndex, gCost, gCost + hCost});
     }
@@ -138,7 +139,7 @@ PathResult IslandGraphPathfinder::findPath(
             }
             nextState.cost = gCost;
             nextState.previousPortal = currentEntry.portal;
-            const float hCost = detail::distance(nextLink.end, endPosition);
+            const float hCost = useEuclideanHeuristic ? detail::distance(nextLink.end, endPosition) : 0.0f;
             open.push({nextPortalIndex, gCost, gCost + hCost});
         }
     }

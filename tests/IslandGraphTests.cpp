@@ -283,6 +283,25 @@ TEST_CASE("Pathfinder edge cases") {
     CHECK(pathfinder.findPath(routeGraph, 0, 9, {}, {}).status == PathStatus::InvalidIsland);
 }
 
+TEST_CASE("Pathfinder custom costs use an admissible search order") {
+    const Link expensiveHop{0, 2, {}, {}, 10.0f, 0.0f};
+    const Link cheapHop{0, 1, {}, {100.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    const Link bridge{1, 2, {100.0f, 0.0f, 0.0f}, {}, 1.0f, 0.0f};
+    const Link goal{2, 3, {}, {}, 1.0f, 0.0f};
+    IslandGraph routeGraph({
+        makeIsland(0, {}, {expensiveHop, cheapHop}),
+        makeIsland(1, {}, {bridge}),
+        makeIsland(2, {}, {goal}),
+        makeIsland(3)});
+    const IslandGraphPathfinder pathfinder;
+    const PathResult path = pathfinder.findPath(
+        routeGraph, 0, 3, {}, {},
+        [](const Link& link) { return link.horizontalDistance; });
+    REQUIRE(path.status == PathStatus::Success);
+    CHECK(path.links.size() == 3);
+    CHECK(path.totalCost == 3.0f);
+}
+
 TEST_CASE("Builder with disconnected navmesh") {
     const auto navMesh = buildDisconnectedNavMesh();
     BuildConfig buildConfig;
@@ -612,5 +631,17 @@ TEST_CASE("Serializer") {
         bytes[7] = 0;
         std::stringstream unsupported(bytes, std::ios::in | std::ios::binary);
         CHECK(IslandGraphSerializer::read(unsupported).status == SerializationStatus::UnsupportedVersion);
+    }
+    SUBCASE("Rejects payloads that exceed the aggregate allocation budget") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        std::string bytes = serialized.str();
+        REQUIRE(bytes.size() > 59);
+        bytes[56] = 0;
+        bytes[57] = 0;
+        bytes[58] = static_cast<char>(0xf4);
+        bytes[59] = 0;
+        std::stringstream oversized(bytes, std::ios::in | std::ios::binary);
+        CHECK(IslandGraphSerializer::read(oversized).status == SerializationStatus::MalformedData);
     }
 }

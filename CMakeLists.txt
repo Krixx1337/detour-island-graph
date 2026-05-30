@@ -106,6 +106,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
     enable_testing()
 
     include(FetchContent)
+    set(DOCTEST_NO_INSTALL ON CACHE BOOL "Do not install doctest with DetourIslandGraph" FORCE)
     FetchContent_Declare(
         doctest
         GIT_REPOSITORY https://github.com/doctest/doctest.git

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <istream>
 #include <limits>
+#include <new>
 #include <ostream>
 #include <type_traits>
 #include <unordered_map>
@@ -15,6 +16,15 @@ namespace {
 
 constexpr std::uint32_t MaxIslandCount = 1'000'000U;
 constexpr std::uint32_t MaxElementsPerVector = 16'000'000U;
+constexpr std::size_t MaxDeserializedAllocationBytes = 256U * 1024U * 1024U;
+
+bool consumeAllocationBudget(std::size_t& remainingBytes, std::size_t count, std::size_t elementBytes) {
+    if (elementBytes != 0 && count > remainingBytes / elementBytes) {
+        return false;
+    }
+    remainingBytes -= count * elementBytes;
+    return true;
+}
 
 template <typename T>
 bool writeUnsigned(std::ostream& stream, T value) {
@@ -158,54 +168,67 @@ SerializationResult IslandGraphSerializer::read(std::istream& stream) {
     if (!readCount(stream, MaxIslandCount, islandCount)) {
         return malformed("Serialized graph island count is invalid.");
     }
-    std::vector<Island> islands(islandCount);
-    std::unordered_map<dtPolyRef, IslandId> polygonOwners;
-    for (std::uint32_t islandIndex = 0; islandIndex < islandCount; ++islandIndex) {
-        Island& island = islands[islandIndex];
-        if (!readUnsigned(stream, island.id) ||
-            island.id != islandIndex ||
-            !readVec3(stream, island.center) ||
-            !readVec3(stream, island.boundsMin) ||
-            !readVec3(stream, island.boundsMax) ||
-            !readFloat(stream, island.massScore) ||
-            !std::isfinite(island.massScore) ||
-            island.massScore < 0.0f ||
-            island.massScore > 1.0f) {
-            return malformed("Serialized island data is invalid.");
-        }
-
-        std::uint32_t polygonCount = 0;
-        if (!readCount(stream, MaxElementsPerVector, polygonCount)) {
-            return malformed("Serialized polygon count is invalid.");
-        }
-        island.polygons.resize(polygonCount);
-        for (dtPolyRef& polygon : island.polygons) {
-            std::uint64_t serializedPolygon = 0;
-            if (!readUnsigned(stream, serializedPolygon) ||
-                serializedPolygon > static_cast<std::uint64_t>((std::numeric_limits<dtPolyRef>::max)())) {
-                return malformed("Serialized polygon reference is invalid.");
-            }
-            polygon = static_cast<dtPolyRef>(serializedPolygon);
-            if (!polygonOwners.emplace(polygon, island.id).second) {
-                return malformed("Serialized polygon reference belongs to multiple islands.");
-            }
-        }
-
-        std::uint32_t linkCount = 0;
-        if (!readCount(stream, MaxElementsPerVector, linkCount)) {
-            return malformed("Serialized link count is invalid.");
-        }
-        island.outgoingLinks.resize(linkCount);
-        for (Link& link : island.outgoingLinks) {
-            if (!readLink(stream, link) || link.fromIsland != island.id || link.toIsland >= islandCount) {
-                return malformed("Serialized link data is invalid.");
-            }
-        }
+    std::size_t remainingAllocationBytes = MaxDeserializedAllocationBytes;
+    if (!consumeAllocationBudget(remainingAllocationBytes, islandCount, sizeof(Island))) {
+        return malformed("Serialized graph exceeds the allocation budget.");
     }
 
-    SerializationResult result;
-    result.graph = IslandGraph(std::move(islands));
-    return result;
+    try {
+        std::vector<Island> islands(islandCount);
+        std::unordered_map<dtPolyRef, IslandId> polygonOwners;
+        for (std::uint32_t islandIndex = 0; islandIndex < islandCount; ++islandIndex) {
+            Island& island = islands[islandIndex];
+            if (!readUnsigned(stream, island.id) ||
+                island.id != islandIndex ||
+                !readVec3(stream, island.center) ||
+                !readVec3(stream, island.boundsMin) ||
+                !readVec3(stream, island.boundsMax) ||
+                !readFloat(stream, island.massScore) ||
+                !std::isfinite(island.massScore) ||
+                island.massScore < 0.0f ||
+                island.massScore > 1.0f) {
+                return malformed("Serialized island data is invalid.");
+            }
+
+            std::uint32_t polygonCount = 0;
+            constexpr std::size_t polygonAllocationEstimate =
+                sizeof(dtPolyRef) + sizeof(std::pair<const dtPolyRef, IslandId>) + (2 * sizeof(void*));
+            if (!readCount(stream, MaxElementsPerVector, polygonCount) ||
+                !consumeAllocationBudget(remainingAllocationBytes, polygonCount, polygonAllocationEstimate)) {
+                return malformed("Serialized polygon count exceeds the allocation budget.");
+            }
+            island.polygons.resize(polygonCount);
+            for (dtPolyRef& polygon : island.polygons) {
+                std::uint64_t serializedPolygon = 0;
+                if (!readUnsigned(stream, serializedPolygon) ||
+                    serializedPolygon > static_cast<std::uint64_t>((std::numeric_limits<dtPolyRef>::max)())) {
+                    return malformed("Serialized polygon reference is invalid.");
+                }
+                polygon = static_cast<dtPolyRef>(serializedPolygon);
+                if (!polygonOwners.emplace(polygon, island.id).second) {
+                    return malformed("Serialized polygon reference belongs to multiple islands.");
+                }
+            }
+
+            std::uint32_t linkCount = 0;
+            if (!readCount(stream, MaxElementsPerVector, linkCount) ||
+                !consumeAllocationBudget(remainingAllocationBytes, linkCount, sizeof(Link))) {
+                return malformed("Serialized link count exceeds the allocation budget.");
+            }
+            island.outgoingLinks.resize(linkCount);
+            for (Link& link : island.outgoingLinks) {
+                if (!readLink(stream, link) || link.fromIsland != island.id || link.toIsland >= islandCount) {
+                    return malformed("Serialized link data is invalid.");
+                }
+            }
+        }
+
+        SerializationResult result;
+        result.graph = IslandGraph(std::move(islands));
+        return result;
+    } catch (const std::bad_alloc&) {
+        return malformed("Serialized graph allocation failed.");
+    }
 }
 
 } // namespace detour_island_graph

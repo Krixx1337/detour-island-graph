@@ -112,6 +112,14 @@ target_link_libraries(your_target PRIVATE detour_island_graph::detour_island_gra
 
 By default, standalone builds will automatically fetch pinned upstream Detour `v1.6.0` headers if not already available in your environment. You can compile the standalone test suite by configuring CMake with `-DDETOUR_ISLAND_GRAPH_BUILD_TESTS=ON`.
 
+For an installed package, define a `Detour` or `RecastNavigation::Detour` target before calling `find_package`:
+
+```cmake
+add_subdirectory(path/to/recastnavigation/Detour)
+find_package(detour_island_graph CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE detour_island_graph::detour_island_graph)
+```
+
 ---
 
 ## License
