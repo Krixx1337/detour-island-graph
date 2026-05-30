@@ -662,6 +662,7 @@ BuildStatus discoverLinks(
                 quantize(candidate.end.z, cellSize)
             };
             if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
+                ++stats.candidates.globalPruningRejectCount;
                 continue;
             }
         }
@@ -672,6 +673,7 @@ BuildStatus discoverLinks(
                     islands,
                     config.density.spannerPruning.pathRatio,
                     config.density.spannerPruning.verticalWeight)) {
+                ++stats.candidates.spannerPruningRejectCount;
                 continue;
             }
         }
@@ -686,6 +688,8 @@ BuildStatus discoverLinks(
             });
             if (!duplicate) {
                 accepted.push_back(candidate);
+            } else {
+                ++stats.candidates.localPruningRejectCount;
             }
         }
         if (!duplicate) {
@@ -737,6 +741,19 @@ BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfi
     result.stats.timings.massScoringMs = elapsedMilliseconds(massScoringStart);
 
     result.status = discoverLinks(navMesh, result.graph, config, result.stats, result.message);
+
+    double totalLinkLength = 0.0;
+    std::size_t totalLinks = 0;
+    for (const Island& island : result.graph.islands()) {
+        result.stats.maxOutgoingLinksOnIsland =
+            (std::max)(result.stats.maxOutgoingLinksOnIsland, island.outgoingLinks.size());
+        for (const Link& link : island.outgoingLinks) {
+            totalLinkLength += link.horizontalDistance;
+            ++totalLinks;
+        }
+    }
+    result.stats.averageLinkLength = totalLinks > 0 ? totalLinkLength / static_cast<double>(totalLinks) : 0.0;
+
     result.stats.timings.totalMs = elapsedMilliseconds(totalStart);
     return result;
 }

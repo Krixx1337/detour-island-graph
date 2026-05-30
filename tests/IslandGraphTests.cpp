@@ -582,6 +582,69 @@ TEST_CASE("Builder density tuning") {
     }
 }
 
+TEST_CASE("Builder pruning diagnostics") {
+    const auto navMesh = buildDisconnectedNavMesh();
+    BuildConfig buildConfig;
+    buildConfig.gapDiscovery.maxHorizontalGap = 3.0f;
+    buildConfig.gapDiscovery.maxVerticalGapUp = 2.0f;
+    buildConfig.gapDiscovery.maxVerticalGapDown = 4.0f;
+    buildConfig.boundaries.deduplicationCellSize = 0.5f;
+    buildConfig.density.localPruning.baseRadius = 0.5f;
+    const IslandGraphBuilder builder;
+    const BuildResult baseline = builder.build(*navMesh, buildConfig);
+    REQUIRE(static_cast<bool>(baseline));
+
+    SUBCASE("All reject counters are zero when pruning is disabled") {
+        BuildConfig disabledConfig = buildConfig;
+        disabledConfig.density.globalPruning.enabled = false;
+        disabledConfig.density.spannerPruning.enabled = false;
+        disabledConfig.density.localPruning.enabled = false;
+        const BuildResult result = builder.build(*navMesh, disabledConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.candidates.globalPruningRejectCount == 0);
+        CHECK(result.stats.candidates.spannerPruningRejectCount == 0);
+        CHECK(result.stats.candidates.localPruningRejectCount == 0);
+    }
+    SUBCASE("Pruning reject counts and accepted count sum to deduplicated count") {
+        BuildConfig allPruningConfig = buildConfig;
+        allPruningConfig.density.globalPruning.enabled = true;
+        allPruningConfig.density.globalPruning.relativeCellSize = 2.0f;
+        allPruningConfig.density.spannerPruning.enabled = true;
+        allPruningConfig.density.spannerPruning.pathRatio = 2.0f;
+        const BuildResult result = builder.build(*navMesh, allPruningConfig);
+        REQUIRE(static_cast<bool>(result));
+        const std::size_t totalProcessed =
+            result.stats.candidates.globalPruningRejectCount +
+            result.stats.candidates.spannerPruningRejectCount +
+            result.stats.candidates.localPruningRejectCount +
+            result.stats.candidates.acceptedLinkCount;
+        CHECK(totalProcessed == result.stats.candidates.deduplicatedCount);
+    }
+    SUBCASE("Stronger pruning increases reject counts") {
+        BuildConfig weakConfig = buildConfig;
+        weakConfig.density.globalPruning.enabled = true;
+        weakConfig.density.globalPruning.relativeCellSize = 1.0f;
+        weakConfig.density.localPruning.enabled = true;
+        weakConfig.density.localPruning.baseRadius = 2.0f;
+        const BuildResult weakResult = builder.build(*navMesh, weakConfig);
+        REQUIRE(static_cast<bool>(weakResult));
+
+        BuildConfig strongConfig = buildConfig;
+        strongConfig.density.globalPruning.enabled = true;
+        strongConfig.density.globalPruning.relativeCellSize = 4.0f;
+        strongConfig.density.localPruning.enabled = true;
+        strongConfig.density.localPruning.baseRadius = 10.0f;
+        const BuildResult strongResult = builder.build(*navMesh, strongConfig);
+        REQUIRE(static_cast<bool>(strongResult));
+        CHECK(strongResult.stats.candidates.globalPruningRejectCount >= weakResult.stats.candidates.globalPruningRejectCount);
+        CHECK(strongResult.stats.candidates.localPruningRejectCount >= weakResult.stats.candidates.localPruningRejectCount);
+    }
+    SUBCASE("Graph health metrics are populated") {
+        CHECK(baseline.stats.maxOutgoingLinksOnIsland > 0);
+        CHECK(baseline.stats.averageLinkLength > 0.0);
+    }
+}
+
 TEST_CASE("Builder mass-aware tuning") {
     const auto variedMassNavMesh = buildVariedMassNavMesh();
     const IslandGraphBuilder builder;

@@ -135,6 +135,9 @@ struct CandidateStats {
     std::size_t projectedCount = 0;
     std::size_t deduplicatedCount = 0;
     std::size_t acceptedLinkCount = 0;
+    std::size_t globalPruningRejectCount = 0;
+    std::size_t spannerPruningRejectCount = 0;
+    std::size_t localPruningRejectCount = 0;
 };
 
 struct BuildStats {
@@ -144,6 +147,8 @@ struct BuildStats {
     CandidateStats candidates;
     std::size_t islandCount = 0;
     std::size_t polygonCount = 0;
+    std::size_t maxOutgoingLinksOnIsland = 0;
+    double averageLinkLength = 0.0;
 };
 
 enum class BuildStatus {
