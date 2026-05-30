@@ -1,5 +1,6 @@
 #include <detour_island_graph/IslandGraph.h>
 
+#include <cassert>
 #include <utility>
 
 namespace detour_island_graph {
@@ -17,6 +18,10 @@ const std::vector<Island>& IslandGraph::islands() const noexcept {
     return m_islands;
 }
 
+std::vector<Island>& IslandGraph::mutableIslands() noexcept {
+    return m_islands;
+}
+
 const Island* IslandGraph::findIsland(IslandId id) const noexcept {
     if (id >= m_islands.size() || m_islands[id].id != id) {
         return nullptr;
@@ -30,6 +35,17 @@ std::optional<IslandId> IslandGraph::findIslandForPolygon(dtPolyRef polygon) con
         return std::nullopt;
     }
     return it->second;
+}
+
+void IslandGraph::addLink(IslandId from, const Link& link) {
+    assert(from < m_islands.size());
+    assert(link.fromIsland == from);
+    m_islands[from].outgoingLinks.push_back(link);
+}
+
+void IslandGraph::clearLinks(IslandId island) {
+    assert(island < m_islands.size());
+    m_islands[island].outgoingLinks.clear();
 }
 
 void IslandGraph::rebuildPolygonLookup() {

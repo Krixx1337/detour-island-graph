@@ -24,10 +24,11 @@ struct State {
 
 struct OpenEntry {
     std::size_t portal = 0;
-    float cost = 0.0f;
+    float gCost = 0.0f; // true accumulated cost (for stale entry check)
+    float fCost = 0.0f; // f = g + h (used ONLY for queue sorting)
 
     bool operator<(const OpenEntry& other) const {
-        return cost > other.cost;
+        return fCost > other.fCost; // min-heap based on fCost
     }
 };
 
@@ -89,8 +90,10 @@ PathResult IslandGraphPathfinder::findPath(
         if (!isUsableCost(gapCost)) {
             continue;
         }
-        states[portalIndex].cost = detail::distance(startPosition, link.start) + gapCost;
-        open.push({portalIndex, states[portalIndex].cost});
+        const float gCost = detail::distance(startPosition, link.start) + gapCost;
+        const float hCost = detail::distance(link.end, endPosition);
+        states[portalIndex].cost = gCost;
+        open.push({portalIndex, gCost, gCost + hCost});
     }
 
     std::size_t bestGoalPortal = (std::numeric_limits<std::size_t>::max)();
@@ -99,7 +102,7 @@ PathResult IslandGraphPathfinder::findPath(
         const OpenEntry currentEntry = open.top();
         open.pop();
         State& currentState = states[currentEntry.portal];
-        if (currentState.closed || currentEntry.cost != currentState.cost) {
+        if (currentState.closed || currentEntry.gCost != currentState.cost) {
             continue;
         }
         currentState.closed = true;
@@ -125,17 +128,18 @@ PathResult IslandGraphPathfinder::findPath(
             if (!isUsableCost(gapCost)) {
                 continue;
             }
-            const float nextCost =
+            const float gCost =
                 currentState.cost +
                 detail::distance(currentLink.end, nextLink.start) +
                 gapCost;
             State& nextState = states[nextPortalIndex];
-            if (nextCost >= nextState.cost) {
+            if (gCost >= nextState.cost) {
                 continue;
             }
-            nextState.cost = nextCost;
+            nextState.cost = gCost;
             nextState.previousPortal = currentEntry.portal;
-            open.push({nextPortalIndex, nextCost});
+            const float hCost = detail::distance(nextLink.end, endPosition);
+            open.push({nextPortalIndex, gCost, gCost + hCost});
         }
     }
 
