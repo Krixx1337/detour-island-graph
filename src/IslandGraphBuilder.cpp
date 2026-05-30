@@ -253,7 +253,8 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(density.maxRadiusScale) &&
         density.maxRadiusScale >= 1.0f &&
         std::isfinite(density.globalPruneCellSize) &&
-        density.globalPruneCellSize >= 0.0f;
+        density.globalPruneCellSize >= 0.0f &&
+        (!density.enableSpannerPruning || (std::isfinite(density.spannerPathRatio) && density.spannerPathRatio >= 1.0f));
     if (!valid) {
         message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
     }
@@ -472,6 +473,40 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
     return config.linkDeduplicationCellSize * scale;
 }
 
+bool hasAcceptableIndirectRoute(
+    const Link& candidate,
+    const std::vector<Island>& islands,
+    float pathRatio) {
+    const auto& outgoing = islands[candidate.fromIsland].outgoingLinks;
+    const float candidateDist = detail::distance(candidate.start, candidate.end);
+
+    for (const Link& firstHop : outgoing) {
+        if (firstHop.toIsland == candidate.toIsland) {
+            continue;
+        }
+
+        const auto& secondOutgoing = islands[firstHop.toIsland].outgoingLinks;
+        float bestSecondHopDist = (std::numeric_limits<float>::max)();
+        for (const Link& secondHop : secondOutgoing) {
+            if (secondHop.toIsland == candidate.toIsland) {
+                const float dist = detail::distance(secondHop.start, secondHop.end);
+                if (dist < bestSecondHopDist) {
+                    bestSecondHopDist = dist;
+                }
+            }
+        }
+
+        if (bestSecondHopDist != (std::numeric_limits<float>::max)()) {
+            const float firstHopDist = detail::distance(firstHop.start, firstHop.end);
+            const float indirectDist = firstHopDist + bestSecondHopDist;
+            if (indirectDist <= candidateDist * pathRatio) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 BuildStatus discoverLinks(
     const dtNavMesh& navMesh,
     IslandGraph& graph,
@@ -586,6 +621,12 @@ BuildStatus discoverLinks(
                 quantize(candidate.end.z, config.density.globalPruneCellSize)
             };
             if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
+                continue;
+            }
+        }
+
+        if (config.density.enabled && config.density.enableSpannerPruning) {
+            if (hasAcceptableIndirectRoute(candidate, islands, config.density.spannerPathRatio)) {
                 continue;
             }
         }

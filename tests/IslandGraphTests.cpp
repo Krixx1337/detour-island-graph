@@ -429,6 +429,33 @@ int main() {
         builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration,
         "builder should reject negative global prune cell size");
 
+    BuildConfig disabledSpannerConfig = buildConfig;
+    disabledSpannerConfig.density.enabled = true;
+    disabledSpannerConfig.density.enableSpannerPruning = false;
+    const BuildResult disabledSpannerBuild = builder.build(*navMesh, disabledSpannerConfig);
+    require(static_cast<bool>(disabledSpannerBuild), "disabled spanner pruning should remain valid");
+    require(
+        disabledSpannerBuild.stats.acceptedLinkCount == buildResult.stats.acceptedLinkCount,
+        "disabled spanner pruning should preserve baseline accepted links");
+
+    BuildConfig spannerConfig = buildConfig;
+    spannerConfig.density.enabled = true;
+    spannerConfig.density.enableSpannerPruning = true;
+    spannerConfig.density.spannerPathRatio = 2.0f;
+    const BuildResult spannerBuild = builder.build(*navMesh, spannerConfig);
+    require(static_cast<bool>(spannerBuild), "spanner pruning builder should process valid configuration");
+    require(
+        spannerBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
+        "enabling spanner pruning should not increase accepted links");
+
+    BuildConfig invalidSpannerConfig;
+    invalidSpannerConfig.density.enabled = true;
+    invalidSpannerConfig.density.enableSpannerPruning = true;
+    invalidSpannerConfig.density.spannerPathRatio = 0.99f;
+    require(
+        builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration,
+        "builder should reject spanner path ratio below one");
+
     const auto variedMassNavMesh = buildVariedMassNavMesh();
     const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
     require(static_cast<bool>(geometricMassBuild), "baseline builder should process varied island mass");

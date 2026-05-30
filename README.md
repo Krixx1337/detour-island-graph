@@ -93,6 +93,8 @@ If your game has large continents, coastlines, or long cliffs, you can enable `d
 
 *   `density.distanceScale` (default `0.0f`): Controls how quickly the pruning radius grows with link distance (longer jumps prune more local variants).
 *   `density.globalPruneCellSize` (default `0.0f`): A 3D spatial occupancy grid size. When set to `> 0.0f` (e.g., `12.0f`), only one link start or end point is allowed to occupy each grid cell globally, keeping your graph sparse and performant.
+*   `density.enableSpannerPruning` (default `false`): Enables optional **t-Spanner pruning** (path-shortcut pruning) to discard direct jump links when a multi-hop alternative route with close cost already exists through accepted links.
+*   `density.spannerPathRatio` (default `1.5f`): The path ratio threshold for spanner pruning (e.g., discard direct link $A \to C$ if indirect path cost $A \to B \to C$ is $\le 1.5\times$ the direct cost).
 
 ### Mass-Aware Tuning
 Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances.
