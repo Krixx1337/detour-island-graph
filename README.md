@@ -43,7 +43,7 @@ config.gapDiscovery.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls
 
 // Enable global density pruning to keep the graph clean & sparse
 config.density.globalPruning.enabled = true;
-config.density.globalPruning.cellSize = 12.0f; // 12-meter global occupancy grid
+config.density.globalPruning.relativeCellSize = 1.0f; // cellSize = horizontalDistance * 1.0f
 
 // 2. Build the graph
 detour_island_graph::IslandGraphBuilder builder;

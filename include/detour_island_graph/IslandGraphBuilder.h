@@ -66,7 +66,7 @@ struct GlobalPruningTuning {
     float relativeCellSize = 1.0f;
 
     float cellSizeFor(float horizontalDistance) const noexcept {
-        return horizontalDistance * std::max(relativeCellSize, 0.0f);
+        return horizontalDistance * (std::max)(relativeCellSize, 0.0f);
     }
 };
 
