@@ -84,6 +84,8 @@ if (path.status == detour_island_graph::PathStatus::Success) {
 }
 ```
 
+The default geometric link cost uses A* search with a Euclidean heuristic. Supplying a custom `LinkCost` callback automatically switches to Dijkstra ordering, preserving optimal routes for arbitrary non-negative custom costs at the expense of potentially exploring more portals.
+
 ---
 
 ## Advanced Configuration
