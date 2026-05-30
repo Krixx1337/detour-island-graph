@@ -1,3 +1,6 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
 #include <detour_island_graph/IslandGraph.h>
 #include <detour_island_graph/IslandGraphBuilder.h>
 #include <detour_island_graph/IslandGraphPathfinder.h>
@@ -8,21 +11,12 @@
 
 #include <cmath>
 #include <cstring>
-#include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <sstream>
 #include <utility>
 #include <vector>
 
 namespace {
-
-void require(bool condition, const char* message) {
-    if (!condition) {
-        std::cerr << "FAILED: " << message << '\n';
-        std::exit(EXIT_FAILURE);
-    }
-}
 
 struct NavMeshDeleter {
     void operator()(dtNavMesh* navMesh) const {
@@ -66,13 +60,11 @@ std::unique_ptr<dtNavMesh, NavMeshDeleter> buildDisconnectedNavMesh() {
 
     unsigned char* data = nullptr;
     int dataSize = 0;
-    require(dtCreateNavMeshData(&params, &data, &dataSize), "synthetic navmesh tile should build");
+    REQUIRE(dtCreateNavMeshData(&params, &data, &dataSize));
 
     std::unique_ptr<dtNavMesh, NavMeshDeleter> navMesh(dtAllocNavMesh());
-    require(navMesh != nullptr, "synthetic navmesh allocation should succeed");
-    require(
-        dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)),
-        "synthetic navmesh initialization should succeed");
+    REQUIRE(navMesh != nullptr);
+    REQUIRE(dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)));
     return navMesh;
 }
 
@@ -110,13 +102,11 @@ std::unique_ptr<dtNavMesh, NavMeshDeleter> buildVariedMassNavMesh() {
 
     unsigned char* data = nullptr;
     int dataSize = 0;
-    require(dtCreateNavMeshData(&params, &data, &dataSize), "varied-mass navmesh tile should build");
+    REQUIRE(dtCreateNavMeshData(&params, &data, &dataSize));
 
     std::unique_ptr<dtNavMesh, NavMeshDeleter> navMesh(dtAllocNavMesh());
-    require(navMesh != nullptr, "varied-mass navmesh allocation should succeed");
-    require(
-        dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)),
-        "varied-mass navmesh initialization should succeed");
+    REQUIRE(navMesh != nullptr);
+    REQUIRE(dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)));
     return navMesh;
 }
 
@@ -152,7 +142,7 @@ unsigned char* buildTileData(int tileX, unsigned short portalEdge, unsigned shor
     params.buildBvTree = true;
 
     unsigned char* data = nullptr;
-    require(dtCreateNavMeshData(&params, &data, &dataSize), "synthetic tiled navmesh tile should build");
+    REQUIRE(dtCreateNavMeshData(&params, &data, &dataSize));
     return data;
 }
 
@@ -165,19 +155,16 @@ std::unique_ptr<dtNavMesh, NavMeshDeleter> buildAdjacentTiledNavMesh() {
     params.maxPolys = 1;
 
     std::unique_ptr<dtNavMesh, NavMeshDeleter> navMesh(dtAllocNavMesh());
-    require(navMesh != nullptr, "synthetic tiled navmesh allocation should succeed");
-    require(dtStatusSucceed(navMesh->init(&params)), "synthetic tiled navmesh initialization should succeed");
+    REQUIRE(navMesh != nullptr);
+    REQUIRE(dtStatusSucceed(navMesh->init(&params)));
 
     int firstSize = 0;
     unsigned char* first = buildTileData(0, 1, 2, firstSize);
-    require(
-        dtStatusSucceed(navMesh->addTile(first, firstSize, DT_TILE_FREE_DATA, 0, nullptr)),
-        "first synthetic navmesh tile should attach");
+    REQUIRE(dtStatusSucceed(navMesh->addTile(first, firstSize, DT_TILE_FREE_DATA, 0, nullptr)));
+
     int secondSize = 0;
     unsigned char* second = buildTileData(1, 3, 0, secondSize);
-    require(
-        dtStatusSucceed(navMesh->addTile(second, secondSize, DT_TILE_FREE_DATA, 0, nullptr)),
-        "second synthetic navmesh tile should attach");
+    REQUIRE(dtStatusSucceed(navMesh->addTile(second, secondSize, DT_TILE_FREE_DATA, 0, nullptr)));
     return navMesh;
 }
 
@@ -221,32 +208,38 @@ detour_island_graph::Island makeIsland(
 
 } // namespace
 
-int main() {
-    using namespace detour_island_graph;
+using namespace detour_island_graph;
 
+TEST_CASE("Empty graph initialization") {
     IslandGraph emptyGraph;
-    require(emptyGraph.empty(), "new graph should be empty");
-    require(emptyGraph.findIsland(0) == nullptr, "empty graph should not resolve an island");
-    require(!emptyGraph.findIslandForPolygon(42).has_value(), "unknown polygon should not resolve");
+    CHECK(emptyGraph.empty());
+    CHECK(emptyGraph.findIsland(0) == nullptr);
+    CHECK(!emptyGraph.findIslandForPolygon(42).has_value());
+}
 
+TEST_CASE("Graph with valid island") {
     IslandGraph graph({makeIsland(0, {42, 43})});
+    CHECK_FALSE(graph.empty());
+    REQUIRE(graph.findIsland(0) != nullptr);
+    CHECK(graph.findIsland(0)->polygons.size() == 2);
+    CHECK(graph.findIsland(1) == nullptr);
+    CHECK(graph.findIslandForPolygon(42) == 0);
+    CHECK(!graph.findIslandForPolygon(99).has_value());
+}
 
-    require(!graph.empty(), "graph with an island should not be empty");
-    require(graph.findIsland(0) != nullptr, "known island should resolve");
-    require(graph.findIsland(0)->polygons.size() == 2, "resolved island should preserve polygons");
-    require(graph.findIsland(1) == nullptr, "out-of-range island should not resolve");
-    require(graph.findIslandForPolygon(42) == 0, "known polygon should resolve");
-    require(!graph.findIslandForPolygon(99).has_value(), "unknown polygon should remain unresolved");
-
+TEST_CASE("Graph rejects inconsistent island identifiers") {
     IslandGraph inconsistentGraph({makeIsland(7, {42})});
-    require(inconsistentGraph.findIsland(0) == nullptr, "graph should reject inconsistent island identifiers");
+    CHECK(inconsistentGraph.findIsland(0) == nullptr);
+}
 
+TEST_CASE("Default config and path result") {
     const BuildConfig defaultConfig;
-    require(defaultConfig.maxHorizontalGap > 0.0f, "default config should allow geometric discovery");
-
+    CHECK(defaultConfig.maxHorizontalGap > 0.0f);
     const PathResult defaultPathResult;
-    require(defaultPathResult.status == PathStatus::NoPath, "default path result should report no path");
+    CHECK(defaultPathResult.status == PathStatus::NoPath);
+}
 
+TEST_CASE("Pathfinder basic routing") {
     const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
     const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
     const Link secondHop{1, 2, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
@@ -256,32 +249,41 @@ int main() {
         makeIsland(2)});
     const IslandGraphPathfinder pathfinder;
     const PathResult path = pathfinder.findPath(
-        routeGraph,
-        0,
-        2,
-        {0.0f, 0.0f, 0.0f},
-        {3.0f, 0.0f, 0.0f});
-    require(path.status == PathStatus::Success, "pathfinder should produce a route");
-    require(path.links.size() == 2, "pathfinder should include within-island approach distance");
-    require(path.totalCost == 3.0f, "pathfinder should report total route cost");
+        routeGraph, 0, 2, {0.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f});
+    REQUIRE(path.status == PathStatus::Success);
+    CHECK(path.links.size() == 2);
+    CHECK(path.totalCost == 3.0f);
+}
 
+TEST_CASE("Pathfinder filtered path") {
+    const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
+    const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    const Link secondHop{1, 2, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    IslandGraph routeGraph({
+        makeIsland(0, {}, {direct, firstHop}),
+        makeIsland(1, {}, {secondHop}),
+        makeIsland(2)});
+    const IslandGraphPathfinder pathfinder;
     const PathResult filteredPath = pathfinder.findPath(
-        routeGraph,
-        0,
-        2,
-        {0.0f, 0.0f, 0.0f},
-        {3.0f, 0.0f, 0.0f},
-        {},
+        routeGraph, 0, 2, {0.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, {},
         [](const Link& link) { return link.toIsland != 1; });
-    require(filteredPath.links.size() == 1, "path filter should remove disallowed links");
+    CHECK(filteredPath.links.size() == 1);
+}
 
-    require(
-        pathfinder.findPath(routeGraph, 0, 0, {}, {}).status == PathStatus::SameIsland,
-        "same-island query should be explicit");
-    require(
-        pathfinder.findPath(routeGraph, 0, 9, {}, {}).status == PathStatus::InvalidIsland,
-        "invalid island query should be explicit");
+TEST_CASE("Pathfinder edge cases") {
+    const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
+    const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    const Link secondHop{1, 2, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    IslandGraph routeGraph({
+        makeIsland(0, {}, {direct, firstHop}),
+        makeIsland(1, {}, {secondHop}),
+        makeIsland(2)});
+    const IslandGraphPathfinder pathfinder;
+    CHECK(pathfinder.findPath(routeGraph, 0, 0, {}, {}).status == PathStatus::SameIsland);
+    CHECK(pathfinder.findPath(routeGraph, 0, 9, {}, {}).status == PathStatus::InvalidIsland);
+}
 
+TEST_CASE("Builder with disconnected navmesh") {
     const auto navMesh = buildDisconnectedNavMesh();
     BuildConfig buildConfig;
     buildConfig.maxHorizontalGap = 3.0f;
@@ -291,255 +293,324 @@ int main() {
     buildConfig.linkDeduplicationCellSize = 0.5f;
     const IslandGraphBuilder builder;
     const BuildResult buildResult = builder.build(*navMesh, buildConfig);
-    require(static_cast<bool>(buildResult), "builder should process a valid synthetic navmesh");
-    require(buildResult.graph.islands().size() == 3, "flood fill should preserve disconnected islands");
-    require(buildResult.stats.islandCount == 3, "stats should report island count");
-    require(buildResult.stats.polygonCount == 3, "stats should report polygon count");
-    require(buildResult.stats.rawBoundaryCount == 12, "stats should report raw boundary count");
-    require(
-        buildResult.stats.deduplicatedBoundaryCount <= buildResult.stats.rawBoundaryCount,
-        "boundary deduplication stats should be ordered");
-    require(
-        buildResult.stats.spatialQueryCount == buildResult.stats.deduplicatedBoundaryCount,
-        "stats should report one spatial query per retained boundary");
-    require(
-        buildResult.stats.deduplicatedCandidateCount <= buildResult.stats.projectedCandidateCount,
-        "candidate deduplication stats should be ordered");
-    require(buildResult.stats.acceptedLinkCount > 0, "stats should report accepted links");
-    require(buildResult.stats.totalBuildMs >= 0.0, "stats should report total build timing");
-    require(buildResult.stats.floodFillMs >= 0.0, "stats should report flood-fill timing");
-    require(buildResult.stats.massScoringMs >= 0.0, "stats should report mass-scoring timing");
-    require(buildResult.stats.boundaryExtractionMs >= 0.0, "stats should report boundary timing");
-    require(buildResult.stats.linkDiscoveryMs >= 0.0, "stats should report discovery timing");
-    require(buildResult.stats.pruningMs >= 0.0, "stats should report pruning timing");
-    require(hasLink(buildResult.graph, 0, 1), "builder should discover the first forward gap");
-    require(hasLink(buildResult.graph, 1, 0), "builder should discover the first reverse gap");
-    require(!hasLink(buildResult.graph, 1, 2), "upward gap should obey upward limit");
-    require(hasLink(buildResult.graph, 2, 1), "downward gap should obey downward limit");
-    for (const Island& island : buildResult.graph.islands()) {
-        for (const Link& link : island.outgoingLinks) {
-            require(link.fromIsland != link.toIsland, "builder should reject same-island links");
+    REQUIRE(static_cast<bool>(buildResult));
+
+    SUBCASE("Flood fill preserves disconnected islands") {
+        CHECK(buildResult.graph.islands().size() == 3);
+    }
+    SUBCASE("Stats report counts") {
+        CHECK(buildResult.stats.islandCount == 3);
+        CHECK(buildResult.stats.polygonCount == 3);
+        CHECK(buildResult.stats.rawBoundaryCount == 12);
+    }
+    SUBCASE("Boundary deduplication stats are ordered") {
+        CHECK(buildResult.stats.deduplicatedBoundaryCount <= buildResult.stats.rawBoundaryCount);
+    }
+    SUBCASE("Spatial query count matches retained boundaries") {
+        CHECK(buildResult.stats.spatialQueryCount == buildResult.stats.deduplicatedBoundaryCount);
+    }
+    SUBCASE("Candidate deduplication stats are ordered") {
+        CHECK(buildResult.stats.deduplicatedCandidateCount <= buildResult.stats.projectedCandidateCount);
+    }
+    SUBCASE("Builder discovers accepted links") {
+        CHECK(buildResult.stats.acceptedLinkCount > 0);
+    }
+    SUBCASE("Stats report build timings") {
+        CHECK(buildResult.stats.totalBuildMs >= 0.0);
+        CHECK(buildResult.stats.floodFillMs >= 0.0);
+        CHECK(buildResult.stats.massScoringMs >= 0.0);
+        CHECK(buildResult.stats.boundaryExtractionMs >= 0.0);
+        CHECK(buildResult.stats.linkDiscoveryMs >= 0.0);
+        CHECK(buildResult.stats.pruningMs >= 0.0);
+    }
+    SUBCASE("Builder discovers forward and reverse gaps") {
+        CHECK(hasLink(buildResult.graph, 0, 1));
+        CHECK(hasLink(buildResult.graph, 1, 0));
+    }
+    SUBCASE("Upward gap obeys upward limit") {
+        CHECK(!hasLink(buildResult.graph, 1, 2));
+    }
+    SUBCASE("Downward gap obeys downward limit") {
+        CHECK(hasLink(buildResult.graph, 2, 1));
+    }
+    SUBCASE("Builder rejects same-island links") {
+        for (const Island& island : buildResult.graph.islands()) {
+            for (const Link& link : island.outgoingLinks) {
+                CHECK(link.fromIsland != link.toIsland);
+            }
         }
     }
+    SUBCASE("Coarse geometric pruning collapses duplicate links") {
+        BuildConfig aggressivelyPrunedConfig = buildConfig;
+        aggressivelyPrunedConfig.linkDeduplicationCellSize = 10.0f;
+        const BuildResult aggressivelyPruned = builder.build(*navMesh, aggressivelyPrunedConfig);
+        REQUIRE(static_cast<bool>(aggressivelyPruned));
+        CHECK(linkCount(aggressivelyPruned.graph, 0, 1) == 1);
+    }
+    SUBCASE("Builder rejects invalid configuration") {
+        BuildConfig invalidConfig;
+        invalidConfig.linkDeduplicationCellSize = 0.0f;
+        CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
+    }
+}
 
-    BuildConfig invalidConfig;
-    invalidConfig.linkDeduplicationCellSize = 0.0f;
-    require(
-        builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration,
-        "builder should reject invalid configuration");
-
+TEST_CASE("Builder adjacent tiled navmesh") {
     const auto tiledNavMesh = buildAdjacentTiledNavMesh();
+    const IslandGraphBuilder builder;
     const BuildResult tiledBuild = builder.build(*tiledNavMesh);
-    require(static_cast<bool>(tiledBuild), "builder should process tiled navmesh");
-    require(tiledBuild.graph.islands().size() == 1, "flood fill should follow cross-tile Detour links");
-    require(tiledBuild.graph.islands()[0].polygons.size() == 2, "cross-tile island should contain both polygons");
+    REQUIRE(static_cast<bool>(tiledBuild));
+    CHECK(tiledBuild.graph.islands().size() == 1);
+    CHECK(tiledBuild.graph.islands()[0].polygons.size() == 2);
+}
 
-    BuildConfig aggressivelyPrunedConfig = buildConfig;
-    aggressivelyPrunedConfig.linkDeduplicationCellSize = 10.0f;
-    const BuildResult aggressivelyPruned = builder.build(*navMesh, aggressivelyPrunedConfig);
-    require(static_cast<bool>(aggressivelyPruned), "builder should support coarse geometric pruning");
-    require(
-        linkCount(aggressivelyPruned.graph, 0, 1) == 1,
-        "coarse geometric pruning should collapse duplicate links for one island pair");
+TEST_CASE("Builder density tuning") {
+    const auto navMesh = buildDisconnectedNavMesh();
+    BuildConfig buildConfig;
+    buildConfig.maxHorizontalGap = 3.0f;
+    buildConfig.maxVerticalGapUp = 2.0f;
+    buildConfig.maxVerticalGapDown = 4.0f;
+    buildConfig.boundaryDeduplicationCellSize = 0.5f;
+    buildConfig.linkDeduplicationCellSize = 0.5f;
+    const IslandGraphBuilder builder;
+    const BuildResult baseline = builder.build(*navMesh, buildConfig);
+    REQUIRE(static_cast<bool>(baseline));
 
-    BuildConfig disabledDensityConfig = buildConfig;
-    disabledDensityConfig.density.enabled = false;
-    disabledDensityConfig.density.distanceScale = 10.0f;
-    disabledDensityConfig.density.maxRadiusScale = 100.0f;
-    const BuildResult disabledDensityBuild = builder.build(*navMesh, disabledDensityConfig);
-    require(static_cast<bool>(disabledDensityBuild), "disabled density tuning should remain valid");
-    require(
-        disabledDensityBuild.stats.acceptedLinkCount == buildResult.stats.acceptedLinkCount,
-        "disabled density tuning should preserve baseline accepted links");
+    SUBCASE("Disabled density preserves baseline") {
+        BuildConfig disabledDensityConfig = buildConfig;
+        disabledDensityConfig.density.enabled = false;
+        disabledDensityConfig.density.distanceScale = 10.0f;
+        disabledDensityConfig.density.maxRadiusScale = 100.0f;
+        const BuildResult result = builder.build(*navMesh, disabledDensityConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount == baseline.stats.acceptedLinkCount);
+    }
+    SUBCASE("Density radius scale interpolates continuously") {
+        BuildConfig densityConfig;
+        densityConfig.density.enabled = true;
+        densityConfig.density.distanceScale = 0.25f;
+        densityConfig.density.maxRadiusScale = 2.0f;
+        CHECK(densityConfig.density.pruneRadiusScaleFor(2.0f) == 1.5f);
+        CHECK(densityConfig.density.pruneRadiusScaleFor(8.0f) == 2.0f);
+    }
+    SUBCASE("Enabled density does not increase accepted links") {
+        BuildConfig densityConfig = buildConfig;
+        densityConfig.density.enabled = true;
+        densityConfig.density.distanceScale = 0.25f;
+        densityConfig.density.maxRadiusScale = 2.0f;
+        const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
+        REQUIRE(static_cast<bool>(densityBuild));
+        CHECK(densityBuild.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
+    }
+    SUBCASE("Stronger distance scale does not increase accepted links") {
+        BuildConfig densityConfig = buildConfig;
+        densityConfig.density.enabled = true;
+        densityConfig.density.distanceScale = 0.25f;
+        densityConfig.density.maxRadiusScale = 2.0f;
+        const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
+        REQUIRE(static_cast<bool>(densityBuild));
 
-    BuildConfig densityConfig = buildConfig;
-    densityConfig.density.enabled = true;
-    densityConfig.density.distanceScale = 0.25f;
-    densityConfig.density.maxRadiusScale = 2.0f;
-    require(
-        densityConfig.density.pruneRadiusScaleFor(2.0f) == 1.5f,
-        "density radius scale should grow continuously with link distance");
-    require(
-        densityConfig.density.pruneRadiusScaleFor(8.0f) == 2.0f,
-        "density radius scale should obey its smooth cap");
-    const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
-    require(static_cast<bool>(densityBuild), "density-aware builder should process valid configuration");
-    require(
-        densityBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
-        "enabling density tuning should not increase accepted links");
+        BuildConfig strongerDistanceScaleConfig = densityConfig;
+        strongerDistanceScaleConfig.density.distanceScale = 0.5f;
+        const BuildResult result = builder.build(*navMesh, strongerDistanceScaleConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount);
+    }
+    SUBCASE("Stronger radius cap does not increase accepted links") {
+        BuildConfig densityConfig = buildConfig;
+        densityConfig.density.enabled = true;
+        densityConfig.density.distanceScale = 0.25f;
+        densityConfig.density.maxRadiusScale = 2.0f;
+        const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
+        REQUIRE(static_cast<bool>(densityBuild));
 
-    BuildConfig strongerDistanceScaleConfig = densityConfig;
-    strongerDistanceScaleConfig.density.distanceScale = 0.5f;
-    const BuildResult strongerDistanceScaleBuild = builder.build(*navMesh, strongerDistanceScaleConfig);
-    require(static_cast<bool>(strongerDistanceScaleBuild), "stronger density distance scale should remain valid");
-    require(
-        strongerDistanceScaleBuild.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount,
-        "increasing density distance scale should not increase accepted links");
+        BuildConfig strongerRadiusCapConfig = densityConfig;
+        strongerRadiusCapConfig.density.maxRadiusScale = 3.0f;
+        const BuildResult result = builder.build(*navMesh, strongerRadiusCapConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount);
+    }
+    SUBCASE("Rejects negative density distance scale") {
+        BuildConfig invalidDensityConfig;
+        invalidDensityConfig.density.distanceScale = -0.01f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Rejects density caps below one") {
+        BuildConfig invalidDensityConfig;
+        invalidDensityConfig.density.maxRadiusScale = 0.99f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Disabled global pruning preserves baseline") {
+        BuildConfig disabledGlobalPruningConfig = buildConfig;
+        disabledGlobalPruningConfig.density.enabled = true;
+        disabledGlobalPruningConfig.density.globalPruneCellSize = 0.0f;
+        const BuildResult result = builder.build(*navMesh, disabledGlobalPruningConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount == baseline.stats.acceptedLinkCount);
+    }
+    SUBCASE("Enabled global pruning does not increase accepted links") {
+        BuildConfig globalPruningConfig = buildConfig;
+        globalPruningConfig.density.enabled = true;
+        globalPruningConfig.density.globalPruneCellSize = 10.0f;
+        const BuildResult result = builder.build(*navMesh, globalPruningConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
+    }
+    SUBCASE("Stronger global pruning does not increase accepted links") {
+        BuildConfig globalPruningConfig = buildConfig;
+        globalPruningConfig.density.enabled = true;
+        globalPruningConfig.density.globalPruneCellSize = 10.0f;
+        const BuildResult globalPruningBuild = builder.build(*navMesh, globalPruningConfig);
+        REQUIRE(static_cast<bool>(globalPruningBuild));
 
-    BuildConfig strongerRadiusCapConfig = densityConfig;
-    strongerRadiusCapConfig.density.maxRadiusScale = 3.0f;
-    const BuildResult strongerRadiusCapBuild = builder.build(*navMesh, strongerRadiusCapConfig);
-    require(static_cast<bool>(strongerRadiusCapBuild), "stronger density radius cap should remain valid");
-    require(
-        strongerRadiusCapBuild.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount,
-        "increasing density radius cap should not increase accepted links");
+        BuildConfig strongerGlobalPruningConfig = buildConfig;
+        strongerGlobalPruningConfig.density.enabled = true;
+        strongerGlobalPruningConfig.density.globalPruneCellSize = 20.0f;
+        const BuildResult result = builder.build(*navMesh, strongerGlobalPruningConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount <= globalPruningBuild.stats.acceptedLinkCount);
+    }
+    SUBCASE("Rejects negative global prune cell size") {
+        BuildConfig invalidGlobalPruningConfig;
+        invalidGlobalPruningConfig.density.enabled = true;
+        invalidGlobalPruningConfig.density.globalPruneCellSize = -0.01f;
+        CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Disabled spanner pruning preserves baseline") {
+        BuildConfig disabledSpannerConfig = buildConfig;
+        disabledSpannerConfig.density.enabled = true;
+        disabledSpannerConfig.density.enableSpannerPruning = false;
+        const BuildResult result = builder.build(*navMesh, disabledSpannerConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount == baseline.stats.acceptedLinkCount);
+    }
+    SUBCASE("Enabled spanner pruning does not increase accepted links") {
+        BuildConfig spannerConfig = buildConfig;
+        spannerConfig.density.enabled = true;
+        spannerConfig.density.enableSpannerPruning = true;
+        spannerConfig.density.spannerPathRatio = 2.0f;
+        const BuildResult result = builder.build(*navMesh, spannerConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.acceptedLinkCount <= baseline.stats.acceptedLinkCount);
+    }
+    SUBCASE("Rejects spanner path ratio below one") {
+        BuildConfig invalidSpannerConfig;
+        invalidSpannerConfig.density.enabled = true;
+        invalidSpannerConfig.density.enableSpannerPruning = true;
+        invalidSpannerConfig.density.spannerPathRatio = 0.99f;
+        CHECK(builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration);
+    }
+}
 
-    BuildConfig invalidDensityConfig;
-    invalidDensityConfig.density.distanceScale = -0.01f;
-    require(
-        builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration,
-        "builder should reject negative density distance scale");
-    invalidDensityConfig = {};
-    invalidDensityConfig.density.maxRadiusScale = 0.99f;
-    require(
-        builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration,
-        "builder should reject density caps below one");
-
-    BuildConfig disabledGlobalPruningConfig = buildConfig;
-    disabledGlobalPruningConfig.density.enabled = true;
-    disabledGlobalPruningConfig.density.globalPruneCellSize = 0.0f;
-    const BuildResult disabledGlobalPruningBuild = builder.build(*navMesh, disabledGlobalPruningConfig);
-    require(static_cast<bool>(disabledGlobalPruningBuild), "disabled global pruning should remain valid");
-    require(
-        disabledGlobalPruningBuild.stats.acceptedLinkCount == buildResult.stats.acceptedLinkCount,
-        "disabled global pruning should preserve baseline accepted links");
-
-    BuildConfig globalPruningConfig = buildConfig;
-    globalPruningConfig.density.enabled = true;
-    globalPruningConfig.density.globalPruneCellSize = 10.0f;
-    const BuildResult globalPruningBuild = builder.build(*navMesh, globalPruningConfig);
-    require(static_cast<bool>(globalPruningBuild), "global pruning builder should process valid configuration");
-    require(
-        globalPruningBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
-        "enabling global pruning should not increase accepted links");
-
-    BuildConfig strongerGlobalPruningConfig = buildConfig;
-    strongerGlobalPruningConfig.density.enabled = true;
-    strongerGlobalPruningConfig.density.globalPruneCellSize = 20.0f;
-    const BuildResult strongerGlobalPruningBuild = builder.build(*navMesh, strongerGlobalPruningConfig);
-    require(static_cast<bool>(strongerGlobalPruningBuild), "stronger global pruning should remain valid");
-    require(
-        strongerGlobalPruningBuild.stats.acceptedLinkCount <= globalPruningBuild.stats.acceptedLinkCount,
-        "increasing global prune cell size should not increase accepted links");
-
-    BuildConfig invalidGlobalPruningConfig;
-    invalidGlobalPruningConfig.density.enabled = true;
-    invalidGlobalPruningConfig.density.globalPruneCellSize = -0.01f;
-    require(
-        builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration,
-        "builder should reject negative global prune cell size");
-
-    BuildConfig disabledSpannerConfig = buildConfig;
-    disabledSpannerConfig.density.enabled = true;
-    disabledSpannerConfig.density.enableSpannerPruning = false;
-    const BuildResult disabledSpannerBuild = builder.build(*navMesh, disabledSpannerConfig);
-    require(static_cast<bool>(disabledSpannerBuild), "disabled spanner pruning should remain valid");
-    require(
-        disabledSpannerBuild.stats.acceptedLinkCount == buildResult.stats.acceptedLinkCount,
-        "disabled spanner pruning should preserve baseline accepted links");
-
-    BuildConfig spannerConfig = buildConfig;
-    spannerConfig.density.enabled = true;
-    spannerConfig.density.enableSpannerPruning = true;
-    spannerConfig.density.spannerPathRatio = 2.0f;
-    const BuildResult spannerBuild = builder.build(*navMesh, spannerConfig);
-    require(static_cast<bool>(spannerBuild), "spanner pruning builder should process valid configuration");
-    require(
-        spannerBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
-        "enabling spanner pruning should not increase accepted links");
-
-    BuildConfig invalidSpannerConfig;
-    invalidSpannerConfig.density.enabled = true;
-    invalidSpannerConfig.density.enableSpannerPruning = true;
-    invalidSpannerConfig.density.spannerPathRatio = 0.99f;
-    require(
-        builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration,
-        "builder should reject spanner path ratio below one");
-
+TEST_CASE("Builder mass-aware tuning") {
     const auto variedMassNavMesh = buildVariedMassNavMesh();
-    const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
-    require(static_cast<bool>(geometricMassBuild), "baseline builder should process varied island mass");
-    require(
-        geometricMassBuild.graph.islands()[0].massScore == 0.0f &&
-        geometricMassBuild.graph.islands()[1].massScore == 0.0f,
-        "disabled mass-aware tuning should preserve zero scores");
+    const IslandGraphBuilder builder;
 
-    BuildConfig massAwareConfig;
-    massAwareConfig.massAware.enabled = true;
-    massAwareConfig.massAware.targetPreference = 2.0f;
-    massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
-    massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
-    require(
-        massAwareConfig.massAware.targetPreferenceFor(0.5f) == 1.0f,
-        "target preference should interpolate continuously");
-    require(
-        massAwareConfig.massAware.pruneRadiusScaleFor(0.5f) == 1.125f,
-        "prune radius scale should interpolate continuously");
-    const BuildResult massAwareBuild = builder.build(*variedMassNavMesh, massAwareConfig);
-    require(static_cast<bool>(massAwareBuild), "mass-aware builder should process varied island mass");
-    require(massAwareBuild.graph.islands().size() == 2, "varied-mass fixture should contain two islands");
-    require(
-        massAwareBuild.graph.islands()[0].massScore > massAwareBuild.graph.islands()[1].massScore,
-        "larger island should receive a greater continuous mass score");
-    require(
-        massAwareBuild.graph.islands()[0].massScore <= 1.0f &&
-        massAwareBuild.graph.islands()[1].massScore >= 0.0f,
-        "mass scores should remain normalized");
+    SUBCASE("Baseline preserves zero scores") {
+        const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
+        REQUIRE(static_cast<bool>(geometricMassBuild));
+        CHECK(geometricMassBuild.graph.islands()[0].massScore == 0.0f);
+        CHECK(geometricMassBuild.graph.islands()[1].massScore == 0.0f);
+    }
+    SUBCASE("Target preference and radius scale interpolate continuously") {
+        BuildConfig massAwareConfig;
+        massAwareConfig.massAware.enabled = true;
+        massAwareConfig.massAware.targetPreference = 2.0f;
+        massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
+        massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
+        CHECK(massAwareConfig.massAware.targetPreferenceFor(0.5f) == 1.0f);
+        CHECK(massAwareConfig.massAware.pruneRadiusScaleFor(0.5f) == 1.125f);
+    }
+    SUBCASE("Mass-aware scores are normalized and ordered") {
+        BuildConfig massAwareConfig;
+        massAwareConfig.massAware.enabled = true;
+        massAwareConfig.massAware.targetPreference = 2.0f;
+        massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
+        massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
+        const BuildResult massAwareBuild = builder.build(*variedMassNavMesh, massAwareConfig);
+        REQUIRE(static_cast<bool>(massAwareBuild));
+        CHECK(massAwareBuild.graph.islands().size() == 2);
+        CHECK(massAwareBuild.graph.islands()[0].massScore > massAwareBuild.graph.islands()[1].massScore);
+        CHECK(massAwareBuild.graph.islands()[0].massScore <= 1.0f);
+        CHECK(massAwareBuild.graph.islands()[1].massScore >= 0.0f);
+    }
+    SUBCASE("Nearby percentile varies mass score smoothly") {
+        BuildConfig massAwareConfig;
+        massAwareConfig.massAware.enabled = true;
+        massAwareConfig.massAware.targetPreference = 2.0f;
+        massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
+        massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
+        const BuildResult massAwareBuild = builder.build(*variedMassNavMesh, massAwareConfig);
+        REQUIRE(static_cast<bool>(massAwareBuild));
 
-    BuildConfig nearbyPercentileConfig = massAwareConfig;
-    nearbyPercentileConfig.massAware.normalizationPercentile = 0.98f;
-    const BuildResult nearbyPercentileBuild = builder.build(*variedMassNavMesh, nearbyPercentileConfig);
-    require(static_cast<bool>(nearbyPercentileBuild), "nearby percentile configuration should remain valid");
-    require(
-        std::abs(
+        BuildConfig nearbyPercentileConfig = massAwareConfig;
+        nearbyPercentileConfig.massAware.normalizationPercentile = 0.98f;
+        const BuildResult nearbyPercentileBuild = builder.build(*variedMassNavMesh, nearbyPercentileConfig);
+        REQUIRE(static_cast<bool>(nearbyPercentileBuild));
+        CHECK(std::abs(
             massAwareBuild.graph.islands()[1].massScore -
-            nearbyPercentileBuild.graph.islands()[1].massScore) < 0.02f,
-        "nearby percentile values should vary mass score smoothly");
+            nearbyPercentileBuild.graph.islands()[1].massScore) < 0.02f);
+    }
+    SUBCASE("Rejects invalid mass normalization percentile") {
+        const auto navMesh = buildDisconnectedNavMesh();
+        BuildConfig invalidMassAwareConfig;
+        invalidMassAwareConfig.massAware.normalizationPercentile = 0.0f;
+        CHECK(builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration);
+    }
+}
 
-    BuildConfig invalidMassAwareConfig;
-    invalidMassAwareConfig.massAware.normalizationPercentile = 0.0f;
-    require(
-        builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration,
-        "builder should reject invalid mass normalization percentile");
+TEST_CASE("Serializer") {
+    const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
+    const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    const Link secondHop{1, 2, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    IslandGraph routeGraph({
+        makeIsland(0, {}, {direct, firstHop}),
+        makeIsland(1, {}, {secondHop}),
+        makeIsland(2)});
 
-    std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
-    require(
-        IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success,
-        "serializer should write graph");
-    serialized.seekg(0);
-    const SerializationResult roundTrip = IslandGraphSerializer::read(serialized);
-    require(static_cast<bool>(roundTrip), "serializer should read graph");
-    require(roundTrip.graph.islands().size() == 3, "round trip should preserve islands");
-    require(hasLink(roundTrip.graph, 0, 2), "round trip should preserve links");
+    SUBCASE("Round trip preserves graph") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        serialized.seekg(0);
+        const SerializationResult roundTrip = IslandGraphSerializer::read(serialized);
+        REQUIRE(static_cast<bool>(roundTrip));
+        CHECK(roundTrip.graph.islands().size() == 3);
+        CHECK(hasLink(roundTrip.graph, 0, 2));
+    }
+    SUBCASE("Round trip preserves mass score") {
+        const auto variedMassNavMesh = buildVariedMassNavMesh();
+        BuildConfig massAwareConfig;
+        massAwareConfig.massAware.enabled = true;
+        massAwareConfig.massAware.targetPreference = 2.0f;
+        massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
+        massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
+        const IslandGraphBuilder builder;
+        const BuildResult massAwareBuild = builder.build(*variedMassNavMesh, massAwareConfig);
+        REQUIRE(static_cast<bool>(massAwareBuild));
 
-    std::stringstream massSerialized(std::ios::in | std::ios::out | std::ios::binary);
-    require(
-        IslandGraphSerializer::write(massSerialized, massAwareBuild.graph) == SerializationStatus::Success,
-        "serializer should write mass-aware graph");
-    massSerialized.seekg(0);
-    const SerializationResult massRoundTrip = IslandGraphSerializer::read(massSerialized);
-    require(static_cast<bool>(massRoundTrip), "serializer should read mass-aware graph");
-    require(
-        massRoundTrip.graph.islands()[0].massScore == massAwareBuild.graph.islands()[0].massScore,
-        "round trip should preserve mass score");
-
-    std::string bytes = serialized.str();
-    bytes.resize(7);
-    std::stringstream truncated(bytes, std::ios::in | std::ios::binary);
-    require(
-        IslandGraphSerializer::read(truncated).status == SerializationStatus::MalformedData,
-        "serializer should reject truncated stream");
-
-    bytes = serialized.str();
-    bytes[4] = 3;
-    bytes[5] = 0;
-    bytes[6] = 0;
-    bytes[7] = 0;
-    std::stringstream unsupported(bytes, std::ios::in | std::ios::binary);
-    require(
-        IslandGraphSerializer::read(unsupported).status == SerializationStatus::UnsupportedVersion,
-        "serializer should reject unsupported version");
-
-    std::cout << "DetourIslandGraph tests passed\n";
-    return EXIT_SUCCESS;
+        std::stringstream massSerialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(massSerialized, massAwareBuild.graph) == SerializationStatus::Success);
+        massSerialized.seekg(0);
+        const SerializationResult massRoundTrip = IslandGraphSerializer::read(massSerialized);
+        REQUIRE(static_cast<bool>(massRoundTrip));
+        CHECK(massRoundTrip.graph.islands()[0].massScore == massAwareBuild.graph.islands()[0].massScore);
+    }
+    SUBCASE("Rejects truncated stream") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        std::string bytes = serialized.str();
+        bytes.resize(7);
+        std::stringstream truncated(bytes, std::ios::in | std::ios::binary);
+        CHECK(IslandGraphSerializer::read(truncated).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects unsupported version") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        std::string bytes = serialized.str();
+        bytes[4] = 3;
+        bytes[5] = 0;
+        bytes[6] = 0;
+        bytes[7] = 0;
+        std::stringstream unsupported(bytes, std::ios::in | std::ios::binary);
+        CHECK(IslandGraphSerializer::read(unsupported).status == SerializationStatus::UnsupportedVersion);
+    }
 }

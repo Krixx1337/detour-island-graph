@@ -4,7 +4,7 @@ project(DetourIslandGraph VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
-option(DETOUR_ISLAND_GRAPH_BUILD_TESTS "Build DetourIslandGraph tests" OFF)
+option(DETOUR_ISLAND_GRAPH_BUILD_TESTS "Build DetourIslandGraph tests" ON)
 option(DETOUR_ISLAND_GRAPH_FETCH_DETOUR
     "Fetch pinned upstream RecastNavigation when Detour is not provided" ON)
 set(DETOUR_ISLAND_GRAPH_DETOUR_INCLUDE_DIR "" CACHE PATH
@@ -104,9 +104,31 @@ install(FILES
 
 if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
     enable_testing()
+
+    include(FetchContent)
+    FetchContent_Declare(
+        doctest
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG v2.5.2
+    )
+    FetchContent_MakeAvailable(doctest)
+
     add_executable(detour_island_graph_tests
         tests/IslandGraphTests.cpp
     )
-    target_link_libraries(detour_island_graph_tests PRIVATE detour_island_graph)
-    add_test(NAME detour_island_graph_tests COMMAND detour_island_graph_tests)
+    target_link_libraries(detour_island_graph_tests
+        PRIVATE
+            detour_island_graph
+            doctest::doctest
+    )
+
+    # Keep Release builds clean: only auto-build tests in Debug.
+    set_target_properties(detour_island_graph_tests PROPERTIES
+        EXCLUDE_FROM_DEFAULT_BUILD_RELEASE TRUE
+        EXCLUDE_FROM_DEFAULT_BUILD_MINSIZEREL TRUE
+        EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO TRUE
+    )
+
+    include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
+    doctest_discover_tests(detour_island_graph_tests)
 endif()
