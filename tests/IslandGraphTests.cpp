@@ -368,14 +368,21 @@ int main() {
         densityBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
         "enabling density tuning should not increase accepted links");
 
-    BuildConfig strongerDensityConfig = densityConfig;
-    strongerDensityConfig.density.distanceScale = 0.5f;
-    strongerDensityConfig.density.maxRadiusScale = 3.0f;
-    const BuildResult strongerDensityBuild = builder.build(*navMesh, strongerDensityConfig);
-    require(static_cast<bool>(strongerDensityBuild), "stronger density tuning should remain valid");
+    BuildConfig strongerDistanceScaleConfig = densityConfig;
+    strongerDistanceScaleConfig.density.distanceScale = 0.5f;
+    const BuildResult strongerDistanceScaleBuild = builder.build(*navMesh, strongerDistanceScaleConfig);
+    require(static_cast<bool>(strongerDistanceScaleBuild), "stronger density distance scale should remain valid");
     require(
-        strongerDensityBuild.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount,
-        "stronger density tuning should not increase accepted links");
+        strongerDistanceScaleBuild.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount,
+        "increasing density distance scale should not increase accepted links");
+
+    BuildConfig strongerRadiusCapConfig = densityConfig;
+    strongerRadiusCapConfig.density.maxRadiusScale = 3.0f;
+    const BuildResult strongerRadiusCapBuild = builder.build(*navMesh, strongerRadiusCapConfig);
+    require(static_cast<bool>(strongerRadiusCapBuild), "stronger density radius cap should remain valid");
+    require(
+        strongerRadiusCapBuild.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount,
+        "increasing density radius cap should not increase accepted links");
 
     BuildConfig invalidDensityConfig;
     invalidDensityConfig.density.distanceScale = -0.01f;
