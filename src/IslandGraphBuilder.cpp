@@ -235,9 +235,9 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(config.gapDiscovery.maxHorizontalGap) && config.gapDiscovery.maxHorizontalGap > 0.0f &&
         std::isfinite(config.gapDiscovery.maxVerticalGapUp) && config.gapDiscovery.maxVerticalGapUp >= 0.0f &&
         std::isfinite(config.gapDiscovery.maxVerticalGapDown) && config.gapDiscovery.maxVerticalGapDown >= 0.0f &&
-        std::isfinite(config.boundaries.deduplicationCellSize) && config.boundaries.deduplicationCellSize > 0.0f &&
-        std::isfinite(density.localPruning.baseRadius) &&
-        density.localPruning.baseRadius > 0.0f &&
+        (!config.boundaries.deduplicationEnabled ||
+            (std::isfinite(config.boundaries.deduplicationCellSize) &&
+             config.boundaries.deduplicationCellSize > 0.0f)) &&
         config.query.maxNodes > 0 &&
         config.query.maxNearbyPolygons > 0 &&
         std::isfinite(massAware.normalizationPercentile) &&
@@ -254,11 +254,14 @@ bool validate(const BuildConfig& config, std::string& message) {
              density.candidateDeduplication.cellSizeNear > 0.0f &&
              std::isfinite(density.candidateDeduplication.cellSizeFar) &&
              density.candidateDeduplication.cellSizeFar > 0.0f)) &&
-        (!density.localPruning.enableDistanceScaling ||
-            (std::isfinite(density.localPruning.distanceScale) &&
-             density.localPruning.distanceScale >= 0.0f &&
-             std::isfinite(density.localPruning.maxRadiusScale) &&
-             density.localPruning.maxRadiusScale >= 1.0f)) &&
+        (!density.localPruning.enabled ||
+            (std::isfinite(density.localPruning.baseRadius) &&
+             density.localPruning.baseRadius > 0.0f &&
+             (!density.localPruning.enableDistanceScaling ||
+                (std::isfinite(density.localPruning.distanceScale) &&
+                 density.localPruning.distanceScale >= 0.0f &&
+                 std::isfinite(density.localPruning.maxRadiusScale) &&
+                 density.localPruning.maxRadiusScale >= 1.0f)))) &&
         (!density.globalPruning.enabled ||
             (std::isfinite(density.globalPruning.cellSize) &&
              density.globalPruning.cellSize > 0.0f)) &&
@@ -398,6 +401,7 @@ std::vector<Boundary> extractBoundaries(
     const BuildConfig& config,
     BuildStats& stats) {
     std::unordered_map<BoundaryKey, Boundary, BoundaryKeyHash> boundaries;
+    std::vector<Boundary> output;
     for (const Island& island : graph.islands()) {
         for (dtPolyRef reference : island.polygons) {
             const dtMeshTile* tile = nullptr;
@@ -415,26 +419,31 @@ std::vector<Boundary> extractBoundaries(
                     &tile->verts[polygon->verts[(edge + 1) % polygon->vertCount] * 3]);
                 const Vec3 midpoint = detail::divide(detail::add(start, end), 2.0f);
                 const Vec3 direction{end.x - start.x, end.y - start.y, end.z - start.z};
-                const float cell = config.boundaries.deduplicationCellSize;
-                const BoundaryKey key{
-                    island.id,
-                    quantize(midpoint.x, cell),
-                    quantize(midpoint.y, cell),
-                    quantize(midpoint.z, cell),
-                    quantize(direction.x, cell),
-                    quantize(direction.y, cell),
-                    quantize(direction.z, cell)};
-                boundaries.emplace(key, Boundary{island.id, reference, start, end, midpoint});
+                const Boundary boundary{island.id, reference, start, end, midpoint};
+                if (config.boundaries.deduplicationEnabled) {
+                    const float cell = config.boundaries.deduplicationCellSize;
+                    const BoundaryKey key{
+                        island.id,
+                        quantize(midpoint.x, cell),
+                        quantize(midpoint.y, cell),
+                        quantize(midpoint.z, cell),
+                        quantize(direction.x, cell),
+                        quantize(direction.y, cell),
+                        quantize(direction.z, cell)};
+                    boundaries.emplace(key, boundary);
+                } else {
+                    output.push_back(boundary);
+                }
             }
         }
     }
-    stats.boundaries.deduplicatedCount = boundaries.size();
-
-    std::vector<Boundary> output;
-    output.reserve(boundaries.size());
-    for (const auto& entry : boundaries) {
-        output.push_back(entry.second);
+    if (config.boundaries.deduplicationEnabled) {
+        output.reserve(boundaries.size());
+        for (const auto& entry : boundaries) {
+            output.push_back(entry.second);
+        }
     }
+    stats.boundaries.deduplicatedCount = output.size();
     std::sort(output.begin(), output.end(), [](const Boundary& lhs, const Boundary& rhs) {
         if (lhs.island != rhs.island) return lhs.island < rhs.island;
         if (lhs.polygon != rhs.polygon) return lhs.polygon < rhs.polygon;
@@ -544,6 +553,7 @@ BuildStatus discoverLinks(
 
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
+    std::vector<Link> candidates;
     std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.query.maxNearbyPolygons));
     const float extents[3]{
         config.gapDiscovery.maxHorizontalGap,
@@ -598,12 +608,13 @@ BuildStatus discoverLinks(
                 link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown) {
                 continue;
             }
-            const float cell =
-                config.density.candidateDeduplication.enabled
-                ? config.density.candidateDeduplication.cellSizeFor(
+            if (!config.density.candidateDeduplication.enabled) {
+                candidates.push_back(link);
+                continue;
+            }
+            const float cell = config.density.candidateDeduplication.cellSizeFor(
                     link.horizontalDistance,
-                    config.gapDiscovery.maxHorizontalGap)
-                : config.density.localPruning.baseRadius;
+                    config.gapDiscovery.maxHorizontalGap);
             const LinkKey key{
                 link.fromIsland,
                 link.toIsland,
@@ -619,15 +630,16 @@ BuildStatus discoverLinks(
             }
         }
     }
-    stats.candidates.deduplicatedCount = deduplicated.size();
+    if (config.density.candidateDeduplication.enabled) {
+        candidates.reserve(deduplicated.size());
+        for (const auto& entry : deduplicated) {
+            candidates.push_back(entry.second);
+        }
+    }
+    stats.candidates.deduplicatedCount = candidates.size();
     stats.timings.linkDiscoveryMs = elapsedMilliseconds(discoveryStart);
 
     const Clock::time_point pruningStart = Clock::now();
-    std::vector<Link> candidates;
-    candidates.reserve(deduplicated.size());
-    for (const auto& entry : deduplicated) {
-        candidates.push_back(entry.second);
-    }
     std::sort(candidates.begin(), candidates.end(), [&](const Link& lhs, const Link& rhs) {
         return isBetterLink(lhs, rhs, graph, config);
     });
@@ -662,14 +674,19 @@ BuildStatus discoverLinks(
             }
         }
 
-        auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
-        const float radius = pruneRadius(candidate, graph, config);
-        const bool duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-            return detail::distance(candidate.start, existing.start) <= radius &&
-                detail::distance(candidate.end, existing.end) <= radius;
-        });
+        bool duplicate = false;
+        if (config.density.localPruning.enabled) {
+            auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
+            const float radius = pruneRadius(candidate, graph, config);
+            duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
+                return detail::distance(candidate.start, existing.start) <= radius &&
+                    detail::distance(candidate.end, existing.end) <= radius;
+            });
+            if (!duplicate) {
+                accepted.push_back(candidate);
+            }
+        }
         if (!duplicate) {
-            accepted.push_back(candidate);
             islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
             ++stats.candidates.acceptedLinkCount;
 

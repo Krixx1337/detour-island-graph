@@ -410,6 +410,14 @@ TEST_CASE("Builder density tuning") {
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount == baseline.stats.candidates.acceptedLinkCount);
     }
+    SUBCASE("Local pruning can be disabled independently") {
+        BuildConfig unprunedConfig = buildConfig;
+        unprunedConfig.density.localPruning.enabled = false;
+        unprunedConfig.density.localPruning.baseRadius = 0.0f;
+        const BuildResult result = builder.build(*navMesh, unprunedConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.candidates.acceptedLinkCount >= baseline.stats.candidates.acceptedLinkCount);
+    }
     SUBCASE("Density radius scale interpolates continuously") {
         BuildConfig densityConfig;
         densityConfig.density.localPruning.enableDistanceScaling = true;
@@ -428,14 +436,31 @@ TEST_CASE("Builder density tuning") {
         CHECK(densityConfig.density.candidateDeduplication.cellSizeFor(15.0f, 30.0f) == 7.0f);
         CHECK(densityConfig.density.candidateDeduplication.cellSizeFor(60.0f, 30.0f) == 10.0f);
     }
-    SUBCASE("Enabled distance-scaled candidate deduplication does not increase accepted links") {
-        BuildConfig dynamicCandidateConfig = buildConfig;
-        dynamicCandidateConfig.density.candidateDeduplication.enabled = true;
-        dynamicCandidateConfig.density.candidateDeduplication.cellSizeNear = 0.5f;
-        dynamicCandidateConfig.density.candidateDeduplication.cellSizeFar = 10.0f;
-        const BuildResult result = builder.build(*navMesh, dynamicCandidateConfig);
+    SUBCASE("Coarse candidate deduplication does not increase accepted links") {
+        BuildConfig coarseCandidateConfig = buildConfig;
+        coarseCandidateConfig.density.candidateDeduplication.enabled = true;
+        coarseCandidateConfig.density.candidateDeduplication.cellSizeNear = 10.0f;
+        coarseCandidateConfig.density.candidateDeduplication.cellSizeFar = 10.0f;
+        const BuildResult result = builder.build(*navMesh, coarseCandidateConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount <= baseline.stats.candidates.acceptedLinkCount);
+    }
+    SUBCASE("Candidate deduplication can be disabled independently") {
+        BuildConfig undeduplicatedConfig = buildConfig;
+        undeduplicatedConfig.density.candidateDeduplication.enabled = false;
+        undeduplicatedConfig.density.candidateDeduplication.cellSizeNear = 0.0f;
+        undeduplicatedConfig.density.candidateDeduplication.cellSizeFar = 0.0f;
+        const BuildResult result = builder.build(*navMesh, undeduplicatedConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.candidates.deduplicatedCount >= baseline.stats.candidates.deduplicatedCount);
+    }
+    SUBCASE("Boundary deduplication can be disabled independently") {
+        BuildConfig undeduplicatedConfig = buildConfig;
+        undeduplicatedConfig.boundaries.deduplicationEnabled = false;
+        undeduplicatedConfig.boundaries.deduplicationCellSize = 0.0f;
+        const BuildResult result = builder.build(*navMesh, undeduplicatedConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.boundaries.deduplicatedCount == result.stats.boundaries.rawCount);
     }
     SUBCASE("Enabled density does not increase accepted links") {
         BuildConfig densityConfig = buildConfig;

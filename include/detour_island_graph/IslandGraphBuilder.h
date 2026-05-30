@@ -26,7 +26,7 @@ struct MassAwareTuning {
 };
 
 struct CandidateDeduplicationTuning {
-    bool enabled = false;
+    bool enabled = true;
     float cellSizeNear = 8.0f;
     float cellSizeFar = 8.0f;
 
@@ -39,6 +39,7 @@ struct CandidateDeduplicationTuning {
 };
 
 struct LocalPruningTuning {
+    bool enabled = true;
     float baseRadius = 8.0f;
     bool enableDistanceScaling = false;
     float distanceScale = 0.0f;
@@ -75,6 +76,7 @@ struct GapDiscoveryTuning {
 };
 
 struct BoundaryTuning {
+    bool deduplicationEnabled = true;
     float deduplicationCellSize = 4.0f;
 };
 

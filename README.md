@@ -93,9 +93,10 @@ The default geometric link cost uses A* search with a Euclidean heuristic. Suppl
 ### Global & Local Density Tuning
 If your game has large continents, coastlines, or long cliffs, you can enable `density` tuning to prevent the builder from generating hundreds of parallel redundant jump links.
 
-*   `density.localPruning`: Controls pair-local redundancy pruning. Enable it to grow the pruning radius with link distance using `distanceScale` and `maxRadiusScale`.
+*   `boundaries`: Controls boundary extraction deduplication. Set `deduplicationEnabled = false` to retain every extracted boundary edge, or tune `deduplicationCellSize`.
+*   `density.localPruning`: Controls pair-local redundancy pruning. Disable it to retain every discovered link, or enable distance scaling to grow `baseRadius` using `distanceScale` and `maxRadiusScale`.
 *   `density.globalPruning`: Controls the optional 3D occupancy grid. Enable it and set `cellSize` to keep only one link start or end point in each global cell.
-*   `density.candidateDeduplication`: Controls optional early candidate deduplication. Enable it to interpolate from `cellSizeNear` to `cellSizeFar` as links approach `maxHorizontalGap`.
+*   `density.candidateDeduplication`: Controls early candidate deduplication. Disable it to retain every projected candidate, or interpolate from `cellSizeNear` to `cellSizeFar` as links approach `maxHorizontalGap`.
 *   `density.spannerPruning`: Controls optional **t-Spanner pruning**. Enable it to discard direct jump links when a multi-hop route is close enough according to `pathRatio`; increase `verticalWeight` when elevation is materially harder than horizontal travel.
 
 ### Mass-Aware Tuning
