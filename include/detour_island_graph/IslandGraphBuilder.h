@@ -27,22 +27,18 @@ struct MassAwareTuning {
 
 struct CandidateDeduplicationTuning {
     bool enabled = true;
-    float cellSizeNear = 0.0f; // 0.0 = auto: maxHorizontalGap * 0.25f
-    float cellSizeFar = 0.0f;  // 0.0 = auto: maxHorizontalGap * 1.0f
+    float cellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * cellSizeRatio
+    float cellSizeRatio = 0.25f;
 
-    float cellSizeFor(float horizontalDistance, float maxHorizontalGap) const noexcept {
-        const float nearVal = cellSizeNear > 0.0f ? cellSizeNear : (maxHorizontalGap * 0.25f);
-        const float farVal = cellSizeFar > 0.0f ? cellSizeFar : maxHorizontalGap;
-        const float alpha = maxHorizontalGap > 0.0f
-            ? std::clamp(horizontalDistance / maxHorizontalGap, 0.0f, 1.0f)
-            : 0.0f;
-        return nearVal + ((farVal - nearVal) * alpha);
+    float effectiveCellSize(float maxHorizontalGap) const noexcept {
+        return cellSize > 0.0f ? cellSize : (maxHorizontalGap * cellSizeRatio);
     }
 };
 
 struct LocalPruningTuning {
     bool enabled = true;
-    float baseRadius = 0.0f; // 0.0 = auto: maxHorizontalGap * 0.25f
+    float baseRadius = 0.0f; // 0.0 = auto: maxHorizontalGap * baseRadiusRatio
+    float baseRadiusRatio = 0.25f;
     bool enableDistanceScaling = false;
     float distanceScale = 0.0f;
     float maxRadiusScale = 1.0f;
@@ -53,20 +49,17 @@ struct LocalPruningTuning {
     }
 
     float effectiveBaseRadius(float maxHorizontalGap) const noexcept {
-        return baseRadius > 0.0f ? baseRadius : (maxHorizontalGap * 0.25f);
+        return baseRadius > 0.0f ? baseRadius : (maxHorizontalGap * baseRadiusRatio);
     }
 };
 
 struct GlobalPruningTuning {
     bool enabled = false;
-    // The global occupancy cell size is proportional to the candidate link's
-    // horizontal distance.  No hardcoded distances.  No thresholds.
-    //   cellSize = horizontalDistance * relativeCellSize
-    // Example: 1.0 => a 30m leap uses a 30m cell; a 2m hop uses a 2m cell.
-    float relativeCellSize = 1.0f;
+    float cellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * cellSizeRatio
+    float cellSizeRatio = 0.5f;
 
-    float cellSizeFor(float horizontalDistance) const noexcept {
-        return horizontalDistance * (std::max)(relativeCellSize, 0.0f);
+    float effectiveCellSize(float maxHorizontalGap) const noexcept {
+        return cellSize > 0.0f ? cellSize : (maxHorizontalGap * cellSizeRatio);
     }
 };
 
@@ -91,10 +84,13 @@ struct GapDiscoveryTuning {
 
 struct BoundaryTuning {
     bool deduplicationEnabled = true;
-    float deduplicationCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * 0.125f
+    float deduplicationCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * deduplicationCellSizeRatio
+    float deduplicationCellSizeRatio = 0.125f;
 
     float effectiveDeduplicationCellSize(float maxHorizontalGap) const noexcept {
-        return deduplicationCellSize > 0.0f ? deduplicationCellSize : (maxHorizontalGap * 0.125f);
+        return deduplicationCellSize > 0.0f
+            ? deduplicationCellSize
+            : (maxHorizontalGap * deduplicationCellSizeRatio);
     }
 };
 

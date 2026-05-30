@@ -43,7 +43,7 @@ config.gapDiscovery.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls
 
 // Enable global density pruning to keep the graph clean & sparse
 config.density.globalPruning.enabled = true;
-config.density.globalPruning.relativeCellSize = 1.0f; // cellSize = horizontalDistance * 1.0f
+config.density.globalPruning.cellSizeRatio = 0.5f; // cellSize = maxHorizontalGap * 0.5f
 
 // 2. Build the graph
 detour_island_graph::IslandGraphBuilder builder;
@@ -93,10 +93,10 @@ The default geometric link cost uses A* search with a Euclidean heuristic. Suppl
 ### Global & Local Density Tuning
 The default configuration enables boundary deduplication, candidate deduplication, and pair-local pruning. Global and t-spanner pruning are opt-in. Each stage can be tuned or disabled independently.
 
-*   `boundaries`: Controls boundary extraction deduplication. Set `deduplicationEnabled = false` to retain every extracted boundary edge, or tune `deduplicationCellSize`.
-*   `density.localPruning`: Controls pair-local redundancy pruning. Disable it to retain every candidate reaching this stage, or enable distance scaling to grow `baseRadius` using `distanceScale` and `maxRadiusScale`.
-*   `density.globalPruning`: Controls the optional 3D occupancy grid. Enable it and set `cellSize` to keep only one link start or end point in each global cell.
-*   `density.candidateDeduplication`: Controls early candidate deduplication. Disable it to retain every projected candidate that passes gap filtering, or interpolate from `cellSizeNear` to `cellSizeFar` as links approach `maxHorizontalGap`.
+*   `boundaries`: Controls boundary extraction deduplication. Set `deduplicationEnabled = false` to retain every extracted boundary edge. Its grid defaults to `maxHorizontalGap * deduplicationCellSizeRatio`; set `deduplicationCellSize` for an explicit distance override.
+*   `density.localPruning`: Controls pair-local redundancy pruning. Disable it to retain every candidate reaching this stage. Its radius defaults to `maxHorizontalGap * baseRadiusRatio`; set `baseRadius` for an explicit distance override or enable distance scaling using `distanceScale` and `maxRadiusScale`.
+*   `density.globalPruning`: Controls the optional 3D occupancy grid. Enable it to keep only one link start or end point in each global cell. Its grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
+*   `density.candidateDeduplication`: Controls early candidate deduplication. Disable it to retain every projected candidate that passes gap filtering. Its grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
 *   `density.spannerPruning`: Controls optional **t-Spanner pruning**. Enable it to discard direct jump links when a multi-hop route is close enough according to `pathRatio`; increase `verticalWeight` when elevation is materially harder than horizontal travel.
 
 To build an unpruned reference graph, disable every density-reduction stage:
@@ -118,8 +118,8 @@ On a real-world continent-scale navmesh (~80K polygons, ~4K islands), the densit
 
 | Stage | Typical Impact | What It Does |
 |---|---|---|
-| **Candidate Deduplication** | Drops **~78%** of projected candidates | Grid-snaps candidates by start+end position; keeps cheapest link per cell. Tuned via `cellSizeNear`/`cellSizeFar`. |
-| **Global Pruning** | Drops **~90%** of remaining candidates | 3D occupancy grid; keeps first link to occupy each cell. Tuned via `relativeCellSize` (cellSize = linkDistance × ratio). |
+| **Candidate Deduplication** | Drops **~78%** of projected candidates | Grid-snaps candidates by start+end position; keeps cheapest link per cell. Tuned via `cellSizeRatio` or an explicit `cellSize`. |
+| **Global Pruning** | Drops **~90%** of remaining candidates | 3D occupancy grid; keeps first link to occupy each cell. Tuned via `cellSizeRatio` or an explicit `cellSize`. |
 | **Spanner Pruning** | Drops **~3–8%** | Rejects direct leaps when an indirect route exists within `pathRatio`. Increase `pathRatio` to be more permissive. |
 | **Local Pruning** | Drops **~4–10%** | Per-pair Euclidean deduplication within `baseRadius`. Increase `baseRadius` or `distanceScale` for coarser pruning. |
 

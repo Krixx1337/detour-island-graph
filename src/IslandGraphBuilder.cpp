@@ -237,7 +237,9 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(config.gapDiscovery.maxVerticalGapDown) && config.gapDiscovery.maxVerticalGapDown >= 0.0f &&
         (!config.boundaries.deduplicationEnabled ||
             (std::isfinite(config.boundaries.deduplicationCellSize) &&
-             config.boundaries.deduplicationCellSize >= 0.0f)) &&
+             config.boundaries.deduplicationCellSize >= 0.0f &&
+             std::isfinite(config.boundaries.deduplicationCellSizeRatio) &&
+             config.boundaries.deduplicationCellSizeRatio > 0.0f)) &&
         config.query.maxNodes > 0 &&
         config.query.maxNearbyPolygons > 0 &&
         std::isfinite(massAware.normalizationPercentile) &&
@@ -250,21 +252,25 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(massAware.highMassPruneRadiusScale) &&
         massAware.highMassPruneRadiusScale > 0.0f &&
         (!density.candidateDeduplication.enabled ||
-            (std::isfinite(density.candidateDeduplication.cellSizeNear) &&
-             density.candidateDeduplication.cellSizeNear >= 0.0f &&
-             std::isfinite(density.candidateDeduplication.cellSizeFar) &&
-             density.candidateDeduplication.cellSizeFar >= 0.0f)) &&
+            (std::isfinite(density.candidateDeduplication.cellSize) &&
+             density.candidateDeduplication.cellSize >= 0.0f &&
+             std::isfinite(density.candidateDeduplication.cellSizeRatio) &&
+             density.candidateDeduplication.cellSizeRatio > 0.0f)) &&
         (!density.localPruning.enabled ||
             (std::isfinite(density.localPruning.baseRadius) &&
              density.localPruning.baseRadius >= 0.0f &&
+             std::isfinite(density.localPruning.baseRadiusRatio) &&
+             density.localPruning.baseRadiusRatio > 0.0f &&
              (!density.localPruning.enableDistanceScaling ||
                 (std::isfinite(density.localPruning.distanceScale) &&
                  density.localPruning.distanceScale >= 0.0f &&
                  std::isfinite(density.localPruning.maxRadiusScale) &&
                  density.localPruning.maxRadiusScale >= 1.0f)))) &&
         (!density.globalPruning.enabled ||
-            (std::isfinite(density.globalPruning.relativeCellSize) &&
-             density.globalPruning.relativeCellSize > 0.0f)) &&
+            (std::isfinite(density.globalPruning.cellSize) &&
+             density.globalPruning.cellSize >= 0.0f &&
+             std::isfinite(density.globalPruning.cellSizeRatio) &&
+             density.globalPruning.cellSizeRatio > 0.0f)) &&
         (!density.spannerPruning.enabled ||
             (std::isfinite(density.spannerPruning.pathRatio) &&
              density.spannerPruning.pathRatio >= 1.0f &&
@@ -402,6 +408,8 @@ std::vector<Boundary> extractBoundaries(
     BuildStats& stats) {
     std::unordered_map<BoundaryKey, Boundary, BoundaryKeyHash> boundaries;
     std::vector<Boundary> output;
+    const float cellSize = config.boundaries.effectiveDeduplicationCellSize(
+        config.gapDiscovery.maxHorizontalGap);
     for (const Island& island : graph.islands()) {
         for (dtPolyRef reference : island.polygons) {
             const dtMeshTile* tile = nullptr;
@@ -421,16 +429,14 @@ std::vector<Boundary> extractBoundaries(
                 const Vec3 direction{end.x - start.x, end.y - start.y, end.z - start.z};
                 const Boundary boundary{island.id, reference, start, end, midpoint};
                 if (config.boundaries.deduplicationEnabled) {
-                    const float cell = config.boundaries.effectiveDeduplicationCellSize(
-                        config.gapDiscovery.maxHorizontalGap);
                     const BoundaryKey key{
                         island.id,
-                        quantize(midpoint.x, cell),
-                        quantize(midpoint.y, cell),
-                        quantize(midpoint.z, cell),
-                        quantize(direction.x, cell),
-                        quantize(direction.y, cell),
-                        quantize(direction.z, cell)};
+                        quantize(midpoint.x, cellSize),
+                        quantize(midpoint.y, cellSize),
+                        quantize(midpoint.z, cellSize),
+                        quantize(direction.x, cellSize),
+                        quantize(direction.y, cellSize),
+                        quantize(direction.z, cellSize)};
                     boundaries.emplace(key, boundary);
                 } else {
                     output.push_back(boundary);
@@ -556,6 +562,8 @@ BuildStatus discoverLinks(
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
     std::vector<Link> candidates;
     std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.query.maxNearbyPolygons));
+    const float candidateCellSize = config.density.candidateDeduplication.effectiveCellSize(
+        config.gapDiscovery.maxHorizontalGap);
     const float extents[3]{
         config.gapDiscovery.maxHorizontalGap,
         (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown),
@@ -613,18 +621,15 @@ BuildStatus discoverLinks(
                 candidates.push_back(link);
                 continue;
             }
-            const float cell = config.density.candidateDeduplication.cellSizeFor(
-                    link.horizontalDistance,
-                    config.gapDiscovery.maxHorizontalGap);
             const LinkKey key{
                 link.fromIsland,
                 link.toIsland,
-                quantize(link.start.x, cell),
-                quantize(link.start.y, cell),
-                quantize(link.start.z, cell),
-                quantize(link.end.x, cell),
-                quantize(link.end.y, cell),
-                quantize(link.end.z, cell)};
+                quantize(link.start.x, candidateCellSize),
+                quantize(link.start.y, candidateCellSize),
+                quantize(link.start.z, candidateCellSize),
+                quantize(link.end.x, candidateCellSize),
+                quantize(link.end.y, candidateCellSize),
+                quantize(link.end.z, candidateCellSize)};
             const auto existing = deduplicated.find(key);
             if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
                 deduplicated[key] = link;
@@ -647,19 +652,20 @@ BuildStatus discoverLinks(
 
     std::unordered_set<GlobalCellKey, GlobalCellKeyHash> occupiedGlobalCells;
     std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
+    const float globalCellSize = config.density.globalPruning.effectiveCellSize(
+        config.gapDiscovery.maxHorizontalGap);
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
         if (config.density.globalPruning.enabled) {
-            const float cellSize = config.density.globalPruning.cellSizeFor(candidate.horizontalDistance);
             const GlobalCellKey startCell{
-                quantize(candidate.start.x, cellSize),
-                quantize(candidate.start.y, cellSize),
-                quantize(candidate.start.z, cellSize)
+                quantize(candidate.start.x, globalCellSize),
+                quantize(candidate.start.y, globalCellSize),
+                quantize(candidate.start.z, globalCellSize)
             };
             const GlobalCellKey endCell{
-                quantize(candidate.end.x, cellSize),
-                quantize(candidate.end.y, cellSize),
-                quantize(candidate.end.z, cellSize)
+                quantize(candidate.end.x, globalCellSize),
+                quantize(candidate.end.y, globalCellSize),
+                quantize(candidate.end.z, globalCellSize)
             };
             if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
                 ++stats.candidates.globalPruningRejectCount;
@@ -697,16 +703,15 @@ BuildStatus discoverLinks(
             ++stats.candidates.acceptedLinkCount;
 
             if (config.density.globalPruning.enabled) {
-                const float cellSize = config.density.globalPruning.cellSizeFor(candidate.horizontalDistance);
                 const GlobalCellKey startCell{
-                    quantize(candidate.start.x, cellSize),
-                    quantize(candidate.start.y, cellSize),
-                    quantize(candidate.start.z, cellSize)
+                    quantize(candidate.start.x, globalCellSize),
+                    quantize(candidate.start.y, globalCellSize),
+                    quantize(candidate.start.z, globalCellSize)
                 };
                 const GlobalCellKey endCell{
-                    quantize(candidate.end.x, cellSize),
-                    quantize(candidate.end.y, cellSize),
-                    quantize(candidate.end.z, cellSize)
+                    quantize(candidate.end.x, globalCellSize),
+                    quantize(candidate.end.y, globalCellSize),
+                    quantize(candidate.end.z, globalCellSize)
                 };
                 occupiedGlobalCells.insert(startCell);
                 occupiedGlobalCells.insert(endCell);
