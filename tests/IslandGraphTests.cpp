@@ -6,6 +6,7 @@
 #include <DetourAlloc.h>
 #include <DetourNavMeshBuilder.h>
 
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -72,6 +73,50 @@ std::unique_ptr<dtNavMesh, NavMeshDeleter> buildDisconnectedNavMesh() {
     require(
         dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)),
         "synthetic navmesh initialization should succeed");
+    return navMesh;
+}
+
+std::unique_ptr<dtNavMesh, NavMeshDeleter> buildVariedMassNavMesh() {
+    constexpr unsigned short nullIndex = 0xffff;
+    const unsigned short vertices[] = {
+        0, 0, 0,  2, 0, 0,  2, 0, 2,  0, 0, 2,
+        4, 0, 0,  4, 0, 2,
+        8, 0, 0, 10, 0, 0, 10, 0, 2,  8, 0, 2};
+    const unsigned short polygons[] = {
+        0, 1, 2, 3, nullIndex, 1, nullIndex, nullIndex,
+        1, 4, 5, 2, nullIndex, nullIndex, nullIndex, 0,
+        6, 7, 8, 9, nullIndex, nullIndex, nullIndex, nullIndex};
+    const unsigned short flags[] = {1, 1, 1};
+    const unsigned char areas[] = {0, 0, 0};
+
+    dtNavMeshCreateParams params;
+    std::memset(&params, 0, sizeof(params));
+    params.verts = vertices;
+    params.vertCount = 10;
+    params.polys = polygons;
+    params.polyFlags = flags;
+    params.polyAreas = areas;
+    params.polyCount = 3;
+    params.nvp = 4;
+    params.bmax[0] = 10.0f;
+    params.bmax[1] = 1.0f;
+    params.bmax[2] = 2.0f;
+    params.walkableHeight = 2.0f;
+    params.walkableRadius = 0.5f;
+    params.walkableClimb = 0.5f;
+    params.cs = 1.0f;
+    params.ch = 1.0f;
+    params.buildBvTree = true;
+
+    unsigned char* data = nullptr;
+    int dataSize = 0;
+    require(dtCreateNavMeshData(&params, &data, &dataSize), "varied-mass navmesh tile should build");
+
+    std::unique_ptr<dtNavMesh, NavMeshDeleter> navMesh(dtAllocNavMesh());
+    require(navMesh != nullptr, "varied-mass navmesh allocation should succeed");
+    require(
+        dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)),
+        "varied-mass navmesh initialization should succeed");
     return navMesh;
 }
 
@@ -278,6 +323,52 @@ int main() {
         linkCount(aggressivelyPruned.graph, 0, 1) == 1,
         "coarse geometric pruning should collapse duplicate links for one island pair");
 
+    const auto variedMassNavMesh = buildVariedMassNavMesh();
+    const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
+    require(static_cast<bool>(geometricMassBuild), "baseline builder should process varied island mass");
+    require(
+        geometricMassBuild.graph.islands()[0].massScore == 0.0f &&
+        geometricMassBuild.graph.islands()[1].massScore == 0.0f,
+        "disabled mass-aware tuning should preserve zero scores");
+
+    BuildConfig massAwareConfig;
+    massAwareConfig.massAware.enabled = true;
+    massAwareConfig.massAware.targetPreference = 2.0f;
+    massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
+    massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
+    require(
+        massAwareConfig.massAware.targetPreferenceFor(0.5f) == 1.0f,
+        "target preference should interpolate continuously");
+    require(
+        massAwareConfig.massAware.pruneRadiusScaleFor(0.5f) == 1.125f,
+        "prune radius scale should interpolate continuously");
+    const BuildResult massAwareBuild = builder.build(*variedMassNavMesh, massAwareConfig);
+    require(static_cast<bool>(massAwareBuild), "mass-aware builder should process varied island mass");
+    require(massAwareBuild.graph.islands().size() == 2, "varied-mass fixture should contain two islands");
+    require(
+        massAwareBuild.graph.islands()[0].massScore > massAwareBuild.graph.islands()[1].massScore,
+        "larger island should receive a greater continuous mass score");
+    require(
+        massAwareBuild.graph.islands()[0].massScore <= 1.0f &&
+        massAwareBuild.graph.islands()[1].massScore >= 0.0f,
+        "mass scores should remain normalized");
+
+    BuildConfig nearbyPercentileConfig = massAwareConfig;
+    nearbyPercentileConfig.massAware.normalizationPercentile = 0.98f;
+    const BuildResult nearbyPercentileBuild = builder.build(*variedMassNavMesh, nearbyPercentileConfig);
+    require(static_cast<bool>(nearbyPercentileBuild), "nearby percentile configuration should remain valid");
+    require(
+        std::abs(
+            massAwareBuild.graph.islands()[1].massScore -
+            nearbyPercentileBuild.graph.islands()[1].massScore) < 0.02f,
+        "nearby percentile values should vary mass score smoothly");
+
+    BuildConfig invalidMassAwareConfig;
+    invalidMassAwareConfig.massAware.normalizationPercentile = 0.0f;
+    require(
+        builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration,
+        "builder should reject invalid mass normalization percentile");
+
     std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
     require(
         IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success,
@@ -288,6 +379,17 @@ int main() {
     require(roundTrip.graph.islands().size() == 3, "round trip should preserve islands");
     require(hasLink(roundTrip.graph, 0, 2), "round trip should preserve links");
 
+    std::stringstream massSerialized(std::ios::in | std::ios::out | std::ios::binary);
+    require(
+        IslandGraphSerializer::write(massSerialized, massAwareBuild.graph) == SerializationStatus::Success,
+        "serializer should write mass-aware graph");
+    massSerialized.seekg(0);
+    const SerializationResult massRoundTrip = IslandGraphSerializer::read(massSerialized);
+    require(static_cast<bool>(massRoundTrip), "serializer should read mass-aware graph");
+    require(
+        massRoundTrip.graph.islands()[0].massScore == massAwareBuild.graph.islands()[0].massScore,
+        "round trip should preserve mass score");
+
     std::string bytes = serialized.str();
     bytes.resize(7);
     std::stringstream truncated(bytes, std::ios::in | std::ios::binary);
@@ -296,7 +398,7 @@ int main() {
         "serializer should reject truncated stream");
 
     bytes = serialized.str();
-    bytes[4] = 2;
+    bytes[4] = 3;
     bytes[5] = 0;
     bytes[6] = 0;
     bytes[7] = 0;

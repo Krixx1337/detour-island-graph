@@ -1,5 +1,6 @@
 #include <detour_island_graph/IslandGraphSerializer.h>
 
+#include <cmath>
 #include <cstring>
 #include <istream>
 #include <limits>
@@ -113,6 +114,7 @@ SerializationStatus IslandGraphSerializer::write(std::ostream& stream, const Isl
             !writeVec3(stream, island.center) ||
             !writeVec3(stream, island.boundsMin) ||
             !writeVec3(stream, island.boundsMax) ||
+            !writeFloat(stream, island.massScore) ||
             !writeCount(stream, island.polygons.size())) {
             return SerializationStatus::IoError;
         }
@@ -164,7 +166,11 @@ SerializationResult IslandGraphSerializer::read(std::istream& stream) {
             island.id != islandIndex ||
             !readVec3(stream, island.center) ||
             !readVec3(stream, island.boundsMin) ||
-            !readVec3(stream, island.boundsMax)) {
+            !readVec3(stream, island.boundsMax) ||
+            !readFloat(stream, island.massScore) ||
+            !std::isfinite(island.massScore) ||
+            island.massScore < 0.0f ||
+            island.massScore > 1.0f) {
             return malformed("Serialized island data is invalid.");
         }
 

@@ -15,6 +15,27 @@ optional explicit stream serializer.
 - The library contains no engine integration, threading, cache policy, coordinate
   conversion, or third-party math dependency.
 
+## Optional Mass-Aware Tuning
+
+The geometric baseline is the default. Applications may enable optional continuous
+mass-aware tuning through `BuildConfig::massAware`.
+
+Each island receives a normalized `massScore` in `[0, 1]` based on polygon count and
+horizontal span. The score is normalized against an interpolated map-relative
+percentile with a smooth asymptotic curve, then feeds smooth formulas for candidate
+preference and pair-pruning radius. There are no backbone/support buckets, tier
+thresholds, or hard cliffs.
+
+```cpp
+detour_island_graph::BuildConfig config;
+config.massAware.enabled = true;
+config.massAware.targetPreference = 2.0f;
+config.massAware.lowMassPruneRadiusScale = 1.5f;
+config.massAware.highMassPruneRadiusScale = 0.75f;
+```
+
+Leave `massAware.enabled` as `false` to retain the minimal geometric behavior.
+
 ## CMake
 
 Provide Detour as a `Detour` or `RecastNavigation::Detour` CMake target:

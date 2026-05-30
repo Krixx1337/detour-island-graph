@@ -201,6 +201,7 @@ bool isBoundaryEdge(const dtMeshTile& tile, const dtPoly& polygon, unsigned char
 }
 
 bool validate(const BuildConfig& config, std::string& message) {
+    const MassAwareTuning& massAware = config.massAware;
     const bool valid =
         std::isfinite(config.maxHorizontalGap) && config.maxHorizontalGap > 0.0f &&
         std::isfinite(config.maxVerticalGapUp) && config.maxVerticalGapUp >= 0.0f &&
@@ -208,11 +209,60 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(config.boundaryDeduplicationCellSize) && config.boundaryDeduplicationCellSize > 0.0f &&
         std::isfinite(config.linkDeduplicationCellSize) && config.linkDeduplicationCellSize > 0.0f &&
         config.queryMaxNodes > 0 &&
-        config.maxNearbyPolygons > 0;
+        config.maxNearbyPolygons > 0 &&
+        std::isfinite(massAware.normalizationPercentile) &&
+        massAware.normalizationPercentile > 0.0f &&
+        massAware.normalizationPercentile <= 1.0f &&
+        std::isfinite(massAware.targetPreference) &&
+        massAware.targetPreference >= 0.0f &&
+        std::isfinite(massAware.lowMassPruneRadiusScale) &&
+        massAware.lowMassPruneRadiusScale > 0.0f &&
+        std::isfinite(massAware.highMassPruneRadiusScale) &&
+        massAware.highMassPruneRadiusScale > 0.0f;
     if (!valid) {
         message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
     }
     return valid;
+}
+
+float lerp(float low, float high, float alpha) {
+    return low + ((high - low) * alpha);
+}
+
+void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
+    auto& islands = detail::IslandGraphAccess::islands(graph);
+    if (!config.massAware.enabled || islands.empty()) {
+        return;
+    }
+
+    std::vector<float> rawMasses;
+    rawMasses.reserve(islands.size());
+    for (const Island& island : islands) {
+        const float spanX = island.boundsMax.x - island.boundsMin.x;
+        const float spanZ = island.boundsMax.z - island.boundsMin.z;
+        const float dominantSpan = (std::max)({spanX, spanZ, 1.0f});
+        rawMasses.push_back(static_cast<float>(island.polygons.size()) * dominantSpan);
+    }
+
+    std::vector<float> sortedMasses = rawMasses;
+    std::sort(sortedMasses.begin(), sortedMasses.end());
+    const float percentileIndex =
+        config.massAware.normalizationPercentile *
+        static_cast<float>(sortedMasses.size() - 1);
+    const std::size_t lowerIndex = static_cast<std::size_t>(std::floor(percentileIndex));
+    const std::size_t upperIndex = (std::min)(lowerIndex + 1, sortedMasses.size() - 1);
+    const float referenceMass = lerp(
+        sortedMasses[lowerIndex],
+        sortedMasses[upperIndex],
+        percentileIndex - static_cast<float>(lowerIndex));
+    const float referenceLog = std::log((std::max)(referenceMass, 1.0f));
+
+    for (std::size_t index = 0; index < islands.size(); ++index) {
+        const float massLog = std::log((std::max)(rawMasses[index], 1.0f));
+        islands[index].massScore = massLog > 0.0f && referenceLog > 0.0f
+            ? massLog / (massLog + referenceLog)
+            : 0.0f;
+    }
 }
 
 void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
@@ -348,7 +398,17 @@ float linkDistance(const Link& link) {
     return detail::distance(link.start, link.end);
 }
 
-bool isBetterLink(const Link& lhs, const Link& rhs) {
+float rankScore(const Link& link, const IslandGraph& graph, const BuildConfig& config) {
+    const float preference = config.massAware.enabled
+        ? config.massAware.targetPreferenceFor(graph.islands()[link.toIsland].massScore)
+        : 0.0f;
+    return linkDistance(link) - preference;
+}
+
+bool isBetterLink(const Link& lhs, const Link& rhs, const IslandGraph& graph, const BuildConfig& config) {
+    const float lhsRank = rankScore(lhs, graph, config);
+    const float rhsRank = rankScore(rhs, graph, config);
+    if (lhsRank != rhsRank) return lhsRank < rhsRank;
     const float lhsDistance = linkDistance(lhs);
     const float rhsDistance = linkDistance(rhs);
     if (lhsDistance != rhsDistance) return lhsDistance < rhsDistance;
@@ -360,6 +420,14 @@ bool isBetterLink(const Link& lhs, const Link& rhs) {
     if (lhs.end.x != rhs.end.x) return lhs.end.x < rhs.end.x;
     if (lhs.end.y != rhs.end.y) return lhs.end.y < rhs.end.y;
     return lhs.end.z < rhs.end.z;
+}
+
+float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig& config) {
+    if (!config.massAware.enabled) {
+        return config.linkDeduplicationCellSize;
+    }
+    const float targetMass = graph.islands()[link.toIsland].massScore;
+    return config.linkDeduplicationCellSize * config.massAware.pruneRadiusScaleFor(targetMass);
 }
 
 BuildStatus discoverLinks(
@@ -434,7 +502,7 @@ BuildStatus discoverLinks(
                 quantize(link.end.y, cell),
                 quantize(link.end.z, cell)};
             const auto existing = deduplicated.find(key);
-            if (existing == deduplicated.end() || isBetterLink(link, existing->second)) {
+            if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
                 deduplicated[key] = link;
             }
         }
@@ -445,15 +513,18 @@ BuildStatus discoverLinks(
     for (const auto& entry : deduplicated) {
         candidates.push_back(entry.second);
     }
-    std::sort(candidates.begin(), candidates.end(), isBetterLink);
+    std::sort(candidates.begin(), candidates.end(), [&](const Link& lhs, const Link& rhs) {
+        return isBetterLink(lhs, rhs, graph, config);
+    });
 
     std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
         auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
+        const float radius = pruneRadius(candidate, graph, config);
         const bool duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-            return detail::distance(candidate.start, existing.start) <= config.linkDeduplicationCellSize &&
-                detail::distance(candidate.end, existing.end) <= config.linkDeduplicationCellSize;
+            return detail::distance(candidate.start, existing.start) <= radius &&
+                detail::distance(candidate.end, existing.end) <= radius;
         });
         if (!duplicate) {
             accepted.push_back(candidate);
@@ -473,6 +544,7 @@ BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfi
     }
 
     floodFill(navMesh, result.graph);
+    calculateMassScores(result.graph, config);
     result.status = discoverLinks(navMesh, result.graph, config, result.message);
     return result;
 }
