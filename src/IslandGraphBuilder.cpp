@@ -1,0 +1,480 @@
+#include <detour_island_graph/IslandGraphBuilder.h>
+
+#include "VectorMath.h"
+
+#include <DetourAlloc.h>
+#include <DetourNavMeshQuery.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <queue>
+#include <unordered_map>
+#include <vector>
+
+namespace detour_island_graph {
+
+namespace detail {
+
+struct IslandGraphAccess {
+    static std::vector<Island>& islands(IslandGraph& graph) {
+        return graph.m_islands;
+    }
+
+    static std::unordered_map<dtPolyRef, IslandId>& polygonToIsland(IslandGraph& graph) {
+        return graph.m_polygonToIsland;
+    }
+};
+
+} // namespace detail
+
+namespace {
+
+struct QueryDeleter {
+    void operator()(dtNavMeshQuery* query) const {
+        if (query) {
+            dtFreeNavMeshQuery(query);
+        }
+    }
+};
+
+struct Boundary {
+    IslandId island = 0;
+    dtPolyRef polygon = 0;
+    Vec3 start;
+    Vec3 end;
+    Vec3 midpoint;
+};
+
+struct BoundaryKey {
+    IslandId island = 0;
+    int midpointX = 0;
+    int midpointY = 0;
+    int midpointZ = 0;
+    int directionX = 0;
+    int directionY = 0;
+    int directionZ = 0;
+
+    bool operator==(const BoundaryKey& other) const {
+        return island == other.island &&
+            midpointX == other.midpointX &&
+            midpointY == other.midpointY &&
+            midpointZ == other.midpointZ &&
+            directionX == other.directionX &&
+            directionY == other.directionY &&
+            directionZ == other.directionZ;
+    }
+};
+
+struct LinkKey {
+    IslandId fromIsland = 0;
+    IslandId toIsland = 0;
+    int startX = 0;
+    int startY = 0;
+    int startZ = 0;
+    int endX = 0;
+    int endY = 0;
+    int endZ = 0;
+
+    bool operator==(const LinkKey& other) const {
+        return fromIsland == other.fromIsland &&
+            toIsland == other.toIsland &&
+            startX == other.startX &&
+            startY == other.startY &&
+            startZ == other.startZ &&
+            endX == other.endX &&
+            endY == other.endY &&
+            endZ == other.endZ;
+    }
+};
+
+struct IslandPair {
+    IslandId from = 0;
+    IslandId to = 0;
+
+    bool operator==(const IslandPair& other) const {
+        return from == other.from && to == other.to;
+    }
+};
+
+template <typename T>
+void hashCombine(std::size_t& seed, const T& value) {
+    seed ^= std::hash<T>{}(value) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
+}
+
+struct BoundaryKeyHash {
+    std::size_t operator()(const BoundaryKey& key) const {
+        std::size_t hash = 0;
+        hashCombine(hash, key.island);
+        hashCombine(hash, key.midpointX);
+        hashCombine(hash, key.midpointY);
+        hashCombine(hash, key.midpointZ);
+        hashCombine(hash, key.directionX);
+        hashCombine(hash, key.directionY);
+        hashCombine(hash, key.directionZ);
+        return hash;
+    }
+};
+
+struct LinkKeyHash {
+    std::size_t operator()(const LinkKey& key) const {
+        std::size_t hash = 0;
+        hashCombine(hash, key.fromIsland);
+        hashCombine(hash, key.toIsland);
+        hashCombine(hash, key.startX);
+        hashCombine(hash, key.startY);
+        hashCombine(hash, key.startZ);
+        hashCombine(hash, key.endX);
+        hashCombine(hash, key.endY);
+        hashCombine(hash, key.endZ);
+        return hash;
+    }
+};
+
+struct IslandPairHash {
+    std::size_t operator()(const IslandPair& pair) const {
+        std::size_t hash = 0;
+        hashCombine(hash, pair.from);
+        hashCombine(hash, pair.to);
+        return hash;
+    }
+};
+
+int quantize(float value, float cellSize) {
+    return static_cast<int>(std::floor(value / cellSize));
+}
+
+bool resolvePolygon(
+    const dtNavMesh& navMesh,
+    dtPolyRef reference,
+    const dtMeshTile*& tile,
+    const dtPoly*& polygon) {
+    tile = nullptr;
+    polygon = nullptr;
+    return dtStatusSucceed(navMesh.getTileAndPolyByRef(reference, &tile, &polygon)) &&
+        tile &&
+        polygon;
+}
+
+dtPolyRef getNeighbor(
+    const dtNavMesh& navMesh,
+    const dtMeshTile& tile,
+    const dtPoly& polygon,
+    unsigned char edge) {
+    const unsigned short neighbor = polygon.neis[edge];
+    if (neighbor == 0) {
+        return 0;
+    }
+    if ((neighbor & DT_EXT_LINK) == 0) {
+        return navMesh.getPolyRefBase(&tile) | static_cast<dtPolyRef>(neighbor - 1);
+    }
+    for (unsigned int linkIndex = polygon.firstLink;
+         linkIndex != DT_NULL_LINK;
+         linkIndex = tile.links[linkIndex].next) {
+        const dtLink& link = tile.links[linkIndex];
+        if (link.edge == edge && link.ref != 0) {
+            return link.ref;
+        }
+    }
+    return 0;
+}
+
+bool isBoundaryEdge(const dtMeshTile& tile, const dtPoly& polygon, unsigned char edge) {
+    const unsigned short neighbor = polygon.neis[edge];
+    if (neighbor == 0) {
+        return true;
+    }
+    if ((neighbor & DT_EXT_LINK) == 0) {
+        return false;
+    }
+    for (unsigned int linkIndex = polygon.firstLink;
+         linkIndex != DT_NULL_LINK;
+         linkIndex = tile.links[linkIndex].next) {
+        const dtLink& link = tile.links[linkIndex];
+        if (link.edge == edge && link.ref != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validate(const BuildConfig& config, std::string& message) {
+    const bool valid =
+        std::isfinite(config.maxHorizontalGap) && config.maxHorizontalGap > 0.0f &&
+        std::isfinite(config.maxVerticalGapUp) && config.maxVerticalGapUp >= 0.0f &&
+        std::isfinite(config.maxVerticalGapDown) && config.maxVerticalGapDown >= 0.0f &&
+        std::isfinite(config.boundaryDeduplicationCellSize) && config.boundaryDeduplicationCellSize > 0.0f &&
+        std::isfinite(config.linkDeduplicationCellSize) && config.linkDeduplicationCellSize > 0.0f &&
+        config.queryMaxNodes > 0 &&
+        config.maxNearbyPolygons > 0;
+    if (!valid) {
+        message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
+    }
+    return valid;
+}
+
+void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
+    auto& islands = detail::IslandGraphAccess::islands(graph);
+    auto& polygonToIsland = detail::IslandGraphAccess::polygonToIsland(graph);
+    std::queue<dtPolyRef> pending;
+    for (int tileIndex = 0; tileIndex < navMesh.getMaxTiles(); ++tileIndex) {
+        const dtMeshTile* tile = navMesh.getTile(tileIndex);
+        if (!tile || !tile->header) {
+            continue;
+        }
+        for (int polygonIndex = 0; polygonIndex < tile->header->polyCount; ++polygonIndex) {
+            const dtPoly& polygon = tile->polys[polygonIndex];
+            if (polygon.getType() != DT_POLYTYPE_GROUND) {
+                continue;
+            }
+            const dtPolyRef start = navMesh.getPolyRefBase(tile) | static_cast<dtPolyRef>(polygonIndex);
+            if (polygonToIsland.find(start) != polygonToIsland.end()) {
+                continue;
+            }
+
+            Island island;
+            island.id = static_cast<IslandId>(islands.size());
+            island.boundsMin = {
+                (std::numeric_limits<float>::max)(),
+                (std::numeric_limits<float>::max)(),
+                (std::numeric_limits<float>::max)()};
+            island.boundsMax = {
+                (std::numeric_limits<float>::lowest)(),
+                (std::numeric_limits<float>::lowest)(),
+                (std::numeric_limits<float>::lowest)()};
+            pending.push(start);
+
+            while (!pending.empty()) {
+                const dtPolyRef current = pending.front();
+                pending.pop();
+                if (polygonToIsland.find(current) != polygonToIsland.end()) {
+                    continue;
+                }
+                const dtMeshTile* currentTile = nullptr;
+                const dtPoly* currentPolygon = nullptr;
+                if (!resolvePolygon(navMesh, current, currentTile, currentPolygon) ||
+                    currentPolygon->getType() != DT_POLYTYPE_GROUND) {
+                    continue;
+                }
+
+                polygonToIsland.emplace(current, island.id);
+                island.polygons.push_back(current);
+
+                Vec3 centroid;
+                for (unsigned char vertexIndex = 0; vertexIndex < currentPolygon->vertCount; ++vertexIndex) {
+                    const Vec3 vertex = detail::fromDetour(
+                        &currentTile->verts[currentPolygon->verts[vertexIndex] * 3]);
+                    centroid = detail::add(centroid, vertex);
+                    island.boundsMin.x = (std::min)(island.boundsMin.x, vertex.x);
+                    island.boundsMin.y = (std::min)(island.boundsMin.y, vertex.y);
+                    island.boundsMin.z = (std::min)(island.boundsMin.z, vertex.z);
+                    island.boundsMax.x = (std::max)(island.boundsMax.x, vertex.x);
+                    island.boundsMax.y = (std::max)(island.boundsMax.y, vertex.y);
+                    island.boundsMax.z = (std::max)(island.boundsMax.z, vertex.z);
+                }
+                island.center = detail::add(
+                    island.center,
+                    detail::divide(centroid, static_cast<float>(currentPolygon->vertCount)));
+
+                for (unsigned char edge = 0; edge < currentPolygon->vertCount; ++edge) {
+                    const dtPolyRef neighbor = getNeighbor(navMesh, *currentTile, *currentPolygon, edge);
+                    if (neighbor != 0 && polygonToIsland.find(neighbor) == polygonToIsland.end()) {
+                        pending.push(neighbor);
+                    }
+                }
+            }
+
+            if (!island.polygons.empty()) {
+                island.center = detail::divide(island.center, static_cast<float>(island.polygons.size()));
+                islands.push_back(std::move(island));
+            }
+        }
+    }
+}
+
+std::vector<Boundary> extractBoundaries(
+    const dtNavMesh& navMesh,
+    const IslandGraph& graph,
+    const BuildConfig& config) {
+    std::unordered_map<BoundaryKey, Boundary, BoundaryKeyHash> boundaries;
+    for (const Island& island : graph.islands()) {
+        for (dtPolyRef reference : island.polygons) {
+            const dtMeshTile* tile = nullptr;
+            const dtPoly* polygon = nullptr;
+            if (!resolvePolygon(navMesh, reference, tile, polygon)) {
+                continue;
+            }
+            for (unsigned char edge = 0; edge < polygon->vertCount; ++edge) {
+                if (!isBoundaryEdge(*tile, *polygon, edge)) {
+                    continue;
+                }
+                const Vec3 start = detail::fromDetour(&tile->verts[polygon->verts[edge] * 3]);
+                const Vec3 end = detail::fromDetour(
+                    &tile->verts[polygon->verts[(edge + 1) % polygon->vertCount] * 3]);
+                const Vec3 midpoint = detail::divide(detail::add(start, end), 2.0f);
+                const Vec3 direction{end.x - start.x, end.y - start.y, end.z - start.z};
+                const float cell = config.boundaryDeduplicationCellSize;
+                const BoundaryKey key{
+                    island.id,
+                    quantize(midpoint.x, cell),
+                    quantize(midpoint.y, cell),
+                    quantize(midpoint.z, cell),
+                    quantize(direction.x, cell),
+                    quantize(direction.y, cell),
+                    quantize(direction.z, cell)};
+                boundaries.emplace(key, Boundary{island.id, reference, start, end, midpoint});
+            }
+        }
+    }
+
+    std::vector<Boundary> output;
+    output.reserve(boundaries.size());
+    for (const auto& entry : boundaries) {
+        output.push_back(entry.second);
+    }
+    std::sort(output.begin(), output.end(), [](const Boundary& lhs, const Boundary& rhs) {
+        if (lhs.island != rhs.island) return lhs.island < rhs.island;
+        if (lhs.polygon != rhs.polygon) return lhs.polygon < rhs.polygon;
+        if (lhs.midpoint.x != rhs.midpoint.x) return lhs.midpoint.x < rhs.midpoint.x;
+        if (lhs.midpoint.y != rhs.midpoint.y) return lhs.midpoint.y < rhs.midpoint.y;
+        return lhs.midpoint.z < rhs.midpoint.z;
+    });
+    return output;
+}
+
+float linkDistance(const Link& link) {
+    return detail::distance(link.start, link.end);
+}
+
+bool isBetterLink(const Link& lhs, const Link& rhs) {
+    const float lhsDistance = linkDistance(lhs);
+    const float rhsDistance = linkDistance(rhs);
+    if (lhsDistance != rhsDistance) return lhsDistance < rhsDistance;
+    if (lhs.fromIsland != rhs.fromIsland) return lhs.fromIsland < rhs.fromIsland;
+    if (lhs.toIsland != rhs.toIsland) return lhs.toIsland < rhs.toIsland;
+    if (lhs.start.x != rhs.start.x) return lhs.start.x < rhs.start.x;
+    if (lhs.start.y != rhs.start.y) return lhs.start.y < rhs.start.y;
+    if (lhs.start.z != rhs.start.z) return lhs.start.z < rhs.start.z;
+    if (lhs.end.x != rhs.end.x) return lhs.end.x < rhs.end.x;
+    if (lhs.end.y != rhs.end.y) return lhs.end.y < rhs.end.y;
+    return lhs.end.z < rhs.end.z;
+}
+
+BuildStatus discoverLinks(
+    const dtNavMesh& navMesh,
+    IslandGraph& graph,
+    const BuildConfig& config,
+    std::string& message) {
+    std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
+    if (!query || dtStatusFailed(query->init(&navMesh, config.queryMaxNodes))) {
+        message = "Failed to initialize dtNavMeshQuery.";
+        return BuildStatus::QueryInitializationFailed;
+    }
+
+    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config);
+    std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
+    std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.maxNearbyPolygons));
+    const float extents[3]{
+        config.maxHorizontalGap,
+        (std::max)(config.maxVerticalGapUp, config.maxVerticalGapDown),
+        config.maxHorizontalGap};
+    const dtQueryFilter filter;
+
+    for (const Boundary& boundary : boundaries) {
+        float center[3];
+        detail::toDetour(boundary.midpoint, center);
+        int nearbyCount = 0;
+        if (dtStatusFailed(query->queryPolygons(
+                center,
+                extents,
+                &filter,
+                nearby.data(),
+                &nearbyCount,
+                config.maxNearbyPolygons))) {
+            message = "dtNavMeshQuery::queryPolygons failed.";
+            return BuildStatus::QueryFailed;
+        }
+        for (int index = 0; index < nearbyCount; ++index) {
+            const dtPolyRef candidatePolygon = nearby[static_cast<std::size_t>(index)];
+            if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
+                continue;
+            }
+            const auto target = graph.findIslandForPolygon(candidatePolygon);
+            if (!target || *target == boundary.island) {
+                continue;
+            }
+            float projected[3];
+            bool overPolygon = false;
+            if (dtStatusFailed(query->closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
+                continue;
+            }
+            (void)overPolygon;
+            Link link;
+            link.fromIsland = boundary.island;
+            link.toIsland = *target;
+            link.start = boundary.midpoint;
+            link.end = detail::fromDetour(projected);
+            link.horizontalDistance = detail::horizontalDistance(link.start, link.end);
+            link.verticalDistance = link.end.y - link.start.y;
+            if (link.horizontalDistance > config.maxHorizontalGap ||
+                link.verticalDistance > config.maxVerticalGapUp ||
+                link.verticalDistance < -config.maxVerticalGapDown) {
+                continue;
+            }
+            const float cell = config.linkDeduplicationCellSize;
+            const LinkKey key{
+                link.fromIsland,
+                link.toIsland,
+                quantize(link.start.x, cell),
+                quantize(link.start.y, cell),
+                quantize(link.start.z, cell),
+                quantize(link.end.x, cell),
+                quantize(link.end.y, cell),
+                quantize(link.end.z, cell)};
+            const auto existing = deduplicated.find(key);
+            if (existing == deduplicated.end() || isBetterLink(link, existing->second)) {
+                deduplicated[key] = link;
+            }
+        }
+    }
+
+    std::vector<Link> candidates;
+    candidates.reserve(deduplicated.size());
+    for (const auto& entry : deduplicated) {
+        candidates.push_back(entry.second);
+    }
+    std::sort(candidates.begin(), candidates.end(), isBetterLink);
+
+    std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
+    auto& islands = detail::IslandGraphAccess::islands(graph);
+    for (const Link& candidate : candidates) {
+        auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
+        const bool duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
+            return detail::distance(candidate.start, existing.start) <= config.linkDeduplicationCellSize &&
+                detail::distance(candidate.end, existing.end) <= config.linkDeduplicationCellSize;
+        });
+        if (!duplicate) {
+            accepted.push_back(candidate);
+            islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
+        }
+    }
+    return BuildStatus::Success;
+}
+
+} // namespace
+
+BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfig& config) const {
+    BuildResult result;
+    if (!validate(config, result.message)) {
+        result.status = BuildStatus::InvalidConfiguration;
+        return result;
+    }
+
+    floodFill(navMesh, result.graph);
+    result.status = discoverLinks(navMesh, result.graph, config, result.message);
+    return result;
+}
+
+} // namespace detour_island_graph

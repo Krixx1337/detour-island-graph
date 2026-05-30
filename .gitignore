@@ -1,0 +1,33 @@
+# Build output
+/build/
+/out/
+
+# CMake generated files
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_install.cmake
+/install_manifest.txt
+/Makefile
+/*.sln
+/*.vcxproj
+/*.vcxproj.filters
+/*.vcxproj.user
+
+# IDE and editor metadata
+/.vs/
+/.vscode/
+/.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Compiled artifacts
+*.a
+*.dll
+*.dylib
+*.exe
+*.lib
+*.obj
+*.o
+*.pdb
