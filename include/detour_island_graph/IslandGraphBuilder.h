@@ -24,6 +24,17 @@ struct MassAwareTuning {
     }
 };
 
+struct DensityTuning {
+    bool enabled = false;
+    float distanceScale = 0.0f;
+    float maxRadiusScale = 1.0f;
+
+    float pruneRadiusScaleFor(float horizontalDistance) const noexcept {
+        const float scale = 1.0f + (distanceScale * horizontalDistance);
+        return scale < maxRadiusScale ? scale : maxRadiusScale;
+    }
+};
+
 struct BuildConfig {
     float maxHorizontalGap = 30.0f;
     float maxVerticalGapUp = 30.0f;
@@ -33,6 +44,7 @@ struct BuildConfig {
     int queryMaxNodes = 4096;
     int maxNearbyPolygons = 2048;
     MassAwareTuning massAware;
+    DensityTuning density;
 };
 
 struct BuildStats {

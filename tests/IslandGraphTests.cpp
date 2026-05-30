@@ -342,6 +342,52 @@ int main() {
         linkCount(aggressivelyPruned.graph, 0, 1) == 1,
         "coarse geometric pruning should collapse duplicate links for one island pair");
 
+    BuildConfig disabledDensityConfig = buildConfig;
+    disabledDensityConfig.density.enabled = false;
+    disabledDensityConfig.density.distanceScale = 10.0f;
+    disabledDensityConfig.density.maxRadiusScale = 100.0f;
+    const BuildResult disabledDensityBuild = builder.build(*navMesh, disabledDensityConfig);
+    require(static_cast<bool>(disabledDensityBuild), "disabled density tuning should remain valid");
+    require(
+        disabledDensityBuild.stats.acceptedLinkCount == buildResult.stats.acceptedLinkCount,
+        "disabled density tuning should preserve baseline accepted links");
+
+    BuildConfig densityConfig = buildConfig;
+    densityConfig.density.enabled = true;
+    densityConfig.density.distanceScale = 0.25f;
+    densityConfig.density.maxRadiusScale = 2.0f;
+    require(
+        densityConfig.density.pruneRadiusScaleFor(2.0f) == 1.5f,
+        "density radius scale should grow continuously with link distance");
+    require(
+        densityConfig.density.pruneRadiusScaleFor(8.0f) == 2.0f,
+        "density radius scale should obey its smooth cap");
+    const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
+    require(static_cast<bool>(densityBuild), "density-aware builder should process valid configuration");
+    require(
+        densityBuild.stats.acceptedLinkCount <= buildResult.stats.acceptedLinkCount,
+        "enabling density tuning should not increase accepted links");
+
+    BuildConfig strongerDensityConfig = densityConfig;
+    strongerDensityConfig.density.distanceScale = 0.5f;
+    strongerDensityConfig.density.maxRadiusScale = 3.0f;
+    const BuildResult strongerDensityBuild = builder.build(*navMesh, strongerDensityConfig);
+    require(static_cast<bool>(strongerDensityBuild), "stronger density tuning should remain valid");
+    require(
+        strongerDensityBuild.stats.acceptedLinkCount <= densityBuild.stats.acceptedLinkCount,
+        "stronger density tuning should not increase accepted links");
+
+    BuildConfig invalidDensityConfig;
+    invalidDensityConfig.density.distanceScale = -0.01f;
+    require(
+        builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration,
+        "builder should reject negative density distance scale");
+    invalidDensityConfig = {};
+    invalidDensityConfig.density.maxRadiusScale = 0.99f;
+    require(
+        builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration,
+        "builder should reject density caps below one");
+
     const auto variedMassNavMesh = buildVariedMassNavMesh();
     const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
     require(static_cast<bool>(geometricMassBuild), "baseline builder should process varied island mass");

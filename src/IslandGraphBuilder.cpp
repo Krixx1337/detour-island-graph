@@ -209,6 +209,7 @@ bool isBoundaryEdge(const dtMeshTile& tile, const dtPoly& polygon, unsigned char
 
 bool validate(const BuildConfig& config, std::string& message) {
     const MassAwareTuning& massAware = config.massAware;
+    const DensityTuning& density = config.density;
     const bool valid =
         std::isfinite(config.maxHorizontalGap) && config.maxHorizontalGap > 0.0f &&
         std::isfinite(config.maxVerticalGapUp) && config.maxVerticalGapUp >= 0.0f &&
@@ -225,7 +226,11 @@ bool validate(const BuildConfig& config, std::string& message) {
         std::isfinite(massAware.lowMassPruneRadiusScale) &&
         massAware.lowMassPruneRadiusScale > 0.0f &&
         std::isfinite(massAware.highMassPruneRadiusScale) &&
-        massAware.highMassPruneRadiusScale > 0.0f;
+        massAware.highMassPruneRadiusScale > 0.0f &&
+        std::isfinite(density.distanceScale) &&
+        density.distanceScale >= 0.0f &&
+        std::isfinite(density.maxRadiusScale) &&
+        density.maxRadiusScale >= 1.0f;
     if (!valid) {
         message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
     }
@@ -433,11 +438,15 @@ bool isBetterLink(const Link& lhs, const Link& rhs, const IslandGraph& graph, co
 }
 
 float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig& config) {
-    if (!config.massAware.enabled) {
-        return config.linkDeduplicationCellSize;
+    float scale = 1.0f;
+    if (config.massAware.enabled) {
+        const float targetMass = graph.islands()[link.toIsland].massScore;
+        scale *= config.massAware.pruneRadiusScaleFor(targetMass);
     }
-    const float targetMass = graph.islands()[link.toIsland].massScore;
-    return config.linkDeduplicationCellSize * config.massAware.pruneRadiusScaleFor(targetMass);
+    if (config.density.enabled) {
+        scale *= config.density.pruneRadiusScaleFor(link.horizontalDistance);
+    }
+    return config.linkDeduplicationCellSize * scale;
 }
 
 BuildStatus discoverLinks(

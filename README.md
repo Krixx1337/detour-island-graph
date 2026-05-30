@@ -36,6 +36,23 @@ config.massAware.highMassPruneRadiusScale = 0.75f;
 
 Leave `massAware.enabled` as `false` to retain the minimal geometric behavior.
 
+## Optional Density Tuning
+
+Applications with large navmeshes may enable optional continuous density tuning
+through `BuildConfig::density`. It smoothly increases the pair-local pruning radius
+for longer links, where nearby portal variants are more likely to be redundant.
+
+```cpp
+detour_island_graph::BuildConfig config;
+config.density.enabled = true;
+config.density.distanceScale = 0.05f;
+config.density.maxRadiusScale = 2.0f;
+```
+
+The curve is capped, continuous, and independent from mass-aware tuning. It does not
+introduce island classes, distance buckets, or fixed link budgets. Leave
+`density.enabled` as `false` to preserve baseline output.
+
 ## Build Stats
 
 Each `BuildResult` includes ephemeral `BuildStats` for integration diagnostics and
