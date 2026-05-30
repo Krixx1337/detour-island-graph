@@ -1,115 +1,117 @@
 # DetourIslandGraph
 
-DetourIslandGraph is a small C++17 library for building and querying an island graph
-on top of a Recast/Detour `dtNavMesh`.
+**DetourIslandGraph** is a lightweight, high-performance C++17 library designed to automatically build and query a **topological meta-graph** on top of your existing Recast/Detour `dtNavMesh`.
 
-The library contains a synchronous graph builder, portal-aware pathfinder, and
-optional explicit stream serializer.
+In complex 3D games with vertically layered maps (cliffs, broken bridges, teleporters, platforms, rooftops, and dungeons), players and AI agents frequently need to cross gaps where there is no continuous navmesh connectivity. DetourIslandGraph solves this by automatically discovering these gaps, generating traverse-able jump links between disconnected navmesh "islands," and providing ultra-fast hierarchical pathfinding across them.
 
-## Design
+---
 
-- Coordinates are Detour-native: X/Z are horizontal and Y is vertical.
-- Links are directed because upward and downward traversal limits may differ.
-- `dtPolyRef` values refer to the source navmesh. Keep that navmesh topology stable
-  while using its graph.
-- The library contains no engine integration, threading, cache policy, coordinate
-  conversion, or third-party math dependency.
+## Why Use DetourIslandGraph?
 
-## Optional Mass-Aware Tuning
+*   🌐 **Automatic Jump-Link Generation:** Automatically extracts navmesh boundaries, queries nearby geometry, and generates directional link candidates across gaps (falls, leaps, teleports) between separate navmesh islands.
+*   ⚡ **Ultra-Fast Hierarchical Pathfinding:** Instead of running expensive, fine-grained A* searches across hundreds of thousands of polygons on huge maps, your AI can perform a lightning-fast search on the sparse "island graph" first, then execute local pathfinding between portals.
+*   🎒 **Extremely Lean & Zero-Dependency:** Written in clean C++17. No engine integration, no custom threading models, and no third-party math or vector dependencies. It integrates directly on top of your existing Detour code.
+*   📉 **Smart Geometric Density Control:** Includes global spatial occupancy grid pruning and pair-local deduplication to prevent links from exploding on large coastlines or cliffs, keeping A* search branching factors optimal and memory footprint minimal.
+*   💾 **Stream Serialization:** Includes a fast, explicit binary serializer to save and load generated island graphs through standard C++ streams.
 
-The geometric baseline is the default. Applications may enable optional continuous
-mass-aware tuning through `BuildConfig::massAware`.
+---
 
-Each island receives a normalized `massScore` in `[0, 1]` based on polygon count and
-horizontal span. The score is normalized against an interpolated map-relative
-percentile with a smooth asymptotic curve, then feeds smooth formulas for candidate
-preference and pair-pruning radius. There are no backbone/support buckets, tier
-thresholds, or hard cliffs.
+## How It Works
 
-```cpp
-detour_island_graph::BuildConfig config;
-config.massAware.enabled = true;
-config.massAware.targetPreference = 2.0f;
-config.massAware.lowMassPruneRadiusScale = 1.5f;
-config.massAware.highMassPruneRadiusScale = 0.75f;
-```
+1.  **Extract Islands:** Runs a fast topological flood-fill on the `dtNavMesh` to identify completely separate ground regions (islands).
+2.  **Discover Boundaries:** Extracts the open edges of these islands where gaps or cliffs occur.
+3.  **Detect Links:** Uses spatial queries on the navmesh to find close landing points across the gaps, generating candidate jump links.
+4.  **Prune Redundancy:** Applies geometric density filters and global spatial occupancy grids to keep only the best, most unique link options.
+5.  **Hierarchical Pathfinder:** Executes a fast A* search on the resulting sparse island graph.
 
-Leave `massAware.enabled` as `false` to retain the minimal geometric behavior.
+---
 
-## Optional Density Tuning
+## Quick Start Example
 
-Applications with large navmeshes may enable optional continuous density tuning
-through `BuildConfig::density`. It smoothly increases the pair-local pruning radius
-for longer links, where nearby portal variants are more likely to be redundant.
+### 1. Build the Island Graph
+
+Building the topological graph is as simple as defining your gap tolerances and passing your Detour navmesh to the builder:
 
 ```cpp
+#include <detour_island_graph/IslandGraphBuilder.h>
+
+// 1. Configure the builder parameters
 detour_island_graph::BuildConfig config;
+config.maxHorizontalGap = 20.0f;     // Maximum jump distance
+config.maxVerticalGapUp = 4.0f;      // Maximum climbable/jumpable height
+config.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls)
+
+// Enable global density pruning to keep the graph clean & sparse
 config.density.enabled = true;
-config.density.distanceScale = 0.05f;
-config.density.maxRadiusScale = 2.0f;
+config.density.globalPruneCellSize = 12.0f; // 12-meter global occupancy grid
+
+// 2. Build the graph
+detour_island_graph::IslandGraphBuilder builder;
+detour_island_graph::BuildResult result = builder.build(*myDetourNavMesh, config);
+
+if (result) {
+    // Access the generated graph
+    const detour_island_graph::IslandGraph& graph = result.graph;
+    std::cout << "Successfully generated " << result.stats.acceptedLinkCount << " jump links!\n";
+}
 ```
 
-The curve is capped, continuous, and independent from mass-aware tuning. It does not
-introduce island classes, distance buckets, or fixed link budgets. Leave
-`density.enabled` as `false` to preserve baseline output.
+### 2. Query a High-Level Path
 
-## Build Stats
+Once built, you can query high-level paths across the islands:
 
-Each `BuildResult` includes ephemeral `BuildStats` for integration diagnostics and
-benchmarks. Stats report stage timings and pipeline counts such as islands, polygons,
-raw and deduplicated boundaries, spatial queries, projected and deduplicated
-candidates, and accepted links. They do not affect graph behavior or serialization.
+```cpp
+#include <detour_island_graph/IslandGraphPathfinder.h>
 
-## CMake
+detour_island_graph::IslandGraphPathfinder pathfinder;
 
-Provide Detour as a `Detour` or `RecastNavigation::Detour` CMake target:
+// Query a path from a start position to an end position across the graph
+detour_island_graph::PathResult path = pathfinder.findPath(
+    result.graph,
+    startIslandId,
+    endIslandId,
+    startPositionVec3,
+    endPositionVec3
+);
+
+if (path.status == detour_island_graph::PathStatus::Success) {
+    // Iterate over the meta-links/portals that connect the islands
+    for (const detour_island_graph::Link& jumpLink : path.links) {
+        std::cout << "Take jump link from (" 
+                  << jumpLink.start.x << ", " << jumpLink.start.z << ") to ("
+                  << jumpLink.end.x << ", " << jumpLink.end.z << ")\n";
+    }
+}
+```
+
+---
+
+## Advanced Configuration
+
+### Global & Local Density Tuning
+If your game has large continents, coastlines, or long cliffs, you can enable `density` tuning to prevent the builder from generating hundreds of parallel redundant jump links.
+
+*   `density.distanceScale` (default `0.0f`): Controls how quickly the pruning radius grows with link distance (longer jumps prune more local variants).
+*   `density.globalPruneCellSize` (default `0.0f`): A 3D spatial occupancy grid size. When set to `> 0.0f` (e.g., `12.0f`), only one link start or end point is allowed to occupy each grid cell globally, keeping your graph sparse and performant.
+
+### Mass-Aware Tuning
+Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances.
+
+---
+
+## CMake Integration
+
+Add Detour as a `Detour` or `RecastNavigation::Detour` target in your CMake setup:
 
 ```cmake
 add_subdirectory(path/to/DetourIslandGraph)
-target_link_libraries(your_target PRIVATE
-    detour_island_graph::detour_island_graph)
+target_link_libraries(your_target PRIVATE detour_island_graph::detour_island_graph)
 ```
 
-When no Detour target or local path is provided, standalone builds fetch the pinned
-upstream RecastNavigation `v1.6.0` tag automatically. Disable network bootstrap with:
+By default, standalone builds will automatically fetch pinned upstream Detour `v1.6.0` headers if not already available in your environment. You can compile the standalone test suite by configuring CMake with `-DDETOUR_ISLAND_GRAPH_BUILD_TESTS=ON`.
 
-```text
--DDETOUR_ISLAND_GRAPH_FETCH_DETOUR=OFF
-```
+---
 
-Installed packages expose the same target:
+## License
 
-```cmake
-find_package(detour_island_graph CONFIG REQUIRED)
-target_link_libraries(your_target PRIVATE
-    detour_island_graph::detour_island_graph)
-```
-
-For local development with prebuilt Detour headers, set:
-
-```text
--DDETOUR_ISLAND_GRAPH_DETOUR_INCLUDE_DIR=path/to/detour/include
-```
-
-Builder use also requires a Detour implementation. A prebuilt library can be supplied
-with:
-
-```text
--DDETOUR_ISLAND_GRAPH_DETOUR_LIBRARY=path/to/detour/library
-```
-
-These raw path options are build-tree conveniences. Installed-package consumers
-should provide Detour through their own CMake integration.
-
-Enable the standalone tests with:
-
-```text
--DDETOUR_ISLAND_GRAPH_BUILD_TESTS=ON
-```
-
-## Serialization
-
-`IslandGraphSerializer` reads and writes an explicit versioned little-endian binary
-format through standard streams. It does not manage files, cache identity,
-compression, or encryption. The caller is responsible for ensuring serialized graph
-data matches the source navmesh.
+This library is licensed under the MIT License.
