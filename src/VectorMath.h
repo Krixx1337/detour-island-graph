@@ -20,11 +20,15 @@ inline float horizontalDistance(const Vec3& lhs, const Vec3& rhs) {
     return std::sqrt((dx * dx) + (dz * dz));
 }
 
-inline float distance(const Vec3& lhs, const Vec3& rhs) {
+inline float distanceSquared(const Vec3& lhs, const Vec3& rhs) {
     const float dx = lhs.x - rhs.x;
     const float dy = lhs.y - rhs.y;
     const float dz = lhs.z - rhs.z;
-    return std::sqrt((dx * dx) + (dy * dy) + (dz * dz));
+    return (dx * dx) + (dy * dy) + (dz * dz);
+}
+
+inline float distance(const Vec3& lhs, const Vec3& rhs) {
+    return std::sqrt(distanceSquared(lhs, rhs));
 }
 
 inline Vec3 fromDetour(const float* value) {

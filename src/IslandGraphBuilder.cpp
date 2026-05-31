@@ -259,65 +259,99 @@ bool isBoundaryEdge(const dtMeshTile& tile, const dtPoly& polygon, unsigned char
 bool validate(const BuildConfig& config, std::string& message) {
     const MassAwareTuning& massAware = config.massAware;
     const DensityTuning& density = config.density;
-    const bool valid =
-        std::isfinite(config.gapDiscovery.maxHorizontalGap) && config.gapDiscovery.maxHorizontalGap > 0.0f &&
-        std::isfinite(config.gapDiscovery.maxVerticalGapUp) && config.gapDiscovery.maxVerticalGapUp >= 0.0f &&
-        std::isfinite(config.gapDiscovery.maxVerticalGapDown) && config.gapDiscovery.maxVerticalGapDown >= 0.0f &&
-        (!config.boundaries.deduplicationEnabled ||
-            (std::isfinite(config.boundaries.deduplicationCellSize) &&
-             config.boundaries.deduplicationCellSize >= 0.0f &&
-             std::isfinite(config.boundaries.deduplicationCellSizeRatio) &&
-             config.boundaries.deduplicationCellSizeRatio > 0.0f)) &&
-        (!config.boundaries.representativeReductionEnabled ||
-            (std::isfinite(config.boundaries.representativeCellSize) &&
-             config.boundaries.representativeCellSize >= 0.0f &&
-             std::isfinite(config.boundaries.representativeCellSizeRatio) &&
-             config.boundaries.representativeCellSizeRatio > 0.0f)) &&
-        config.query.maxNodes > 0 &&
-        config.query.maxNearbyPolygons > 0 &&
-        std::isfinite(massAware.normalizationPercentile) &&
-        massAware.normalizationPercentile > 0.0f &&
-        massAware.normalizationPercentile <= 1.0f &&
-        std::isfinite(massAware.targetPreference) &&
-        massAware.targetPreference >= 0.0f &&
-        std::isfinite(massAware.lowMassPruneRadiusScale) &&
-        massAware.lowMassPruneRadiusScale > 0.0f &&
-        std::isfinite(massAware.highMassPruneRadiusScale) &&
-        massAware.highMassPruneRadiusScale > 0.0f &&
-        (!density.pairScanSuppression.enabled ||
-            (std::isfinite(density.pairScanSuppression.cellSize) &&
-             density.pairScanSuppression.cellSize >= 0.0f &&
-             std::isfinite(density.pairScanSuppression.cellSizeRatio) &&
-             density.pairScanSuppression.cellSizeRatio > 0.0f)) &&
-        (!density.candidateDeduplication.enabled ||
-            (std::isfinite(density.candidateDeduplication.cellSize) &&
-             density.candidateDeduplication.cellSize >= 0.0f &&
-             std::isfinite(density.candidateDeduplication.cellSizeRatio) &&
-             density.candidateDeduplication.cellSizeRatio > 0.0f)) &&
-        (!density.localPruning.enabled ||
-            (std::isfinite(density.localPruning.baseRadius) &&
-             density.localPruning.baseRadius >= 0.0f &&
-             std::isfinite(density.localPruning.baseRadiusRatio) &&
-             density.localPruning.baseRadiusRatio > 0.0f &&
-             (!density.localPruning.enableDistanceScaling ||
+    const auto require = [&](bool condition, const char* error) {
+        if (!condition) {
+            message = error;
+        }
+        return condition;
+    };
+
+    if (!require(
+            std::isfinite(config.gapDiscovery.maxHorizontalGap) &&
+                config.gapDiscovery.maxHorizontalGap > 0.0f,
+            "gapDiscovery.maxHorizontalGap must be finite and greater than zero.")) return false;
+    if (!require(
+            std::isfinite(config.gapDiscovery.maxVerticalGapUp) &&
+                config.gapDiscovery.maxVerticalGapUp >= 0.0f,
+            "gapDiscovery.maxVerticalGapUp must be finite and non-negative.")) return false;
+    if (!require(
+            std::isfinite(config.gapDiscovery.maxVerticalGapDown) &&
+                config.gapDiscovery.maxVerticalGapDown >= 0.0f,
+            "gapDiscovery.maxVerticalGapDown must be finite and non-negative.")) return false;
+    if (!require(
+            !config.boundaries.deduplicationEnabled ||
+                (std::isfinite(config.boundaries.deduplicationCellSize) &&
+                 config.boundaries.deduplicationCellSize >= 0.0f &&
+                 std::isfinite(config.boundaries.deduplicationCellSizeRatio) &&
+                 config.boundaries.deduplicationCellSizeRatio > 0.0f),
+            "Enabled boundary deduplication requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+    if (!require(
+            !config.boundaries.representativeReductionEnabled ||
+                (std::isfinite(config.boundaries.representativeCellSize) &&
+                 config.boundaries.representativeCellSize >= 0.0f &&
+                 std::isfinite(config.boundaries.representativeCellSizeRatio) &&
+                 config.boundaries.representativeCellSizeRatio > 0.0f),
+            "Enabled boundary representative reduction requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+    if (!require(config.query.maxNodes > 0, "query.maxNodes must be greater than zero.")) return false;
+    if (!require(config.query.maxNearbyPolygons > 0, "query.maxNearbyPolygons must be greater than zero.")) return false;
+    if (!require(
+            std::isfinite(massAware.normalizationPercentile) &&
+                massAware.normalizationPercentile > 0.0f &&
+                massAware.normalizationPercentile <= 1.0f,
+            "massAware.normalizationPercentile must be finite and in the range (0, 1].")) return false;
+    if (!require(
+            std::isfinite(massAware.targetPreference) && massAware.targetPreference >= 0.0f,
+            "massAware.targetPreference must be finite and non-negative.")) return false;
+    if (!require(
+            std::isfinite(massAware.lowMassPruneRadiusScale) && massAware.lowMassPruneRadiusScale > 0.0f,
+            "massAware.lowMassPruneRadiusScale must be finite and greater than zero.")) return false;
+    if (!require(
+            std::isfinite(massAware.highMassPruneRadiusScale) && massAware.highMassPruneRadiusScale > 0.0f,
+            "massAware.highMassPruneRadiusScale must be finite and greater than zero.")) return false;
+    if (!require(
+            !density.pairScanSuppression.enabled ||
+                (std::isfinite(density.pairScanSuppression.cellSize) &&
+                 density.pairScanSuppression.cellSize >= 0.0f &&
+                 std::isfinite(density.pairScanSuppression.cellSizeRatio) &&
+                 density.pairScanSuppression.cellSizeRatio > 0.0f),
+            "Enabled pair-scan suppression requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+    if (!require(
+            !density.candidateDeduplication.enabled ||
+                (std::isfinite(density.candidateDeduplication.cellSize) &&
+                 density.candidateDeduplication.cellSize >= 0.0f &&
+                 std::isfinite(density.candidateDeduplication.cellSizeRatio) &&
+                 density.candidateDeduplication.cellSizeRatio > 0.0f),
+            "Enabled candidate deduplication requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+    if (!require(
+            !density.localPruning.enabled ||
+                (std::isfinite(density.localPruning.baseRadius) &&
+                 density.localPruning.baseRadius >= 0.0f &&
+                 std::isfinite(density.localPruning.baseRadiusRatio) &&
+                 density.localPruning.baseRadiusRatio > 0.0f),
+            "Enabled local pruning requires a non-negative finite base radius and a positive finite base-radius ratio.")) return false;
+    if (!require(
+            !density.localPruning.enabled ||
+                !density.localPruning.enableDistanceScaling ||
                 (std::isfinite(density.localPruning.distanceScale) &&
                  density.localPruning.distanceScale >= 0.0f &&
                  std::isfinite(density.localPruning.maxRadiusScale) &&
-                 density.localPruning.maxRadiusScale >= 1.0f)))) &&
-        (!density.globalPruning.enabled ||
-            (std::isfinite(density.globalPruning.cellSize) &&
-             density.globalPruning.cellSize >= 0.0f &&
-             std::isfinite(density.globalPruning.cellSizeRatio) &&
-             density.globalPruning.cellSizeRatio > 0.0f)) &&
-        (!density.spannerPruning.enabled ||
-            (std::isfinite(density.spannerPruning.pathRatio) &&
-             density.spannerPruning.pathRatio >= 1.0f &&
-             std::isfinite(density.spannerPruning.verticalWeight) &&
-             density.spannerPruning.verticalWeight >= 0.0f));
-    if (!valid) {
-        message = "BuildConfig values must be finite and spatial cell sizes, horizontal gap, and query capacities must be positive.";
-    }
-    return valid;
+                 density.localPruning.maxRadiusScale >= 1.0f),
+            "Enabled local-pruning distance scaling requires a non-negative finite distance scale and a finite maximum radius scale of at least one.")) return false;
+    if (!require(
+            !density.globalPruning.enabled ||
+                (std::isfinite(density.globalPruning.cellSize) &&
+                 density.globalPruning.cellSize >= 0.0f &&
+                 std::isfinite(density.globalPruning.cellSizeRatio) &&
+                 density.globalPruning.cellSizeRatio > 0.0f),
+            "Enabled global pruning requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+    if (!require(
+            !density.spannerPruning.enabled ||
+                (std::isfinite(density.spannerPruning.pathRatio) &&
+                 density.spannerPruning.pathRatio >= 1.0f &&
+                 std::isfinite(density.spannerPruning.verticalWeight) &&
+                 density.spannerPruning.verticalWeight >= 0.0f),
+            "Enabled spanner pruning requires a finite path ratio of at least one and a non-negative finite vertical weight.")) return false;
+    return true;
 }
 
 float lerp(float low, float high, float alpha) {
@@ -616,27 +650,17 @@ bool hasAcceptableIndirectRoute(
     return false;
 }
 
-BuildStatus discoverLinks(
-    const dtNavMesh& navMesh,
+BuildStatus discoverCandidates(
+    dtNavMeshQuery& query,
     IslandGraph& graph,
     const BuildConfig& config,
+    const std::vector<Boundary>& representatives,
     BuildStats& stats,
+    std::vector<Link>& candidates,
     std::string& message) {
-    std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
-    if (!query || dtStatusFailed(query->init(&navMesh, config.query.maxNodes))) {
-        message = "Failed to initialize dtNavMeshQuery.";
-        return BuildStatus::QueryInitializationFailed;
-    }
-
-    const Clock::time_point boundaryStart = Clock::now();
-    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
-    const std::vector<Boundary> representatives = selectBoundaryRepresentatives(boundaries, config, stats);
-    stats.timings.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
-
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
     std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
-    std::vector<Link> candidates;
     std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.query.maxNearbyPolygons));
     const float candidateCellSize = config.density.candidateDeduplication.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
@@ -653,7 +677,7 @@ BuildStatus discoverLinks(
         detail::toDetour(boundary.midpoint, center);
         int nearbyCount = 0;
         ++stats.queries.count;
-        if (dtStatusFailed(query->queryPolygons(
+        if (dtStatusFailed(query.queryPolygons(
                 center,
                 extents,
                 &filter,
@@ -692,7 +716,7 @@ BuildStatus discoverLinks(
             float projected[3];
             bool overPolygon = false;
             ++stats.candidates.closestPointQueryCount;
-            if (dtStatusFailed(query->closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
+            if (dtStatusFailed(query.closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
                 ++stats.candidates.closestPointFailureCount;
                 continue;
             }
@@ -737,7 +761,14 @@ BuildStatus discoverLinks(
     }
     stats.candidates.deduplicatedCount = candidates.size();
     stats.timings.linkDiscoveryMs = elapsedMilliseconds(discoveryStart);
+    return BuildStatus::Success;
+}
 
+void pruneCandidates(
+    IslandGraph& graph,
+    const BuildConfig& config,
+    BuildStats& stats,
+    std::vector<Link>& candidates) {
     const Clock::time_point pruningStart = Clock::now();
     std::sort(candidates.begin(), candidates.end(), [&](const Link& lhs, const Link& rhs) {
         return isBetterLink(lhs, rhs, graph, config);
@@ -781,9 +812,10 @@ BuildStatus discoverLinks(
         if (config.density.localPruning.enabled) {
             auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
             const float radius = pruneRadius(candidate, graph, config);
+            const float radiusSquared = radius * radius;
             duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-                return detail::distance(candidate.start, existing.start) <= radius &&
-                    detail::distance(candidate.end, existing.end) <= radius;
+                return detail::distanceSquared(candidate.start, existing.start) <= radiusSquared &&
+                    detail::distanceSquared(candidate.end, existing.end) <= radiusSquared;
             });
             if (!duplicate) {
                 accepted.push_back(candidate);
@@ -812,6 +844,32 @@ BuildStatus discoverLinks(
         }
     }
     stats.timings.pruningMs = elapsedMilliseconds(pruningStart);
+}
+
+BuildStatus discoverLinks(
+    const dtNavMesh& navMesh,
+    IslandGraph& graph,
+    const BuildConfig& config,
+    BuildStats& stats,
+    std::string& message) {
+    std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
+    if (!query || dtStatusFailed(query->init(&navMesh, config.query.maxNodes))) {
+        message = "Failed to initialize dtNavMeshQuery.";
+        return BuildStatus::QueryInitializationFailed;
+    }
+
+    const Clock::time_point boundaryStart = Clock::now();
+    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
+    const std::vector<Boundary> representatives = selectBoundaryRepresentatives(boundaries, config, stats);
+    stats.timings.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
+
+    std::vector<Link> candidates;
+    const BuildStatus discoveryStatus =
+        discoverCandidates(*query, graph, config, representatives, stats, candidates, message);
+    if (discoveryStatus != BuildStatus::Success) {
+        return discoveryStatus;
+    }
+    pruneCandidates(graph, config, stats, candidates);
     return BuildStatus::Success;
 }
 

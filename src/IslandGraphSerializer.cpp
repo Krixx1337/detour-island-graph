@@ -17,6 +17,7 @@ namespace {
 constexpr std::uint32_t MaxIslandCount = 1'000'000U;
 constexpr std::uint32_t MaxElementsPerVector = 16'000'000U;
 constexpr std::size_t MaxDeserializedAllocationBytes = 256U * 1024U * 1024U;
+static_assert(std::numeric_limits<float>::is_iec559, "IEEE-754 float representation required");
 
 bool consumeAllocationBudget(std::size_t& remainingBytes, std::size_t count, std::size_t elementBytes) {
     if (elementBytes != 0 && count > remainingBytes / elementBytes) {

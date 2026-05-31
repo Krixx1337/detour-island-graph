@@ -27,7 +27,7 @@ class IslandGraphPathfinder {
 public:
     // Uses A* for the default geometric link cost. Supplying linkCost switches
     // to Dijkstra ordering so arbitrary non-negative custom costs stay optimal.
-    PathResult findPath(
+    [[nodiscard]] PathResult findPath(
         const IslandGraph& graph,
         IslandId startIsland,
         IslandId endIsland,

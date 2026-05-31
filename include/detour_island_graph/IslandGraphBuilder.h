@@ -201,7 +201,7 @@ struct BuildResult {
 
 class IslandGraphBuilder {
 public:
-    BuildResult build(const dtNavMesh& navMesh, const BuildConfig& config = {}) const;
+    [[nodiscard]] BuildResult build(const dtNavMesh& navMesh, const BuildConfig& config = {}) const;
 };
 
 } // namespace detour_island_graph

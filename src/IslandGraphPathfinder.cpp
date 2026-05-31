@@ -12,18 +12,16 @@
 namespace detour_island_graph {
 namespace {
 
-struct Portal {
-    const Link* link = nullptr;
-};
-
 struct State {
     float cost = (std::numeric_limits<float>::max)();
     std::size_t previousPortal = (std::numeric_limits<std::size_t>::max)();
+    const Link* link = nullptr;
     bool closed = false;
 };
 
 struct OpenEntry {
     std::size_t portal = 0;
+    const Link* link = nullptr;
     float gCost = 0.0f; // true accumulated cost (for stale entry check)
     float fCost = 0.0f; // f = g + h (used ONLY for queue sorting)
 
@@ -68,23 +66,26 @@ PathResult IslandGraphPathfinder::findPath(
         };
     }
 
-    std::vector<Portal> portals;
-    std::vector<std::vector<std::size_t>> outgoingByIsland(graph.islands().size());
-    for (const Island& island : graph.islands()) {
-        for (const Link& link : island.outgoingLinks) {
-            if (link.fromIsland != island.id || !graph.findIsland(link.toIsland)) {
-                continue;
-            }
-            outgoingByIsland[island.id].push_back(portals.size());
-            portals.push_back({&link});
-        }
+    std::vector<std::size_t> portalOffsets(graph.islands().size() + 1, 0);
+    for (std::size_t islandIndex = 0; islandIndex < graph.islands().size(); ++islandIndex) {
+        portalOffsets[islandIndex + 1] =
+            portalOffsets[islandIndex] + graph.islands()[islandIndex].outgoingLinks.size();
     }
 
-    std::vector<State> states(portals.size());
+    std::vector<State> states(portalOffsets.back());
     std::priority_queue<OpenEntry> open;
-    for (std::size_t portalIndex : outgoingByIsland[startIsland]) {
-        const Link& link = *portals[portalIndex].link;
-        if (!linkFilter(link)) {
+    const auto enqueue = [&](const Island& island, std::size_t linkIndex, float gCost, float hCost) {
+        const Link& link = island.outgoingLinks[linkIndex];
+        const std::size_t portalIndex = portalOffsets[island.id] + linkIndex;
+        State& state = states[portalIndex];
+        state.cost = gCost;
+        state.link = &link;
+        open.push({portalIndex, &link, gCost, gCost + hCost});
+    };
+    const Island& start = graph.islands()[startIsland];
+    for (std::size_t linkIndex = 0; linkIndex < start.outgoingLinks.size(); ++linkIndex) {
+        const Link& link = start.outgoingLinks[linkIndex];
+        if (link.fromIsland != start.id || !graph.findIsland(link.toIsland) || !linkFilter(link)) {
             continue;
         }
         const float gapCost = linkCost(link);
@@ -93,8 +94,7 @@ PathResult IslandGraphPathfinder::findPath(
         }
         const float gCost = detail::distance(startPosition, link.start) + gapCost;
         const float hCost = useEuclideanHeuristic ? detail::distance(link.end, endPosition) : 0.0f;
-        states[portalIndex].cost = gCost;
-        open.push({portalIndex, gCost, gCost + hCost});
+        enqueue(start, linkIndex, gCost, hCost);
     }
 
     std::size_t bestGoalPortal = (std::numeric_limits<std::size_t>::max)();
@@ -108,7 +108,7 @@ PathResult IslandGraphPathfinder::findPath(
         }
         currentState.closed = true;
 
-        const Link& currentLink = *portals[currentEntry.portal].link;
+        const Link& currentLink = *currentEntry.link;
         if (currentLink.toIsland == endIsland) {
             const float goalCost = currentState.cost + detail::distance(currentLink.end, endPosition);
             if (goalCost < bestGoalCost) {
@@ -120,9 +120,12 @@ PathResult IslandGraphPathfinder::findPath(
             continue;
         }
 
-        for (std::size_t nextPortalIndex : outgoingByIsland[currentLink.toIsland]) {
-            const Link& nextLink = *portals[nextPortalIndex].link;
-            if (!linkFilter(nextLink)) {
+        const Island& nextIsland = graph.islands()[currentLink.toIsland];
+        for (std::size_t linkIndex = 0; linkIndex < nextIsland.outgoingLinks.size(); ++linkIndex) {
+            const Link& nextLink = nextIsland.outgoingLinks[linkIndex];
+            if (nextLink.fromIsland != nextIsland.id ||
+                !graph.findIsland(nextLink.toIsland) ||
+                !linkFilter(nextLink)) {
                 continue;
             }
             const float gapCost = linkCost(nextLink);
@@ -133,14 +136,16 @@ PathResult IslandGraphPathfinder::findPath(
                 currentState.cost +
                 detail::distance(currentLink.end, nextLink.start) +
                 gapCost;
+            const std::size_t nextPortalIndex = portalOffsets[nextIsland.id] + linkIndex;
             State& nextState = states[nextPortalIndex];
             if (gCost >= nextState.cost) {
                 continue;
             }
             nextState.cost = gCost;
             nextState.previousPortal = currentEntry.portal;
+            nextState.link = &nextLink;
             const float hCost = useEuclideanHeuristic ? detail::distance(nextLink.end, endPosition) : 0.0f;
-            open.push({nextPortalIndex, gCost, gCost + hCost});
+            open.push({nextPortalIndex, &nextLink, gCost, gCost + hCost});
         }
     }
 
@@ -152,7 +157,7 @@ PathResult IslandGraphPathfinder::findPath(
     for (std::size_t cursor = bestGoalPortal;
          cursor != (std::numeric_limits<std::size_t>::max)();
          cursor = states[cursor].previousPortal) {
-        result.links.push_back(*portals[cursor].link);
+        result.links.push_back(*states[cursor].link);
     }
     std::reverse(result.links.begin(), result.links.end());
     result.totalCost = bestGoalCost;

@@ -313,6 +313,16 @@ TEST_CASE("Pathfinder edge cases") {
     CHECK(pathfinder.findPath(routeGraph, 0, 9, {}, {}).status == PathStatus::InvalidIsland);
 }
 
+TEST_CASE("Pathfinder ignores malformed graph links") {
+    const Link wrongSource{7, 1, {}, {}, 1.0f, 0.0f};
+    const Link invalidTarget{0, 9, {}, {}, 1.0f, 0.0f};
+    IslandGraph graph({
+        makeIsland(0, {}, {wrongSource, invalidTarget}),
+        makeIsland(1)});
+    const IslandGraphPathfinder pathfinder;
+    CHECK(pathfinder.findPath(graph, 0, 1, {}, {}).status == PathStatus::NoPath);
+}
+
 TEST_CASE("Pathfinder custom costs use an admissible search order") {
     const Link expensiveHop{0, 2, {}, {}, 10.0f, 0.0f};
     const Link cheapHop{0, 1, {}, {100.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
@@ -406,7 +416,9 @@ TEST_CASE("Builder with disconnected navmesh") {
     SUBCASE("Builder rejects invalid configuration") {
         BuildConfig invalidConfig;
         invalidConfig.density.localPruning.baseRadius = -0.01f;
-        CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
+        const BuildResult result = builder.build(*navMesh, invalidConfig);
+        CHECK(result.status == BuildStatus::InvalidConfiguration);
+        CHECK(result.message == "Enabled local pruning requires a non-negative finite base radius and a positive finite base-radius ratio.");
     }
 }
 

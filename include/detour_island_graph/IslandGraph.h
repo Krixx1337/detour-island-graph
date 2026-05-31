@@ -57,10 +57,10 @@ public:
     IslandGraph() = default;
     explicit IslandGraph(std::vector<Island> islands);
 
-    bool empty() const noexcept;
-    const std::vector<Island>& islands() const noexcept;
-    const Island* findIsland(IslandId id) const noexcept;
-    std::optional<IslandId> findIslandForPolygon(dtPolyRef polygon) const;
+    [[nodiscard]] bool empty() const noexcept;
+    [[nodiscard]] const std::vector<Island>& islands() const noexcept;
+    [[nodiscard]] const Island* findIsland(IslandId id) const noexcept;
+    [[nodiscard]] std::optional<IslandId> findIslandForPolygon(dtPolyRef polygon) const;
 
 private:
     friend class IslandGraphBuilder;
