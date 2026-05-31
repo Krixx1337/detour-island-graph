@@ -93,7 +93,7 @@ The default geometric link cost uses A* search with a Euclidean heuristic. Suppl
 ### Global & Local Density Tuning
 The default configuration enables boundary deduplication, candidate deduplication, and pair-local pruning. Global and t-spanner pruning are opt-in. Each stage can be tuned or disabled independently.
 
-*   `boundaries`: Controls boundary extraction deduplication. Set `deduplicationEnabled = false` to retain every extracted boundary edge. Its grid defaults to `maxHorizontalGap * deduplicationCellSizeRatio`; set `deduplicationCellSize` for an explicit distance override.
+*   `boundaries`: Controls boundary extraction deduplication and optional pre-query representative reduction. The representative stage keeps the first deterministic boundary in each coarser build-wide grid cell before calling `queryPolygons()`. Both grids derive from `maxHorizontalGap` by default and support explicit distance overrides.
 *   `density.localPruning`: Controls pair-local redundancy pruning. Disable it to retain every candidate reaching this stage. Its radius defaults to `maxHorizontalGap * baseRadiusRatio`; set `baseRadius` for an explicit distance override or enable distance scaling using `distanceScale` and `maxRadiusScale`.
 *   `density.globalPruning`: Controls the optional 3D occupancy grid. Enable it to keep only one link start or end point in each global cell. Its grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
 *   `density.candidateDeduplication`: Controls early candidate deduplication. Disable it to retain every projected candidate that passes gap filtering. Its grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
@@ -104,6 +104,7 @@ To build an unpruned reference graph, disable every density-reduction stage:
 ```cpp
 detour_island_graph::BuildConfig config;
 config.boundaries.deduplicationEnabled = false;
+config.boundaries.representativeReductionEnabled = false;
 config.density.candidateDeduplication.enabled = false;
 config.density.localPruning.enabled = false;
 config.density.globalPruning.enabled = false;
@@ -118,6 +119,7 @@ On a real-world continent-scale navmesh (~80K polygons, ~4K islands), the densit
 
 | Stage | Typical Impact | What It Does |
 |---|---|---|
+| **Boundary Representatives** | Map-dependent | Optionally reduces expensive spatial queries by keeping deterministic representatives in a coarser boundary grid. Tuned via `representativeCellSizeRatio` or an explicit `representativeCellSize`. |
 | **Candidate Deduplication** | Drops **~78%** of projected candidates | Grid-snaps candidates by start+end position; keeps cheapest link per cell. Tuned via `cellSizeRatio` or an explicit `cellSize`. |
 | **Global Pruning** | Drops **~90%** of remaining candidates | 3D occupancy grid; keeps first link to occupy each cell. Tuned via `cellSizeRatio` or an explicit `cellSize`. |
 | **Spanner Pruning** | Drops **~3–8%** | Rejects direct leaps when an indirect route exists within `pathRatio`. Increase `pathRatio` to be more permissive. |
@@ -135,8 +137,18 @@ On a real-world continent-scale navmesh (~80K polygons, ~4K islands), the densit
 result.stats.candidates.globalPruningRejectCount;
 result.stats.candidates.spannerPruningRejectCount;
 result.stats.candidates.localPruningRejectCount;
-result.stats.maxOutgoingLinksOnIsland;  // highest out-degree
-result.stats.averageLinkLength;           // mean horizontal distance
+result.stats.boundaries.representativeCount;
+result.stats.boundaries.representativeTrimmedCount;
+result.stats.islandsWithOutgoingLinks;
+result.stats.islandsWithIncomingLinks;
+result.stats.isolatedIslandCount;
+result.stats.connectedComponentCount;
+result.stats.largestConnectedComponentIslandCount;
+result.stats.maxOutgoingLinksOnIsland;
+result.stats.p95OutgoingLinksOnIsland;
+result.stats.maxIncomingLinksOnIsland;
+result.stats.p95IncomingLinksOnIsland;
+result.stats.averageLinkLength;
 ```
 
 `BuildStats::queries.capacityHitCount` reports how often `queryPolygons()` filled the configured `query.maxNearbyPolygons` buffer. Increase that capacity when the counter is non-zero and missing candidates matter for your mesh.

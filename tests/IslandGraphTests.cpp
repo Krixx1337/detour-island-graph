@@ -325,8 +325,8 @@ TEST_CASE("Builder with disconnected navmesh") {
     SUBCASE("Boundary deduplication stats are ordered") {
         CHECK(buildResult.stats.boundaries.deduplicatedCount <= buildResult.stats.boundaries.rawCount);
     }
-    SUBCASE("Spatial query count matches retained boundaries") {
-        CHECK(buildResult.stats.queries.count == buildResult.stats.boundaries.deduplicatedCount);
+    SUBCASE("Spatial query count matches representative boundaries") {
+        CHECK(buildResult.stats.queries.count == buildResult.stats.boundaries.representativeCount);
     }
     SUBCASE("Stats report saturated spatial queries") {
         BuildConfig constrainedConfig = buildConfig;
@@ -457,6 +457,34 @@ TEST_CASE("Builder density tuning") {
         const BuildResult result = builder.build(*navMesh, undeduplicatedConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.boundaries.deduplicatedCount == result.stats.boundaries.rawCount);
+    }
+    SUBCASE("Boundary representative reduction can be enabled independently") {
+        BuildConfig representativeConfig = buildConfig;
+        representativeConfig.boundaries.representativeReductionEnabled = true;
+        representativeConfig.boundaries.representativeCellSize = 10.0f;
+        const BuildResult result = builder.build(*navMesh, representativeConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.boundaries.representativeCount <= result.stats.boundaries.deduplicatedCount);
+        CHECK(
+            result.stats.boundaries.representativeTrimmedCount +
+            result.stats.boundaries.representativeCount ==
+            result.stats.boundaries.deduplicatedCount);
+        CHECK(result.stats.queries.count == result.stats.boundaries.representativeCount);
+    }
+    SUBCASE("Disabled boundary representative reduction preserves deduplicated boundaries") {
+        BuildConfig representativeConfig = buildConfig;
+        representativeConfig.boundaries.representativeReductionEnabled = false;
+        representativeConfig.boundaries.representativeCellSizeRatio = 0.0f;
+        const BuildResult result = builder.build(*navMesh, representativeConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.boundaries.representativeCount == result.stats.boundaries.deduplicatedCount);
+        CHECK(result.stats.boundaries.representativeTrimmedCount == 0);
+    }
+    SUBCASE("Rejects invalid boundary representative cell size ratio") {
+        BuildConfig invalidRepresentativeConfig = buildConfig;
+        invalidRepresentativeConfig.boundaries.representativeReductionEnabled = true;
+        invalidRepresentativeConfig.boundaries.representativeCellSizeRatio = 0.0f;
+        CHECK(builder.build(*navMesh, invalidRepresentativeConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Enabled density does not increase accepted links") {
         BuildConfig densityConfig = buildConfig;
@@ -637,6 +665,11 @@ TEST_CASE("Builder pruning diagnostics") {
     }
     SUBCASE("Graph health metrics are populated") {
         CHECK(baseline.stats.maxOutgoingLinksOnIsland > 0);
+        CHECK(baseline.stats.maxIncomingLinksOnIsland > 0);
+        CHECK(baseline.stats.islandsWithOutgoingLinks > 0);
+        CHECK(baseline.stats.islandsWithIncomingLinks > 0);
+        CHECK(baseline.stats.connectedComponentCount > 0);
+        CHECK(baseline.stats.largestConnectedComponentIslandCount > 0);
         CHECK(baseline.stats.averageLinkLength > 0.0);
     }
 }

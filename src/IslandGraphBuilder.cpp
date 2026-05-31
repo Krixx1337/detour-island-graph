@@ -240,6 +240,11 @@ bool validate(const BuildConfig& config, std::string& message) {
              config.boundaries.deduplicationCellSize >= 0.0f &&
              std::isfinite(config.boundaries.deduplicationCellSizeRatio) &&
              config.boundaries.deduplicationCellSizeRatio > 0.0f)) &&
+        (!config.boundaries.representativeReductionEnabled ||
+            (std::isfinite(config.boundaries.representativeCellSize) &&
+             config.boundaries.representativeCellSize >= 0.0f &&
+             std::isfinite(config.boundaries.representativeCellSizeRatio) &&
+             config.boundaries.representativeCellSizeRatio > 0.0f)) &&
         config.query.maxNodes > 0 &&
         config.query.maxNearbyPolygons > 0 &&
         std::isfinite(massAware.normalizationPercentile) &&
@@ -461,6 +466,42 @@ std::vector<Boundary> extractBoundaries(
     return output;
 }
 
+std::vector<Boundary> selectBoundaryRepresentatives(
+    const std::vector<Boundary>& boundaries,
+    const BuildConfig& config,
+    BuildStats& stats) {
+    if (!config.boundaries.representativeReductionEnabled) {
+        stats.boundaries.representativeCount = boundaries.size();
+        return boundaries;
+    }
+
+    const float cellSize = config.boundaries.effectiveRepresentativeCellSize(
+        config.gapDiscovery.maxHorizontalGap);
+    std::unordered_set<BoundaryKey, BoundaryKeyHash> occupiedCells;
+    std::vector<Boundary> representatives;
+    representatives.reserve(boundaries.size());
+    for (const Boundary& boundary : boundaries) {
+        const Vec3 direction{
+            boundary.end.x - boundary.start.x,
+            boundary.end.y - boundary.start.y,
+            boundary.end.z - boundary.start.z};
+        const BoundaryKey key{
+            boundary.island,
+            quantize(boundary.midpoint.x, cellSize),
+            quantize(boundary.midpoint.y, cellSize),
+            quantize(boundary.midpoint.z, cellSize),
+            quantize(direction.x, cellSize),
+            quantize(direction.y, cellSize),
+            quantize(direction.z, cellSize)};
+        if (occupiedCells.emplace(key).second) {
+            representatives.push_back(boundary);
+        }
+    }
+    stats.boundaries.representativeCount = representatives.size();
+    stats.boundaries.representativeTrimmedCount = boundaries.size() - representatives.size();
+    return representatives;
+}
+
 float linkDistance(const Link& link) {
     return detail::distance(link.start, link.end);
 }
@@ -556,6 +597,7 @@ BuildStatus discoverLinks(
 
     const Clock::time_point boundaryStart = Clock::now();
     const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
+    const std::vector<Boundary> representatives = selectBoundaryRepresentatives(boundaries, config, stats);
     stats.timings.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
 
     const Clock::time_point discoveryStart = Clock::now();
@@ -570,7 +612,7 @@ BuildStatus discoverLinks(
         config.gapDiscovery.maxHorizontalGap};
     const dtQueryFilter filter;
 
-    for (const Boundary& boundary : boundaries) {
+    for (const Boundary& boundary : representatives) {
         float center[3];
         detail::toDetour(boundary.midpoint, center);
         int nearbyCount = 0;
@@ -722,6 +764,86 @@ BuildStatus discoverLinks(
     return BuildStatus::Success;
 }
 
+std::size_t percentile95(std::vector<std::size_t> values) {
+    if (values.empty()) {
+        return 0;
+    }
+    std::sort(values.begin(), values.end());
+    return values[((values.size() - 1) * 95U) / 100U];
+}
+
+void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
+    const std::size_t islandCount = graph.islands().size();
+    std::vector<std::size_t> outgoingDegrees(islandCount);
+    std::vector<std::size_t> incomingDegrees(islandCount);
+    std::vector<std::vector<IslandId>> neighbors(islandCount);
+    double totalLinkLength = 0.0;
+    std::size_t totalLinks = 0;
+
+    for (const Island& island : graph.islands()) {
+        outgoingDegrees[island.id] = island.outgoingLinks.size();
+        for (const Link& link : island.outgoingLinks) {
+            if (link.toIsland >= islandCount) {
+                continue;
+            }
+            ++incomingDegrees[link.toIsland];
+            neighbors[link.fromIsland].push_back(link.toIsland);
+            neighbors[link.toIsland].push_back(link.fromIsland);
+            totalLinkLength += link.horizontalDistance;
+            ++totalLinks;
+        }
+    }
+
+    for (std::size_t island = 0; island < islandCount; ++island) {
+        if (outgoingDegrees[island] > 0) {
+            ++stats.islandsWithOutgoingLinks;
+        }
+        if (incomingDegrees[island] > 0) {
+            ++stats.islandsWithIncomingLinks;
+        }
+        if (outgoingDegrees[island] == 0 && incomingDegrees[island] == 0) {
+            ++stats.isolatedIslandCount;
+        }
+    }
+
+    stats.maxOutgoingLinksOnIsland = outgoingDegrees.empty()
+        ? 0
+        : *(std::max_element)(outgoingDegrees.begin(), outgoingDegrees.end());
+    stats.p95OutgoingLinksOnIsland = percentile95(outgoingDegrees);
+    stats.maxIncomingLinksOnIsland = incomingDegrees.empty()
+        ? 0
+        : *(std::max_element)(incomingDegrees.begin(), incomingDegrees.end());
+    stats.p95IncomingLinksOnIsland = percentile95(incomingDegrees);
+    stats.averageLinkLength = totalLinks > 0
+        ? totalLinkLength / static_cast<double>(totalLinks)
+        : 0.0;
+
+    std::vector<bool> visited(islandCount);
+    std::queue<IslandId> pending;
+    for (IslandId island = 0; island < islandCount; ++island) {
+        if (visited[island]) {
+            continue;
+        }
+        ++stats.connectedComponentCount;
+        std::size_t componentSize = 0;
+        visited[island] = true;
+        pending.push(island);
+        while (!pending.empty()) {
+            const IslandId current = pending.front();
+            pending.pop();
+            ++componentSize;
+            for (IslandId neighbor : neighbors[current]) {
+                if (!visited[neighbor]) {
+                    visited[neighbor] = true;
+                    pending.push(neighbor);
+                }
+            }
+        }
+        stats.largestConnectedComponentIslandCount =
+            (std::max)(stats.largestConnectedComponentIslandCount, componentSize);
+    }
+}
+
 } // namespace
 
 BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfig& config) const {
@@ -747,17 +869,7 @@ BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfi
 
     result.status = discoverLinks(navMesh, result.graph, config, result.stats, result.message);
 
-    double totalLinkLength = 0.0;
-    std::size_t totalLinks = 0;
-    for (const Island& island : result.graph.islands()) {
-        result.stats.maxOutgoingLinksOnIsland =
-            (std::max)(result.stats.maxOutgoingLinksOnIsland, island.outgoingLinks.size());
-        for (const Link& link : island.outgoingLinks) {
-            totalLinkLength += link.horizontalDistance;
-            ++totalLinks;
-        }
-    }
-    result.stats.averageLinkLength = totalLinks > 0 ? totalLinkLength / static_cast<double>(totalLinks) : 0.0;
+    calculateGraphHealthStats(result.graph, result.stats);
 
     result.stats.timings.totalMs = elapsedMilliseconds(totalStart);
     return result;

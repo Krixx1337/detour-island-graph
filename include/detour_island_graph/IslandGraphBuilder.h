@@ -86,11 +86,20 @@ struct BoundaryTuning {
     bool deduplicationEnabled = true;
     float deduplicationCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * deduplicationCellSizeRatio
     float deduplicationCellSizeRatio = 0.125f;
+    bool representativeReductionEnabled = false;
+    float representativeCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * representativeCellSizeRatio
+    float representativeCellSizeRatio = 0.25f;
 
     float effectiveDeduplicationCellSize(float maxHorizontalGap) const noexcept {
         return deduplicationCellSize > 0.0f
             ? deduplicationCellSize
             : (maxHorizontalGap * deduplicationCellSizeRatio);
+    }
+
+    float effectiveRepresentativeCellSize(float maxHorizontalGap) const noexcept {
+        return representativeCellSize > 0.0f
+            ? representativeCellSize
+            : (maxHorizontalGap * representativeCellSizeRatio);
     }
 };
 
@@ -119,6 +128,8 @@ struct TimingStats {
 struct BoundaryStats {
     std::size_t rawCount = 0;
     std::size_t deduplicatedCount = 0;
+    std::size_t representativeCount = 0;
+    std::size_t representativeTrimmedCount = 0;
 };
 
 struct QueryStats {
@@ -143,7 +154,15 @@ struct BuildStats {
     CandidateStats candidates;
     std::size_t islandCount = 0;
     std::size_t polygonCount = 0;
+    std::size_t islandsWithOutgoingLinks = 0;
+    std::size_t islandsWithIncomingLinks = 0;
+    std::size_t isolatedIslandCount = 0;
+    std::size_t connectedComponentCount = 0;
+    std::size_t largestConnectedComponentIslandCount = 0;
     std::size_t maxOutgoingLinksOnIsland = 0;
+    std::size_t p95OutgoingLinksOnIsland = 0;
+    std::size_t maxIncomingLinksOnIsland = 0;
+    std::size_t p95IncomingLinksOnIsland = 0;
     double averageLinkLength = 0.0;
 };
 
