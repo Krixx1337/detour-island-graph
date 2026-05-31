@@ -15,8 +15,10 @@ set(DETOUR_ISLAND_GRAPH_DETOUR_LIBRARY "" CACHE FILEPATH
 add_library(detour_island_graph
     src/IslandGraph.cpp
     src/IslandGraphBuilder.cpp
+    src/IslandGraphDiscovery.cpp
     src/IslandGraphPathfinder.cpp
     src/IslandGraphSerializer.cpp
+    src/IslandGraphTopology.cpp
 )
 add_library(detour_island_graph::detour_island_graph ALIAS detour_island_graph)
 
