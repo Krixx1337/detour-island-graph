@@ -41,14 +41,16 @@ struct Boundary {
     Vec3 midpoint;
 };
 
+using SpatialCoordinate = std::int64_t;
+
 struct BoundaryKey {
     IslandId island = 0;
-    int midpointX = 0;
-    int midpointY = 0;
-    int midpointZ = 0;
-    int directionX = 0;
-    int directionY = 0;
-    int directionZ = 0;
+    SpatialCoordinate midpointX = 0;
+    SpatialCoordinate midpointY = 0;
+    SpatialCoordinate midpointZ = 0;
+    SpatialCoordinate directionX = 0;
+    SpatialCoordinate directionY = 0;
+    SpatialCoordinate directionZ = 0;
 
     bool operator==(const BoundaryKey& other) const {
         return island == other.island &&
@@ -64,12 +66,12 @@ struct BoundaryKey {
 struct LinkKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
-    int startX = 0;
-    int startY = 0;
-    int startZ = 0;
-    int endX = 0;
-    int endY = 0;
-    int endZ = 0;
+    SpatialCoordinate startX = 0;
+    SpatialCoordinate startY = 0;
+    SpatialCoordinate startZ = 0;
+    SpatialCoordinate endX = 0;
+    SpatialCoordinate endY = 0;
+    SpatialCoordinate endZ = 0;
 
     bool operator==(const LinkKey& other) const {
         return fromIsland == other.fromIsland &&
@@ -95,9 +97,9 @@ struct IslandPair {
 struct PairScanKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
-    int midpointX = 0;
-    int midpointY = 0;
-    int midpointZ = 0;
+    SpatialCoordinate midpointX = 0;
+    SpatialCoordinate midpointY = 0;
+    SpatialCoordinate midpointZ = 0;
 
     bool operator==(const PairScanKey& other) const {
         return fromIsland == other.fromIsland &&
@@ -164,9 +166,9 @@ struct PairScanKeyHash {
 };
 
 struct GlobalCellKey {
-    int x = 0;
-    int y = 0;
-    int z = 0;
+    SpatialCoordinate x = 0;
+    SpatialCoordinate y = 0;
+    SpatialCoordinate z = 0;
 
     bool operator==(const GlobalCellKey& other) const {
         return x == other.x && y == other.y && z == other.z;
@@ -183,9 +185,32 @@ struct GlobalCellKeyHash {
     }
 };
 
-int quantize(float value, float cellSize) {
-    return static_cast<int>(std::floor(value / cellSize));
+SpatialCoordinate quantize(float value, float cellSize) {
+    const double quantized = std::floor(static_cast<double>(value) / static_cast<double>(cellSize));
+    if (!std::isfinite(quantized)) {
+        return 0;
+    }
+    if (quantized <= static_cast<double>((std::numeric_limits<SpatialCoordinate>::min)())) {
+        return (std::numeric_limits<SpatialCoordinate>::min)();
+    }
+    if (quantized >= static_cast<double>((std::numeric_limits<SpatialCoordinate>::max)())) {
+        return (std::numeric_limits<SpatialCoordinate>::max)();
+    }
+    return static_cast<SpatialCoordinate>(quantized);
 }
+
+class PolygonCollector final : public dtPolyQuery {
+public:
+    explicit PolygonCollector(std::vector<dtPolyRef>& polygons)
+        : m_polygons(polygons) {}
+
+    void process(const dtMeshTile*, dtPoly**, dtPolyRef* refs, int count) override {
+        m_polygons.insert(m_polygons.end(), refs, refs + count);
+    }
+
+private:
+    std::vector<dtPolyRef>& m_polygons;
+};
 
 bool resolvePolygon(
     const dtNavMesh& navMesh,
@@ -282,7 +307,6 @@ bool validate(const BuildConfig& config, std::string& message) {
                  config.boundaries.representativeCellSizeRatio > 0.0f),
             "Enabled boundary representative reduction requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
     if (!require(config.query.maxNodes > 0, "query.maxNodes must be greater than zero.")) return false;
-    if (!require(config.query.maxNearbyPolygons > 0, "query.maxNearbyPolygons must be greater than zero.")) return false;
     if (!require(
             std::isfinite(massAware.normalizationPercentile) &&
                 massAware.normalizationPercentile > 0.0f &&
@@ -535,7 +559,8 @@ BuildStatus discoverCandidates(
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
     std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
-    std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.query.maxNearbyPolygons));
+    std::vector<dtPolyRef> nearby;
+    PolygonCollector collector(nearby);
     const float candidateCellSize = config.density.candidateDeduplication.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
@@ -549,24 +574,18 @@ BuildStatus discoverCandidates(
     for (const Boundary& boundary : representatives) {
         float center[3];
         detail::toDetour(boundary.midpoint, center);
-        int nearbyCount = 0;
+        nearby.clear();
         ++stats.queries.count;
         if (dtStatusFailed(query.queryPolygons(
                 center,
                 extents,
                 &filter,
-                nearby.data(),
-                &nearbyCount,
-                config.query.maxNearbyPolygons))) {
+                &collector))) {
             message = "dtNavMeshQuery::queryPolygons failed.";
             return BuildStatus::QueryFailed;
         }
-        stats.queries.nearbyPolygonCount += static_cast<std::size_t>(nearbyCount);
-        if (nearbyCount >= config.query.maxNearbyPolygons) {
-            ++stats.queries.capacityHitCount;
-        }
-        for (int index = 0; index < nearbyCount; ++index) {
-            const dtPolyRef candidatePolygon = nearby[static_cast<std::size_t>(index)];
+        stats.queries.nearbyPolygonCount += nearby.size();
+        for (dtPolyRef candidatePolygon : nearby) {
             if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
                 continue;
             }

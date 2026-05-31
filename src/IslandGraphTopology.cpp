@@ -72,11 +72,20 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
     for (const Island& island : islands) {
         const float spanX = island.boundsMax.x - island.boundsMin.x;
         const float spanZ = island.boundsMax.z - island.boundsMin.z;
-        const float dominantSpan = (std::max)({spanX, spanZ, 1.0f});
+        const float dominantSpan = (std::max)(spanX, spanZ);
         rawMasses.push_back(static_cast<float>(island.polygons.size()) * dominantSpan);
     }
 
-    std::vector<float> sortedMasses = rawMasses;
+    std::vector<float> sortedMasses;
+    sortedMasses.reserve(rawMasses.size());
+    for (float rawMass : rawMasses) {
+        if (rawMass > 0.0f) {
+            sortedMasses.push_back(rawMass);
+        }
+    }
+    if (sortedMasses.empty()) {
+        return;
+    }
     std::sort(sortedMasses.begin(), sortedMasses.end());
     const float percentileIndex =
         config.massAware.normalizationPercentile *
@@ -87,13 +96,17 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
         sortedMasses[lowerIndex],
         sortedMasses[upperIndex],
         percentileIndex - static_cast<float>(lowerIndex));
-    const float referenceLog = std::log((std::max)(referenceMass, 1.0f));
+    const float minimumMass = sortedMasses.front();
+    const float referenceLogRatio = std::log(referenceMass / minimumMass);
 
     for (std::size_t index = 0; index < islands.size(); ++index) {
-        const float massLog = std::log((std::max)(rawMasses[index], 1.0f));
-        islands[index].massScore = massLog > 0.0f && referenceLog > 0.0f
-            ? (std::min)(massLog / referenceLog, 1.0f)
-            : 0.0f;
+        if (rawMasses[index] <= 0.0f) {
+            islands[index].massScore = 0.0f;
+            continue;
+        }
+        islands[index].massScore = referenceLogRatio > 0.0f
+            ? std::clamp(std::log(rawMasses[index] / minimumMass) / referenceLogRatio, 0.0f, 1.0f)
+            : 1.0f;
     }
 }
 

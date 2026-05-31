@@ -42,8 +42,7 @@ PathResult IslandGraphPathfinder::findPath(
     IslandId endIsland,
     const Vec3& startPosition,
     const Vec3& endPosition,
-    LinkCost linkCost,
-    LinkFilter linkFilter) const {
+    PathOptions options) const {
     PathResult result;
     if (!graph.findIsland(startIsland) || !graph.findIsland(endIsland)) {
         result.status = PathStatus::InvalidIsland;
@@ -54,16 +53,25 @@ PathResult IslandGraphPathfinder::findPath(
         return result;
     }
 
-    const bool useEuclideanHeuristic = !linkCost;
-    if (!linkCost) {
-        linkCost = [](const Link& link) {
+    const bool useDefaultGeometricCost = !options.linkCost;
+    if (useDefaultGeometricCost) {
+        options.linkCost = [](const Link& link) {
             return detail::distance(link.start, link.end);
         };
     }
-    if (!linkFilter) {
-        linkFilter = [](const Link&) {
+    if (!options.linkFilter) {
+        options.linkFilter = [](const Link&) {
             return true;
         };
+    }
+    if (!options.heuristicCost) {
+        options.heuristicCost = useDefaultGeometricCost
+            ? HeuristicCost([](const Vec3& current, const Vec3& target) {
+                return detail::distance(current, target);
+            })
+            : HeuristicCost([](const Vec3&, const Vec3&) {
+                return 0.0f;
+            });
     }
 
     std::vector<std::size_t> portalOffsets(graph.islands().size() + 1, 0);
@@ -85,15 +93,18 @@ PathResult IslandGraphPathfinder::findPath(
     const Island& start = graph.islands()[startIsland];
     for (std::size_t linkIndex = 0; linkIndex < start.outgoingLinks.size(); ++linkIndex) {
         const Link& link = start.outgoingLinks[linkIndex];
-        if (link.fromIsland != start.id || !graph.findIsland(link.toIsland) || !linkFilter(link)) {
+        if (link.fromIsland != start.id || !graph.findIsland(link.toIsland) || !options.linkFilter(link)) {
             continue;
         }
-        const float gapCost = linkCost(link);
+        const float gapCost = options.linkCost(link);
         if (!isUsableCost(gapCost)) {
             continue;
         }
         const float gCost = detail::distance(startPosition, link.start) + gapCost;
-        const float hCost = useEuclideanHeuristic ? detail::distance(link.end, endPosition) : 0.0f;
+        const float hCost = options.heuristicCost(link.end, endPosition);
+        if (!isUsableCost(hCost)) {
+            continue;
+        }
         enqueue(start, linkIndex, gCost, hCost);
     }
 
@@ -125,10 +136,10 @@ PathResult IslandGraphPathfinder::findPath(
             const Link& nextLink = nextIsland.outgoingLinks[linkIndex];
             if (nextLink.fromIsland != nextIsland.id ||
                 !graph.findIsland(nextLink.toIsland) ||
-                !linkFilter(nextLink)) {
+                !options.linkFilter(nextLink)) {
                 continue;
             }
-            const float gapCost = linkCost(nextLink);
+            const float gapCost = options.linkCost(nextLink);
             if (!isUsableCost(gapCost)) {
                 continue;
             }
@@ -141,10 +152,13 @@ PathResult IslandGraphPathfinder::findPath(
             if (gCost >= nextState.cost) {
                 continue;
             }
+            const float hCost = options.heuristicCost(nextLink.end, endPosition);
+            if (!isUsableCost(hCost)) {
+                continue;
+            }
             nextState.cost = gCost;
             nextState.previousPortal = currentEntry.portal;
             nextState.link = &nextLink;
-            const float hCost = useEuclideanHeuristic ? detail::distance(nextLink.end, endPosition) : 0.0f;
             open.push({nextPortalIndex, &nextLink, gCost, gCost + hCost});
         }
     }

@@ -4,7 +4,14 @@ project(DetourIslandGraph VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
-option(DETOUR_ISLAND_GRAPH_BUILD_TESTS "Build DetourIslandGraph tests" ON)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(DETOUR_ISLAND_GRAPH_BUILD_TESTS_DEFAULT ON)
+else()
+    set(DETOUR_ISLAND_GRAPH_BUILD_TESTS_DEFAULT OFF)
+endif()
+option(DETOUR_ISLAND_GRAPH_BUILD_TESTS
+    "Build DetourIslandGraph tests"
+    ${DETOUR_ISLAND_GRAPH_BUILD_TESTS_DEFAULT})
 option(DETOUR_ISLAND_GRAPH_FETCH_DETOUR
     "Fetch pinned upstream RecastNavigation when Detour is not provided" ON)
 set(DETOUR_ISLAND_GRAPH_DETOUR_INCLUDE_DIR "" CACHE PATH

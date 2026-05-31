@@ -68,7 +68,7 @@ std::unique_ptr<dtNavMesh, NavMeshDeleter> buildDisconnectedNavMesh() {
     return navMesh;
 }
 
-std::unique_ptr<dtNavMesh, NavMeshDeleter> buildVariedMassNavMesh() {
+std::unique_ptr<dtNavMesh, NavMeshDeleter> buildVariedMassNavMesh(unsigned short scale = 1) {
     constexpr unsigned short nullIndex = 0xffff;
     const unsigned short vertices[] = {
         0, 0, 0,  2, 0, 0,  2, 0, 2,  0, 0, 2,
@@ -90,14 +90,14 @@ std::unique_ptr<dtNavMesh, NavMeshDeleter> buildVariedMassNavMesh() {
     params.polyAreas = areas;
     params.polyCount = 3;
     params.nvp = 4;
-    params.bmax[0] = 10.0f;
-    params.bmax[1] = 1.0f;
-    params.bmax[2] = 2.0f;
-    params.walkableHeight = 2.0f;
-    params.walkableRadius = 0.5f;
-    params.walkableClimb = 0.5f;
-    params.cs = 1.0f;
-    params.ch = 1.0f;
+    params.bmax[0] = 10.0f * scale;
+    params.bmax[1] = 1.0f * scale;
+    params.bmax[2] = 2.0f * scale;
+    params.walkableHeight = 2.0f * scale;
+    params.walkableRadius = 0.5f * scale;
+    params.walkableClimb = 0.5f * scale;
+    params.cs = 1.0f * scale;
+    params.ch = 1.0f * scale;
     params.buildBvTree = true;
 
     unsigned char* data = nullptr;
@@ -262,11 +262,23 @@ TEST_CASE("Graph rejects inconsistent island identifiers") {
     CHECK(inconsistentGraph.findIsland(0) == nullptr);
 }
 
-TEST_CASE("Default config and path result") {
-    const BuildConfig defaultConfig;
+TEST_CASE("Configured gaps and default path result") {
+    const BuildConfig defaultConfig(30.0f, 30.0f, 30.0f);
     CHECK(defaultConfig.gapDiscovery.maxHorizontalGap > 0.0f);
     const PathResult defaultPathResult;
     CHECK(defaultPathResult.status == PathStatus::NoPath);
+}
+
+TEST_CASE("Vec3 adapter accepts x y z vector types") {
+    struct EngineVector {
+        double x;
+        double y;
+        double z;
+    };
+    const Vec3 value = makeVec3(EngineVector{1.0, 2.0, 3.0});
+    CHECK(value.x == 1.0f);
+    CHECK(value.y == 2.0f);
+    CHECK(value.z == 3.0f);
 }
 
 TEST_CASE("Pathfinder basic routing") {
@@ -295,8 +307,12 @@ TEST_CASE("Pathfinder filtered path") {
         makeIsland(2)});
     const IslandGraphPathfinder pathfinder;
     const PathResult filteredPath = pathfinder.findPath(
-        routeGraph, 0, 2, {0.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, {},
-        [](const Link& link) { return link.toIsland != 1; });
+        routeGraph,
+        0,
+        2,
+        {0.0f, 0.0f, 0.0f},
+        {3.0f, 0.0f, 0.0f},
+        PathOptions{{}, [](const Link& link) { return link.toIsland != 1; }, {}});
     CHECK(filteredPath.links.size() == 1);
 }
 
@@ -334,17 +350,29 @@ TEST_CASE("Pathfinder custom costs use an admissible search order") {
         makeIsland(2, {}, {goal}),
         makeIsland(3)});
     const IslandGraphPathfinder pathfinder;
+    int heuristicCalls = 0;
     const PathResult path = pathfinder.findPath(
-        routeGraph, 0, 3, {}, {},
-        [](const Link& link) { return link.horizontalDistance; });
+        routeGraph,
+        0,
+        3,
+        {},
+        {},
+        PathOptions{
+            [](const Link& link) { return link.horizontalDistance; },
+            {},
+            [&heuristicCalls](const Vec3&, const Vec3&) {
+                ++heuristicCalls;
+                return 0.0f;
+            }});
     REQUIRE(path.status == PathStatus::Success);
     CHECK(path.links.size() == 3);
     CHECK(path.totalCost == 3.0f);
+    CHECK(heuristicCalls > 0);
 }
 
 TEST_CASE("Builder with disconnected navmesh") {
     const auto navMesh = buildDisconnectedNavMesh();
-    BuildConfig buildConfig;
+    BuildConfig buildConfig(30.0f, 30.0f, 30.0f);
     buildConfig.gapDiscovery.maxHorizontalGap = 3.0f;
     buildConfig.gapDiscovery.maxVerticalGapUp = 2.0f;
     buildConfig.gapDiscovery.maxVerticalGapDown = 4.0f;
@@ -368,12 +396,8 @@ TEST_CASE("Builder with disconnected navmesh") {
     SUBCASE("Spatial query count matches representative boundaries") {
         CHECK(buildResult.stats.queries.count == buildResult.stats.boundaries.representativeCount);
     }
-    SUBCASE("Stats report saturated spatial queries") {
-        BuildConfig constrainedConfig = buildConfig;
-        constrainedConfig.query.maxNearbyPolygons = 1;
-        const BuildResult constrainedBuild = builder.build(*navMesh, constrainedConfig);
-        REQUIRE(static_cast<bool>(constrainedBuild));
-        CHECK(constrainedBuild.stats.queries.capacityHitCount > 0);
+    SUBCASE("Spatial queries report complete polygon totals") {
+        CHECK(buildResult.stats.queries.nearbyPolygonCount >= buildResult.stats.queries.count);
     }
     SUBCASE("Candidate deduplication stats are ordered") {
         CHECK(buildResult.stats.candidates.deduplicatedCount <= buildResult.stats.candidates.projectedCount);
@@ -414,7 +438,7 @@ TEST_CASE("Builder with disconnected navmesh") {
         CHECK(linkCount(aggressivelyPruned.graph, 0, 1) == 1);
     }
     SUBCASE("Builder rejects invalid configuration") {
-        BuildConfig invalidConfig;
+        BuildConfig invalidConfig(30.0f, 30.0f, 30.0f);
         invalidConfig.density.localPruning.baseRadius = -0.01f;
         const BuildResult result = builder.build(*navMesh, invalidConfig);
         CHECK(result.status == BuildStatus::InvalidConfiguration);
@@ -425,7 +449,8 @@ TEST_CASE("Builder with disconnected navmesh") {
 TEST_CASE("Builder adjacent tiled navmesh") {
     const auto tiledNavMesh = buildAdjacentTiledNavMesh();
     const IslandGraphBuilder builder;
-    const BuildResult tiledBuild = builder.build(*tiledNavMesh);
+    const BuildResult tiledBuild =
+        builder.build(*tiledNavMesh, BuildConfig(30.0f, 30.0f, 30.0f));
     REQUIRE(static_cast<bool>(tiledBuild));
     CHECK(tiledBuild.graph.islands().size() == 1);
     CHECK(tiledBuild.graph.islands()[0].polygons.size() == 2);
@@ -433,7 +458,7 @@ TEST_CASE("Builder adjacent tiled navmesh") {
 
 TEST_CASE("Builder density tuning") {
     const auto navMesh = buildDisconnectedNavMesh();
-    BuildConfig buildConfig;
+    BuildConfig buildConfig(30.0f, 30.0f, 30.0f);
     buildConfig.gapDiscovery.maxHorizontalGap = 3.0f;
     buildConfig.gapDiscovery.maxVerticalGapUp = 2.0f;
     buildConfig.gapDiscovery.maxVerticalGapDown = 4.0f;
@@ -461,7 +486,7 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.candidates.acceptedLinkCount >= baseline.stats.candidates.acceptedLinkCount);
     }
     SUBCASE("Density radius scale interpolates continuously") {
-        BuildConfig densityConfig;
+        BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
         densityConfig.density.localPruning.enableDistanceScaling = true;
         densityConfig.density.localPruning.distanceScale = 0.25f;
         densityConfig.density.localPruning.maxRadiusScale = 2.0f;
@@ -469,7 +494,7 @@ TEST_CASE("Builder density tuning") {
         CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(8.0f) == 2.0f);
     }
     SUBCASE("Candidate deduplication cell size resolves once from the horizontal gap") {
-        BuildConfig densityConfig;
+        BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
         densityConfig.density.candidateDeduplication.enabled = true;
         densityConfig.density.candidateDeduplication.cellSizeRatio = 0.25f;
         CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(30.0f) == 7.5f);
@@ -501,7 +526,7 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.boundaries.deduplicatedCount == result.stats.boundaries.rawCount);
     }
     SUBCASE("Pair scan suppression cell size resolves once from the horizontal gap") {
-        BuildConfig densityConfig;
+        BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
         densityConfig.density.pairScanSuppression.enabled = true;
         densityConfig.density.pairScanSuppression.cellSizeRatio = 0.25f;
         CHECK(densityConfig.density.pairScanSuppression.effectiveCellSize(30.0f) == 7.5f);
@@ -554,7 +579,7 @@ TEST_CASE("Builder density tuning") {
         CHECK(first.stats.candidates.pairScanSuppressedCount == second.stats.candidates.pairScanSuppressedCount);
     }
     SUBCASE("Rejects invalid pair scan suppression cell sizes") {
-        BuildConfig invalidConfig;
+        BuildConfig invalidConfig(30.0f, 30.0f, 30.0f);
         invalidConfig.density.pairScanSuppression.enabled = true;
         invalidConfig.density.pairScanSuppression.cellSize = -0.01f;
         CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
@@ -629,19 +654,19 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.candidates.acceptedLinkCount <= densityBuild.stats.candidates.acceptedLinkCount);
     }
     SUBCASE("Rejects negative density distance scale") {
-        BuildConfig invalidDensityConfig;
+        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
         invalidDensityConfig.density.localPruning.enableDistanceScaling = true;
         invalidDensityConfig.density.localPruning.distanceScale = -0.01f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects invalid candidate deduplication cell sizes") {
-        BuildConfig invalidDensityConfig;
+        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
         invalidDensityConfig.density.candidateDeduplication.enabled = true;
         invalidDensityConfig.density.candidateDeduplication.cellSize = -0.01f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects density caps below one") {
-        BuildConfig invalidDensityConfig;
+        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
         invalidDensityConfig.density.localPruning.enableDistanceScaling = true;
         invalidDensityConfig.density.localPruning.maxRadiusScale = 0.99f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
@@ -677,7 +702,7 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.candidates.acceptedLinkCount <= globalPruningBuild.stats.candidates.acceptedLinkCount);
     }
     SUBCASE("Rejects negative global prune cell size ratio") {
-        BuildConfig invalidGlobalPruningConfig;
+        BuildConfig invalidGlobalPruningConfig(30.0f, 30.0f, 30.0f);
         invalidGlobalPruningConfig.density.globalPruning.enabled = true;
         invalidGlobalPruningConfig.density.globalPruning.cellSizeRatio = -0.01f;
         CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
@@ -698,13 +723,13 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.candidates.acceptedLinkCount <= baseline.stats.candidates.acceptedLinkCount);
     }
     SUBCASE("Rejects spanner path ratio below one") {
-        BuildConfig invalidSpannerConfig;
+        BuildConfig invalidSpannerConfig(30.0f, 30.0f, 30.0f);
         invalidSpannerConfig.density.spannerPruning.enabled = true;
         invalidSpannerConfig.density.spannerPruning.pathRatio = 0.99f;
         CHECK(builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects negative spanner vertical weight") {
-        BuildConfig invalidSpannerConfig;
+        BuildConfig invalidSpannerConfig(30.0f, 30.0f, 30.0f);
         invalidSpannerConfig.density.spannerPruning.enabled = true;
         invalidSpannerConfig.density.spannerPruning.verticalWeight = -0.01f;
         CHECK(builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration);
@@ -713,7 +738,7 @@ TEST_CASE("Builder density tuning") {
 
 TEST_CASE("Builder pruning diagnostics") {
     const auto navMesh = buildDisconnectedNavMesh();
-    BuildConfig buildConfig;
+    BuildConfig buildConfig(30.0f, 30.0f, 30.0f);
     buildConfig.gapDiscovery.maxHorizontalGap = 3.0f;
     buildConfig.gapDiscovery.maxVerticalGapUp = 2.0f;
     buildConfig.gapDiscovery.maxVerticalGapDown = 4.0f;
@@ -784,13 +809,14 @@ TEST_CASE("Builder mass-aware tuning") {
     const IslandGraphBuilder builder;
 
     SUBCASE("Baseline preserves zero scores") {
-        const BuildResult geometricMassBuild = builder.build(*variedMassNavMesh);
+        const BuildResult geometricMassBuild =
+            builder.build(*variedMassNavMesh, BuildConfig(30.0f, 30.0f, 30.0f));
         REQUIRE(static_cast<bool>(geometricMassBuild));
         CHECK(geometricMassBuild.graph.islands()[0].massScore == 0.0f);
         CHECK(geometricMassBuild.graph.islands()[1].massScore == 0.0f);
     }
     SUBCASE("Target preference and radius scale interpolate continuously") {
-        BuildConfig massAwareConfig;
+        BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
         massAwareConfig.massAware.enabled = true;
         massAwareConfig.massAware.targetPreference = 2.0f;
         massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
@@ -799,7 +825,7 @@ TEST_CASE("Builder mass-aware tuning") {
         CHECK(massAwareConfig.massAware.pruneRadiusScaleFor(0.5f) == 1.125f);
     }
     SUBCASE("Mass-aware scores are normalized and ordered") {
-        BuildConfig massAwareConfig;
+        BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
         massAwareConfig.massAware.enabled = true;
         massAwareConfig.massAware.targetPreference = 2.0f;
         massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
@@ -812,7 +838,7 @@ TEST_CASE("Builder mass-aware tuning") {
         CHECK(massAwareBuild.graph.islands()[1].massScore >= 0.0f);
     }
     SUBCASE("Nearby percentile varies mass score smoothly") {
-        BuildConfig massAwareConfig;
+        BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
         massAwareConfig.massAware.enabled = true;
         massAwareConfig.massAware.targetPreference = 2.0f;
         massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
@@ -828,9 +854,22 @@ TEST_CASE("Builder mass-aware tuning") {
             massAwareBuild.graph.islands()[1].massScore -
             nearbyPercentileBuild.graph.islands()[1].massScore) < 0.02f);
     }
+    SUBCASE("Mass scores are independent of coordinate scale") {
+        const auto scaledNavMesh = buildVariedMassNavMesh(10);
+        BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
+        massAwareConfig.massAware.enabled = true;
+        const BuildResult baseline = builder.build(*variedMassNavMesh, massAwareConfig);
+        const BuildResult scaled = builder.build(*scaledNavMesh, massAwareConfig);
+        REQUIRE(static_cast<bool>(baseline));
+        REQUIRE(static_cast<bool>(scaled));
+        REQUIRE(baseline.graph.islands().size() == scaled.graph.islands().size());
+        for (std::size_t index = 0; index < baseline.graph.islands().size(); ++index) {
+            CHECK(baseline.graph.islands()[index].massScore == scaled.graph.islands()[index].massScore);
+        }
+    }
     SUBCASE("Rejects invalid mass normalization percentile") {
         const auto navMesh = buildDisconnectedNavMesh();
-        BuildConfig invalidMassAwareConfig;
+        BuildConfig invalidMassAwareConfig(30.0f, 30.0f, 30.0f);
         invalidMassAwareConfig.massAware.normalizationPercentile = 0.0f;
         CHECK(builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration);
     }
@@ -856,7 +895,7 @@ TEST_CASE("Serializer") {
     }
     SUBCASE("Round trip preserves mass score") {
         const auto variedMassNavMesh = buildVariedMassNavMesh();
-        BuildConfig massAwareConfig;
+        BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
         massAwareConfig.massAware.enabled = true;
         massAwareConfig.massAware.targetPreference = 2.0f;
         massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;

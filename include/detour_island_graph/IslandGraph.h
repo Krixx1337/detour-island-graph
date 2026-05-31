@@ -6,7 +6,9 @@
 
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace detour_island_graph {
@@ -32,6 +34,19 @@ struct Vec3 {
     void copyTo(float* p) const { p[0] = x; p[1] = y; p[2] = z; }
 
 };
+
+template <
+    typename T,
+    typename = decltype(
+        static_cast<float>(std::declval<const T&>().x),
+        static_cast<float>(std::declval<const T&>().y),
+        static_cast<float>(std::declval<const T&>().z))>
+Vec3 makeVec3(const T& value) {
+    return {
+        static_cast<float>(value.x),
+        static_cast<float>(value.y),
+        static_cast<float>(value.z)};
+}
 
 struct Link {
     IslandId fromIsland = 0;

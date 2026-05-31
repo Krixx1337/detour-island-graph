@@ -35,11 +35,9 @@ Building the topological graph is as simple as defining your gap tolerances and 
 ```cpp
 #include <detour_island_graph/IslandGraphBuilder.h>
 
-// 1. Configure the builder parameters
-detour_island_graph::BuildConfig config;
-config.gapDiscovery.maxHorizontalGap = 20.0f;     // Maximum jump distance
-config.gapDiscovery.maxVerticalGapUp = 4.0f;      // Maximum climbable/jumpable height
-config.gapDiscovery.maxVerticalGapDown = 15.0f;    // Maximum drop height (falls)
+// 1. Configure the required gap tolerances:
+// maximum jump distance, climb height, and drop height.
+detour_island_graph::BuildConfig config(20.0f, 4.0f, 15.0f);
 
 // Enable global density pruning to keep the graph clean & sparse
 config.density.globalPruning.enabled = true;
@@ -84,7 +82,9 @@ if (path.status == detour_island_graph::PathStatus::Success) {
 }
 ```
 
-The default geometric link cost uses A* search with a Euclidean heuristic. Supplying a custom `LinkCost` callback automatically switches to Dijkstra ordering, preserving optimal routes for arbitrary non-negative custom costs at the expense of potentially exploring more portals.
+The default geometric link cost uses A* search with a Euclidean heuristic. Supply a `PathOptions` object to filter links or customize costs. A custom `linkCost` without a `heuristicCost` automatically switches to Dijkstra ordering, preserving optimal routes for arbitrary non-negative custom costs. Custom heuristics must be finite and non-negative. Use a consistent heuristic if optimal routes are required.
+
+Use `detour_island_graph::makeVec3(engineVector)` to explicitly adapt vector types that expose `.x`, `.y`, and `.z` members.
 
 ---
 
@@ -103,7 +103,7 @@ The default configuration enables boundary deduplication, candidate deduplicatio
 To build an unpruned reference graph, disable every density-reduction stage:
 
 ```cpp
-detour_island_graph::BuildConfig config;
+detour_island_graph::BuildConfig config(20.0f, 4.0f, 15.0f);
 config.boundaries.deduplicationEnabled = false;
 config.boundaries.representativeReductionEnabled = false;
 config.density.pairScanSuppression.enabled = false;
@@ -158,7 +158,7 @@ result.stats.p95IncomingLinksOnIsland;
 result.stats.averageLinkLength;
 ```
 
-`BuildStats::queries.capacityHitCount` reports how often `queryPolygons()` filled the configured `query.maxNearbyPolygons` buffer. Increase that capacity when the counter is non-zero and missing candidates matter for your mesh.
+Spatial polygon queries use Detour's batched callback API, so dense query results are collected without a fixed-capacity truncation limit.
 
 ---
 
@@ -171,7 +171,7 @@ add_subdirectory(path/to/DetourIslandGraph)
 target_link_libraries(your_target PRIVATE detour_island_graph::detour_island_graph)
 ```
 
-By default, standalone builds will automatically fetch pinned upstream Detour `v1.6.0` headers if not already available in your environment. You can compile the standalone test suite by configuring CMake with `-DDETOUR_ISLAND_GRAPH_BUILD_TESTS=ON`.
+By default, standalone builds will automatically fetch pinned upstream Detour `v1.6.0` headers if not already available in your environment. Standalone builds enable tests by default; embedded builds do not. You can override this with `-DDETOUR_ISLAND_GRAPH_BUILD_TESTS=ON` or `OFF`.
 
 For an installed package, define a `Detour` or `RecastNavigation::Detour` target before calling `find_package`:
 

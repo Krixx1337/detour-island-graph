@@ -88,9 +88,9 @@ struct DensityTuning {
 };
 
 struct GapDiscoveryTuning {
-    float maxHorizontalGap = 30.0f;
-    float maxVerticalGapUp = 30.0f;
-    float maxVerticalGapDown = 30.0f;
+    float maxHorizontalGap;
+    float maxVerticalGapUp;
+    float maxVerticalGapDown;
 };
 
 struct BoundaryTuning {
@@ -116,10 +116,20 @@ struct BoundaryTuning {
 
 struct QueryTuning {
     int maxNodes = 4096;
-    int maxNearbyPolygons = 2048;
 };
 
 struct BuildConfig {
+    BuildConfig() = delete;
+
+    explicit BuildConfig(
+        float maxHorizontalGap,
+        float maxVerticalGapUp,
+        float maxVerticalGapDown)
+        : gapDiscovery{
+            maxHorizontalGap,
+            maxVerticalGapUp,
+            maxVerticalGapDown} {}
+
     GapDiscoveryTuning gapDiscovery;
     BoundaryTuning boundaries;
     QueryTuning query;
@@ -145,7 +155,6 @@ struct BoundaryStats {
 
 struct QueryStats {
     std::size_t count = 0;
-    std::size_t capacityHitCount = 0;
     std::size_t nearbyPolygonCount = 0;
 };
 
@@ -201,7 +210,7 @@ struct BuildResult {
 
 class IslandGraphBuilder {
 public:
-    [[nodiscard]] BuildResult build(const dtNavMesh& navMesh, const BuildConfig& config = {}) const;
+    [[nodiscard]] BuildResult build(const dtNavMesh& navMesh, const BuildConfig& config) const;
 };
 
 } // namespace detour_island_graph
