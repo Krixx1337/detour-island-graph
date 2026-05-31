@@ -107,6 +107,22 @@ struct IslandPair {
     }
 };
 
+struct PairScanKey {
+    IslandId fromIsland = 0;
+    IslandId toIsland = 0;
+    int midpointX = 0;
+    int midpointY = 0;
+    int midpointZ = 0;
+
+    bool operator==(const PairScanKey& other) const {
+        return fromIsland == other.fromIsland &&
+            toIsland == other.toIsland &&
+            midpointX == other.midpointX &&
+            midpointY == other.midpointY &&
+            midpointZ == other.midpointZ;
+    }
+};
+
 template <typename T>
 void hashCombine(std::size_t& seed, const T& value) {
     seed ^= std::hash<T>{}(value) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
@@ -146,6 +162,18 @@ struct IslandPairHash {
         std::size_t hash = 0;
         hashCombine(hash, pair.from);
         hashCombine(hash, pair.to);
+        return hash;
+    }
+};
+
+struct PairScanKeyHash {
+    std::size_t operator()(const PairScanKey& key) const {
+        std::size_t hash = 0;
+        hashCombine(hash, key.fromIsland);
+        hashCombine(hash, key.toIsland);
+        hashCombine(hash, key.midpointX);
+        hashCombine(hash, key.midpointY);
+        hashCombine(hash, key.midpointZ);
         return hash;
     }
 };
@@ -256,6 +284,11 @@ bool validate(const BuildConfig& config, std::string& message) {
         massAware.lowMassPruneRadiusScale > 0.0f &&
         std::isfinite(massAware.highMassPruneRadiusScale) &&
         massAware.highMassPruneRadiusScale > 0.0f &&
+        (!density.pairScanSuppression.enabled ||
+            (std::isfinite(density.pairScanSuppression.cellSize) &&
+             density.pairScanSuppression.cellSize >= 0.0f &&
+             std::isfinite(density.pairScanSuppression.cellSizeRatio) &&
+             density.pairScanSuppression.cellSizeRatio > 0.0f)) &&
         (!density.candidateDeduplication.enabled ||
             (std::isfinite(density.candidateDeduplication.cellSize) &&
              density.candidateDeduplication.cellSize >= 0.0f &&
@@ -602,9 +635,12 @@ BuildStatus discoverLinks(
 
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
+    std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
     std::vector<Link> candidates;
     std::vector<dtPolyRef> nearby(static_cast<std::size_t>(config.query.maxNearbyPolygons));
     const float candidateCellSize = config.density.candidateDeduplication.effectiveCellSize(
+        config.gapDiscovery.maxHorizontalGap);
+    const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
     const float extents[3]{
         config.gapDiscovery.maxHorizontalGap,
@@ -640,9 +676,24 @@ BuildStatus discoverLinks(
             if (!target || *target == boundary.island) {
                 continue;
             }
+            ++stats.candidates.pairScanCandidateCount;
+            if (config.density.pairScanSuppression.enabled) {
+                const PairScanKey pairScanKey{
+                    boundary.island,
+                    *target,
+                    quantize(boundary.midpoint.x, pairScanCellSize),
+                    quantize(boundary.midpoint.y, pairScanCellSize),
+                    quantize(boundary.midpoint.z, pairScanCellSize)};
+                if (!scannedPairCells.insert(pairScanKey).second) {
+                    ++stats.candidates.pairScanSuppressedCount;
+                    continue;
+                }
+            }
             float projected[3];
             bool overPolygon = false;
+            ++stats.candidates.closestPointQueryCount;
             if (dtStatusFailed(query->closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
+                ++stats.candidates.closestPointFailureCount;
                 continue;
             }
             ++stats.candidates.projectedCount;

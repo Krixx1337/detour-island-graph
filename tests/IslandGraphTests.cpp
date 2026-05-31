@@ -181,6 +181,36 @@ bool hasLink(const detour_island_graph::IslandGraph& graph, std::uint32_t from, 
     return false;
 }
 
+bool haveSameLinks(
+    const detour_island_graph::IslandGraph& lhs,
+    const detour_island_graph::IslandGraph& rhs) {
+    if (lhs.islands().size() != rhs.islands().size()) {
+        return false;
+    }
+    for (std::size_t islandIndex = 0; islandIndex < lhs.islands().size(); ++islandIndex) {
+        const auto& lhsLinks = lhs.islands()[islandIndex].outgoingLinks;
+        const auto& rhsLinks = rhs.islands()[islandIndex].outgoingLinks;
+        if (lhsLinks.size() != rhsLinks.size()) {
+            return false;
+        }
+        for (std::size_t linkIndex = 0; linkIndex < lhsLinks.size(); ++linkIndex) {
+            const auto& lhsLink = lhsLinks[linkIndex];
+            const auto& rhsLink = rhsLinks[linkIndex];
+            if (lhsLink.fromIsland != rhsLink.fromIsland ||
+                lhsLink.toIsland != rhsLink.toIsland ||
+                lhsLink.start.x != rhsLink.start.x ||
+                lhsLink.start.y != rhsLink.start.y ||
+                lhsLink.start.z != rhsLink.start.z ||
+                lhsLink.end.x != rhsLink.end.x ||
+                lhsLink.end.y != rhsLink.end.y ||
+                lhsLink.end.z != rhsLink.end.z) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 std::size_t linkCount(const detour_island_graph::IslandGraph& graph, std::uint32_t from, std::uint32_t to) {
     const detour_island_graph::Island* island = graph.findIsland(from);
     if (!island) {
@@ -457,6 +487,69 @@ TEST_CASE("Builder density tuning") {
         const BuildResult result = builder.build(*navMesh, undeduplicatedConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.boundaries.deduplicatedCount == result.stats.boundaries.rawCount);
+    }
+    SUBCASE("Pair scan suppression cell size resolves once from the horizontal gap") {
+        BuildConfig densityConfig;
+        densityConfig.density.pairScanSuppression.enabled = true;
+        densityConfig.density.pairScanSuppression.cellSizeRatio = 0.25f;
+        CHECK(densityConfig.density.pairScanSuppression.effectiveCellSize(30.0f) == 7.5f);
+        densityConfig.density.pairScanSuppression.cellSize = 4.0f;
+        CHECK(densityConfig.density.pairScanSuppression.effectiveCellSize(30.0f) == 4.0f);
+    }
+    SUBCASE("Disabled pair scan suppression preserves the baseline graph") {
+        BuildConfig disabledConfig = buildConfig;
+        disabledConfig.density.pairScanSuppression.enabled = false;
+        disabledConfig.density.pairScanSuppression.cellSizeRatio = 0.0f;
+        const BuildResult result = builder.build(*navMesh, disabledConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(haveSameLinks(result.graph, baseline.graph));
+        CHECK(result.stats.candidates.pairScanSuppressedCount == 0);
+    }
+    SUBCASE("Enabled pair scan suppression accounts for every eligible projection") {
+        BuildConfig suppressionConfig = buildConfig;
+        suppressionConfig.density.pairScanSuppression.enabled = true;
+        suppressionConfig.density.pairScanSuppression.cellSize = 10.0f;
+        const BuildResult result = builder.build(*navMesh, suppressionConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(
+            result.stats.candidates.pairScanSuppressedCount +
+            result.stats.candidates.closestPointQueryCount ==
+            result.stats.candidates.pairScanCandidateCount);
+        CHECK(result.stats.candidates.closestPointQueryCount <= baseline.stats.candidates.closestPointQueryCount);
+    }
+    SUBCASE("Stronger pair scan suppression does not increase projection queries") {
+        BuildConfig weakConfig = buildConfig;
+        weakConfig.density.pairScanSuppression.enabled = true;
+        weakConfig.density.pairScanSuppression.cellSize = 1.0f;
+        const BuildResult weakResult = builder.build(*navMesh, weakConfig);
+        REQUIRE(static_cast<bool>(weakResult));
+
+        BuildConfig strongConfig = weakConfig;
+        strongConfig.density.pairScanSuppression.cellSize = 10.0f;
+        const BuildResult strongResult = builder.build(*navMesh, strongConfig);
+        REQUIRE(static_cast<bool>(strongResult));
+        CHECK(strongResult.stats.candidates.closestPointQueryCount <= weakResult.stats.candidates.closestPointQueryCount);
+    }
+    SUBCASE("Pair scan suppression is deterministic") {
+        BuildConfig suppressionConfig = buildConfig;
+        suppressionConfig.density.pairScanSuppression.enabled = true;
+        suppressionConfig.density.pairScanSuppression.cellSize = 10.0f;
+        const BuildResult first = builder.build(*navMesh, suppressionConfig);
+        const BuildResult second = builder.build(*navMesh, suppressionConfig);
+        REQUIRE(static_cast<bool>(first));
+        REQUIRE(static_cast<bool>(second));
+        CHECK(haveSameLinks(first.graph, second.graph));
+        CHECK(first.stats.candidates.pairScanSuppressedCount == second.stats.candidates.pairScanSuppressedCount);
+    }
+    SUBCASE("Rejects invalid pair scan suppression cell sizes") {
+        BuildConfig invalidConfig;
+        invalidConfig.density.pairScanSuppression.enabled = true;
+        invalidConfig.density.pairScanSuppression.cellSize = -0.01f;
+        CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
+
+        invalidConfig.density.pairScanSuppression.cellSize = 0.0f;
+        invalidConfig.density.pairScanSuppression.cellSizeRatio = 0.0f;
+        CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Boundary representative reduction can be enabled independently") {
         BuildConfig representativeConfig = buildConfig;

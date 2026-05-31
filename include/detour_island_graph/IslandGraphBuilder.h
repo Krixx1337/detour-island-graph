@@ -35,6 +35,16 @@ struct CandidateDeduplicationTuning {
     }
 };
 
+struct PairScanSuppressionTuning {
+    bool enabled = false;
+    float cellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * cellSizeRatio
+    float cellSizeRatio = 0.25f;
+
+    float effectiveCellSize(float maxHorizontalGap) const noexcept {
+        return cellSize > 0.0f ? cellSize : (maxHorizontalGap * cellSizeRatio);
+    }
+};
+
 struct LocalPruningTuning {
     bool enabled = true;
     float baseRadius = 0.0f; // 0.0 = auto: maxHorizontalGap * baseRadiusRatio
@@ -70,6 +80,7 @@ struct SpannerPruningTuning {
 };
 
 struct DensityTuning {
+    PairScanSuppressionTuning pairScanSuppression;
     CandidateDeduplicationTuning candidateDeduplication;
     LocalPruningTuning localPruning;
     GlobalPruningTuning globalPruning;
@@ -139,6 +150,10 @@ struct QueryStats {
 };
 
 struct CandidateStats {
+    std::size_t pairScanCandidateCount = 0;
+    std::size_t pairScanSuppressedCount = 0;
+    std::size_t closestPointQueryCount = 0;
+    std::size_t closestPointFailureCount = 0;
     std::size_t projectedCount = 0;
     std::size_t deduplicatedCount = 0;
     std::size_t acceptedLinkCount = 0;
