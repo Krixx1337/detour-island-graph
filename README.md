@@ -7,6 +7,7 @@ It identifies disconnected navmesh islands, discovers potential gap crossings be
 ## Design
 
 - **Responsive, map-agnostic tuning:** Required gap limits describe agent capabilities. Density defaults scale relative to those limits, similar to responsive layout units, rather than assuming fixed map units or dimensions.
+- **Continuous density tuning:** Graph-shaping defaults favor proportional scaling and gradual interpolation over hidden fixed thresholds. Hard limits remain explicit when they represent agent capabilities.
 - **Granular graph shaping:** Density and pruning stages can be toggled and tuned independently. Applications can retain conservative defaults, request a sparse graph, build an unpruned reference graph, or apply a custom policy.
 - **Detour-native integration:** The library operates on `dtNavMesh`, uses Detour query filters, and does not impose an engine-specific vector type or threading model.
 - **Portable persistence:** Graphs can be serialized through standard C++ streams.
