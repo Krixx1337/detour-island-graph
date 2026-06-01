@@ -2,6 +2,8 @@
 
 #include "IslandGraph.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <iosfwd>
 #include <string>
 
@@ -25,13 +27,21 @@ struct SerializationResult {
     }
 };
 
+struct DeserializationLimits {
+    std::uint32_t maxIslandCount = 1'000'000U;
+    std::uint32_t maxElementsPerVector = 16'000'000U;
+    std::size_t maxAllocationBytes = 256U * 1024U * 1024U;
+};
+
 class IslandGraphSerializer {
 public:
     static constexpr std::uint32_t Magic = 0x31474944U; // "DIG1"
     static constexpr std::uint32_t Version = 2;
 
     [[nodiscard]] static SerializationStatus write(std::ostream& stream, const IslandGraph& graph);
-    [[nodiscard]] static SerializationResult read(std::istream& stream);
+    [[nodiscard]] static SerializationResult read(
+        std::istream& stream,
+        const DeserializationLimits& limits = {});
 };
 
 } // namespace detour_island_graph

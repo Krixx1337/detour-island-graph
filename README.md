@@ -39,10 +39,6 @@ Building the topological graph is as simple as defining your gap tolerances and 
 // maximum jump distance, climb height, and drop height.
 detour_island_graph::BuildConfig config(20.0f, 4.0f, 15.0f);
 
-// Enable global density pruning to keep the graph clean & sparse
-config.density.globalPruning.enabled = true;
-config.density.globalPruning.cellSizeRatio = 0.5f; // cellSize = maxHorizontalGap * 0.5f
-
 // 2. Build the graph
 detour_island_graph::IslandGraphBuilder builder;
 detour_island_graph::BuildResult result = builder.build(*myDetourNavMesh, config);
@@ -95,26 +91,31 @@ The default configuration enables boundary deduplication, candidate deduplicatio
 
 *   `boundaries`: Controls boundary extraction deduplication and optional pre-query representative reduction. The representative stage keeps the first deterministic boundary in each coarser build-wide grid cell before calling `queryPolygons()`. Both grids derive from `maxHorizontalGap` by default and support explicit distance overrides.
 *   `density.pairScanSuppression`: Controls optional pre-projection pair-corridor scan suppression. It avoids repeated `closestPointOnPoly()` calls for the same source island, target island, and source midpoint grid cell. Its build-wide grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
-*   `density.localPruning`: Controls pair-local redundancy pruning. Disable it to retain every candidate reaching this stage. Its radius defaults to `maxHorizontalGap * baseRadiusRatio`; set `baseRadius` for an explicit distance override or enable distance scaling using `distanceScale` and `maxRadiusScale`.
+*   `density.localPruning`: Controls pair-local redundancy pruning. Disable it to retain every candidate reaching this stage. Its radius defaults to `maxHorizontalGap * baseRadiusRatio`; set `baseRadius` for an explicit distance override. Optional distance scaling uses the responsive `distanceScaleRatio / maxHorizontalGap` by default, or the explicit inverse-distance override `distanceScale`.
 *   `density.globalPruning`: Controls the optional 3D occupancy grid. Enable it to keep only one link start or end point in each global cell. Its grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
 *   `density.candidateDeduplication`: Controls early candidate deduplication. Disable it to retain every projected candidate that passes gap filtering. Its grid defaults to `maxHorizontalGap * cellSizeRatio`; set `cellSize` for an explicit distance override.
 *   `density.spannerPruning`: Controls optional **t-Spanner pruning**. Enable it to discard direct jump links when a multi-hop route is close enough according to `pathRatio`; increase `verticalWeight` when elevation is materially harder than horizontal travel.
 
-To build an unpruned reference graph, disable every density-reduction stage:
+Use a named profile when you want a ready-made density policy:
 
 ```cpp
-detour_island_graph::BuildConfig config(20.0f, 4.0f, 15.0f);
-config.boundaries.deduplicationEnabled = false;
-config.boundaries.representativeReductionEnabled = false;
-config.density.pairScanSuppression.enabled = false;
-config.density.candidateDeduplication.enabled = false;
-config.density.localPruning.enabled = false;
-config.density.globalPruning.enabled = false;
-config.density.spannerPruning.enabled = false;
+auto conservative = detour_island_graph::BuildConfig::forProfile(
+    detour_island_graph::BuildProfile::Conservative, 20.0f, 4.0f, 15.0f);
+auto sparse = detour_island_graph::BuildConfig::forProfile(
+    detour_island_graph::BuildProfile::Sparse, 20.0f, 4.0f, 15.0f);
+auto unpruned = detour_island_graph::BuildConfig::forProfile(
+    detour_island_graph::BuildProfile::Unpruned, 20.0f, 4.0f, 15.0f);
 ```
 
+Constructing `BuildConfig` directly is equivalent to the conservative profile. Use `Sparse` when graph size matters more than retaining every alternative. Use `Unpruned` for reference builds and tuning comparisons.
+
 ### Mass-Aware Tuning
-Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances.
+Optionally prefer paths through larger, safer islands (high mass) over tiny, unstable stepping stones (low mass) by enabling `config.massAware.enabled = true`. It calculates a continuous mass score based on polygon count and dimensions to dynamically favor larger islands and adjust pruning tolerances. Set responsive `targetPreferenceRatio` to derive ranking preference from `maxHorizontalGap`, or set `targetPreference` for an explicit distance override.
+
+### Polygon Eligibility & Ranking
+Use `config.query.includeFlags` and `config.query.excludeFlags` to apply Detour polygon flags consistently during island extraction and link discovery. By default, island extraction accepts ground polygons. Set `config.polygonFilter` to replace that type predicate with application-specific eligibility.
+
+Set `config.linkRanker` to control which link wins when pruning stages collapse alternatives. Return a finite score where lower is better. Non-finite custom scores fall back to the built-in geometric and optional mass-aware ranking.
 
 ### Pruning Stage Impact
 On a real-world continent-scale navmesh (~80K polygons, ~4K islands), the density pipeline typically processes candidates in this order:
@@ -159,6 +160,16 @@ result.stats.averageLinkLength;
 ```
 
 Spatial polygon queries use Detour's batched callback API, so dense query results are collected without a fixed-capacity truncation limit.
+
+### Serialization Limits
+Deserialization uses defensive limits by default. Pass a `DeserializationLimits` value to `IslandGraphSerializer::read()` when your graph size or memory policy differs:
+
+```cpp
+detour_island_graph::DeserializationLimits limits;
+limits.maxIslandCount = 2'000'000;
+limits.maxAllocationBytes = 512U * 1024U * 1024U;
+auto result = detour_island_graph::IslandGraphSerializer::read(stream, limits);
+```
 
 ---
 

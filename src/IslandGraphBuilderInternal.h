@@ -25,7 +25,7 @@ struct IslandGraphAccess {
 };
 
 bool validate(const BuildConfig& config, std::string& message);
-void floodFill(const dtNavMesh& navMesh, IslandGraph& graph);
+void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& config);
 void calculateMassScores(IslandGraph& graph, const BuildConfig& config);
 BuildStatus discoverLinks(
     const dtNavMesh& navMesh,

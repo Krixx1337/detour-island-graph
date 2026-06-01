@@ -2,6 +2,8 @@
 
 #include "VectorMath.h"
 
+#include <DetourNavMeshQuery.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -22,6 +24,18 @@ bool resolvePolygon(
     return dtStatusSucceed(navMesh.getTileAndPolyByRef(reference, &tile, &polygon)) &&
         tile &&
         polygon;
+}
+
+bool isEligiblePolygon(
+    dtPolyRef reference,
+    const dtMeshTile& tile,
+    const dtPoly& polygon,
+    const BuildConfig& config,
+    const dtQueryFilter& filter) {
+    return filter.passFilter(reference, &tile, &polygon) &&
+        (config.polygonFilter
+            ? config.polygonFilter(reference, tile, polygon)
+            : polygon.getType() == DT_POLYTYPE_GROUND);
 }
 
 dtPolyRef getNeighbor(
@@ -110,9 +124,12 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
     }
 }
 
-void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
+void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& config) {
     auto& islands = IslandGraphAccess::islands(graph);
     auto& polygonToIsland = IslandGraphAccess::polygonToIsland(graph);
+    dtQueryFilter filter;
+    filter.setIncludeFlags(config.query.includeFlags);
+    filter.setExcludeFlags(config.query.excludeFlags);
     std::queue<dtPolyRef> pending;
     for (int tileIndex = 0; tileIndex < navMesh.getMaxTiles(); ++tileIndex) {
         const dtMeshTile* tile = navMesh.getTile(tileIndex);
@@ -121,10 +138,10 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
         }
         for (int polygonIndex = 0; polygonIndex < tile->header->polyCount; ++polygonIndex) {
             const dtPoly& polygon = tile->polys[polygonIndex];
-            if (polygon.getType() != DT_POLYTYPE_GROUND) {
+            const dtPolyRef start = navMesh.getPolyRefBase(tile) | static_cast<dtPolyRef>(polygonIndex);
+            if (!isEligiblePolygon(start, *tile, polygon, config, filter)) {
                 continue;
             }
-            const dtPolyRef start = navMesh.getPolyRefBase(tile) | static_cast<dtPolyRef>(polygonIndex);
             if (polygonToIsland.find(start) != polygonToIsland.end()) {
                 continue;
             }
@@ -150,7 +167,7 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph) {
                 const dtMeshTile* currentTile = nullptr;
                 const dtPoly* currentPolygon = nullptr;
                 if (!resolvePolygon(navMesh, current, currentTile, currentPolygon) ||
-                    currentPolygon->getType() != DT_POLYTYPE_GROUND) {
+                    !isEligiblePolygon(current, *currentTile, *currentPolygon, config, filter)) {
                     continue;
                 }
 

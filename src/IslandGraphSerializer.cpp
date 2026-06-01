@@ -14,9 +14,6 @@
 namespace detour_island_graph {
 namespace {
 
-constexpr std::uint32_t MaxIslandCount = 1'000'000U;
-constexpr std::uint32_t MaxElementsPerVector = 16'000'000U;
-constexpr std::size_t MaxDeserializedAllocationBytes = 256U * 1024U * 1024U;
 static_assert(std::numeric_limits<float>::is_iec559, "IEEE-754 float representation required");
 
 bool consumeAllocationBudget(std::size_t& remainingBytes, std::size_t count, std::size_t elementBytes) {
@@ -146,7 +143,9 @@ SerializationStatus IslandGraphSerializer::write(std::ostream& stream, const Isl
     return stream.good() ? SerializationStatus::Success : SerializationStatus::IoError;
 }
 
-SerializationResult IslandGraphSerializer::read(std::istream& stream) {
+SerializationResult IslandGraphSerializer::read(
+    std::istream& stream,
+    const DeserializationLimits& limits) {
     std::uint32_t magic = 0;
     std::uint32_t version = 0;
     if (!readUnsigned(stream, magic) || !readUnsigned(stream, version)) {
@@ -166,10 +165,10 @@ SerializationResult IslandGraphSerializer::read(std::istream& stream) {
     }
 
     std::uint32_t islandCount = 0;
-    if (!readCount(stream, MaxIslandCount, islandCount)) {
+    if (!readCount(stream, limits.maxIslandCount, islandCount)) {
         return malformed("Serialized graph island count is invalid.");
     }
-    std::size_t remainingAllocationBytes = MaxDeserializedAllocationBytes;
+    std::size_t remainingAllocationBytes = limits.maxAllocationBytes;
     if (!consumeAllocationBudget(remainingAllocationBytes, islandCount, sizeof(Island))) {
         return malformed("Serialized graph exceeds the allocation budget.");
     }
@@ -194,7 +193,7 @@ SerializationResult IslandGraphSerializer::read(std::istream& stream) {
             std::uint32_t polygonCount = 0;
             constexpr std::size_t polygonAllocationEstimate =
                 sizeof(dtPolyRef) + sizeof(std::pair<const dtPolyRef, IslandId>) + (2 * sizeof(void*));
-            if (!readCount(stream, MaxElementsPerVector, polygonCount) ||
+            if (!readCount(stream, limits.maxElementsPerVector, polygonCount) ||
                 !consumeAllocationBudget(remainingAllocationBytes, polygonCount, polygonAllocationEstimate)) {
                 return malformed("Serialized polygon count exceeds the allocation budget.");
             }
@@ -212,7 +211,7 @@ SerializationResult IslandGraphSerializer::read(std::istream& stream) {
             }
 
             std::uint32_t linkCount = 0;
-            if (!readCount(stream, MaxElementsPerVector, linkCount) ||
+            if (!readCount(stream, limits.maxElementsPerVector, linkCount) ||
                 !consumeAllocationBudget(remainingAllocationBytes, linkCount, sizeof(Link))) {
                 return malformed("Serialized link count exceeds the allocation budget.");
             }

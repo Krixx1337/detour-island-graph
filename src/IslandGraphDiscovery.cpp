@@ -306,7 +306,9 @@ bool validate(const BuildConfig& config, std::string& message) {
                  std::isfinite(config.boundaries.representativeCellSizeRatio) &&
                  config.boundaries.representativeCellSizeRatio > 0.0f),
             "Enabled boundary representative reduction requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
-    if (!require(config.query.maxNodes > 0, "query.maxNodes must be greater than zero.")) return false;
+    if (!require(
+            config.query.maxNodes > 0 && config.query.maxNodes <= 65535,
+            "query.maxNodes must be in the range [1, 65535].")) return false;
     if (!require(
             std::isfinite(massAware.normalizationPercentile) &&
                 massAware.normalizationPercentile > 0.0f &&
@@ -315,6 +317,9 @@ bool validate(const BuildConfig& config, std::string& message) {
     if (!require(
             std::isfinite(massAware.targetPreference) && massAware.targetPreference >= 0.0f,
             "massAware.targetPreference must be finite and non-negative.")) return false;
+    if (!require(
+            std::isfinite(massAware.targetPreferenceRatio) && massAware.targetPreferenceRatio >= 0.0f,
+            "massAware.targetPreferenceRatio must be finite and non-negative.")) return false;
     if (!require(
             std::isfinite(massAware.lowMassPruneRadiusScale) && massAware.lowMassPruneRadiusScale > 0.0f,
             "massAware.lowMassPruneRadiusScale must be finite and greater than zero.")) return false;
@@ -344,12 +349,14 @@ bool validate(const BuildConfig& config, std::string& message) {
             "Enabled local pruning requires a non-negative finite base radius and a positive finite base-radius ratio.")) return false;
     if (!require(
             !density.localPruning.enabled ||
-                !density.localPruning.enableDistanceScaling ||
+                 !density.localPruning.enableDistanceScaling ||
                 (std::isfinite(density.localPruning.distanceScale) &&
                  density.localPruning.distanceScale >= 0.0f &&
+                 std::isfinite(density.localPruning.distanceScaleRatio) &&
+                 density.localPruning.distanceScaleRatio >= 0.0f &&
                  std::isfinite(density.localPruning.maxRadiusScale) &&
                  density.localPruning.maxRadiusScale >= 1.0f),
-            "Enabled local-pruning distance scaling requires a non-negative finite distance scale and a finite maximum radius scale of at least one.")) return false;
+            "Enabled local-pruning distance scaling requires non-negative finite distance scales and a finite maximum radius scale of at least one.")) return false;
     if (!require(
             !density.globalPruning.enabled ||
                 (std::isfinite(density.globalPruning.cellSize) &&
@@ -472,8 +479,16 @@ float linkDistance(const Link& link) {
 }
 
 float rankScore(const Link& link, const IslandGraph& graph, const BuildConfig& config) {
+    if (config.linkRanker) {
+        const float customRank = config.linkRanker(link, graph);
+        if (std::isfinite(customRank)) {
+            return customRank;
+        }
+    }
     const float preference = config.massAware.enabled
-        ? config.massAware.targetPreferenceFor(graph.islands()[link.toIsland].massScore)
+        ? config.massAware.targetPreferenceFor(
+            graph.islands()[link.toIsland].massScore,
+            config.gapDiscovery.maxHorizontalGap)
         : 0.0f;
     return linkDistance(link) - preference;
 }
@@ -502,7 +517,9 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
         scale *= config.massAware.pruneRadiusScaleFor(targetMass);
     }
     if (config.density.localPruning.enableDistanceScaling) {
-        scale *= config.density.localPruning.pruneRadiusScaleFor(link.horizontalDistance);
+        scale *= config.density.localPruning.pruneRadiusScaleFor(
+            link.horizontalDistance,
+            config.gapDiscovery.maxHorizontalGap);
     }
     return config.density.localPruning.effectiveBaseRadius(config.gapDiscovery.maxHorizontalGap) * scale;
 }
@@ -569,7 +586,9 @@ BuildStatus discoverCandidates(
         config.gapDiscovery.maxHorizontalGap,
         (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown),
         config.gapDiscovery.maxHorizontalGap};
-    const dtQueryFilter filter;
+    dtQueryFilter filter;
+    filter.setIncludeFlags(config.query.includeFlags);
+    filter.setExcludeFlags(config.query.excludeFlags);
 
     for (const Boundary& boundary : representatives) {
         float center[3];

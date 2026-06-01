@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <string>
 
 namespace detour_island_graph {
@@ -11,12 +12,19 @@ namespace detour_island_graph {
 struct MassAwareTuning {
     bool enabled = false;
     float normalizationPercentile = 0.99f;
-    float targetPreference = 0.0f;
+    float targetPreference = 0.0f; // 0.0 = auto: maxHorizontalGap * targetPreferenceRatio
+    float targetPreferenceRatio = 0.0f;
     float lowMassPruneRadiusScale = 1.0f;
     float highMassPruneRadiusScale = 1.0f;
 
-    float targetPreferenceFor(float massScore) const noexcept {
-        return targetPreference * massScore;
+    float effectiveTargetPreference(float maxHorizontalGap) const noexcept {
+        return targetPreference > 0.0f
+            ? targetPreference
+            : (maxHorizontalGap * targetPreferenceRatio);
+    }
+
+    float targetPreferenceFor(float massScore, float maxHorizontalGap) const noexcept {
+        return effectiveTargetPreference(maxHorizontalGap) * massScore;
     }
 
     float pruneRadiusScaleFor(float massScore) const noexcept {
@@ -50,11 +58,18 @@ struct LocalPruningTuning {
     float baseRadius = 0.0f; // 0.0 = auto: maxHorizontalGap * baseRadiusRatio
     float baseRadiusRatio = 0.25f;
     bool enableDistanceScaling = false;
-    float distanceScale = 0.0f;
+    float distanceScale = 0.0f; // 0.0 = auto: distanceScaleRatio / maxHorizontalGap
+    float distanceScaleRatio = 0.0f;
     float maxRadiusScale = 1.0f;
 
-    float pruneRadiusScaleFor(float horizontalDistance) const noexcept {
-        const float scale = 1.0f + (distanceScale * horizontalDistance);
+    float effectiveDistanceScale(float maxHorizontalGap) const noexcept {
+        return distanceScale > 0.0f
+            ? distanceScale
+            : (distanceScaleRatio / maxHorizontalGap);
+    }
+
+    float pruneRadiusScaleFor(float horizontalDistance, float maxHorizontalGap) const noexcept {
+        const float scale = 1.0f + (effectiveDistanceScale(maxHorizontalGap) * horizontalDistance);
         return scale < maxRadiusScale ? scale : maxRadiusScale;
     }
 
@@ -116,6 +131,17 @@ struct BoundaryTuning {
 
 struct QueryTuning {
     int maxNodes = 4096;
+    unsigned short includeFlags = 0xffff;
+    unsigned short excludeFlags = 0;
+};
+
+using PolygonFilter = std::function<bool(dtPolyRef, const dtMeshTile&, const dtPoly&)>;
+using LinkRanker = std::function<float(const Link&, const IslandGraph&)>;
+
+enum class BuildProfile {
+    Conservative,
+    Sparse,
+    Unpruned
 };
 
 struct BuildConfig {
@@ -130,11 +156,19 @@ struct BuildConfig {
             maxVerticalGapUp,
             maxVerticalGapDown} {}
 
+    [[nodiscard]] static BuildConfig forProfile(
+        BuildProfile profile,
+        float maxHorizontalGap,
+        float maxVerticalGapUp,
+        float maxVerticalGapDown);
+
     GapDiscoveryTuning gapDiscovery;
     BoundaryTuning boundaries;
     QueryTuning query;
     MassAwareTuning massAware;
     DensityTuning density;
+    PolygonFilter polygonFilter;
+    LinkRanker linkRanker;
 };
 
 struct TimingStats {

@@ -281,6 +281,28 @@ TEST_CASE("Vec3 adapter accepts x y z vector types") {
     CHECK(value.z == 3.0f);
 }
 
+TEST_CASE("Build profiles expose conservative sparse and unpruned defaults") {
+    const BuildConfig conservative =
+        BuildConfig::forProfile(BuildProfile::Conservative, 30.0f, 30.0f, 30.0f);
+    CHECK(conservative.boundaries.deduplicationEnabled);
+    CHECK(conservative.density.candidateDeduplication.enabled);
+    CHECK(conservative.density.localPruning.enabled);
+    CHECK_FALSE(conservative.density.globalPruning.enabled);
+
+    const BuildConfig sparse =
+        BuildConfig::forProfile(BuildProfile::Sparse, 30.0f, 30.0f, 30.0f);
+    CHECK(sparse.boundaries.representativeReductionEnabled);
+    CHECK(sparse.density.pairScanSuppression.enabled);
+    CHECK(sparse.density.globalPruning.enabled);
+    CHECK(sparse.density.spannerPruning.enabled);
+
+    const BuildConfig unpruned =
+        BuildConfig::forProfile(BuildProfile::Unpruned, 30.0f, 30.0f, 30.0f);
+    CHECK_FALSE(unpruned.boundaries.deduplicationEnabled);
+    CHECK_FALSE(unpruned.density.candidateDeduplication.enabled);
+    CHECK_FALSE(unpruned.density.localPruning.enabled);
+}
+
 TEST_CASE("Pathfinder basic routing") {
     const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
     const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
@@ -490,8 +512,16 @@ TEST_CASE("Builder density tuning") {
         densityConfig.density.localPruning.enableDistanceScaling = true;
         densityConfig.density.localPruning.distanceScale = 0.25f;
         densityConfig.density.localPruning.maxRadiusScale = 2.0f;
-        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(2.0f) == 1.5f);
-        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(8.0f) == 2.0f);
+        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(2.0f, 30.0f) == 1.5f);
+        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(8.0f, 30.0f) == 2.0f);
+    }
+    SUBCASE("Density radius scale supports a horizontal-gap ratio") {
+        BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
+        densityConfig.density.localPruning.enableDistanceScaling = true;
+        densityConfig.density.localPruning.distanceScaleRatio = 1.0f;
+        densityConfig.density.localPruning.maxRadiusScale = 3.0f;
+        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(15.0f, 30.0f) == 1.5f);
+        CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(60.0f, 30.0f) == 3.0f);
     }
     SUBCASE("Candidate deduplication cell size resolves once from the horizontal gap") {
         BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
@@ -659,6 +689,12 @@ TEST_CASE("Builder density tuning") {
         invalidDensityConfig.density.localPruning.distanceScale = -0.01f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
+    SUBCASE("Rejects negative density distance scale ratio") {
+        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
+        invalidDensityConfig.density.localPruning.enableDistanceScaling = true;
+        invalidDensityConfig.density.localPruning.distanceScaleRatio = -0.01f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+    }
     SUBCASE("Rejects invalid candidate deduplication cell sizes") {
         BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
         invalidDensityConfig.density.candidateDeduplication.enabled = true;
@@ -733,6 +769,39 @@ TEST_CASE("Builder density tuning") {
         invalidSpannerConfig.density.spannerPruning.enabled = true;
         invalidSpannerConfig.density.spannerPruning.verticalWeight = -0.01f;
         CHECK(builder.build(*navMesh, invalidSpannerConfig).status == BuildStatus::InvalidConfiguration);
+    }
+}
+
+TEST_CASE("Builder polygon filtering and ranking") {
+    const auto navMesh = buildDisconnectedNavMesh();
+    const IslandGraphBuilder builder;
+
+    SUBCASE("Detour include flags restrict island extraction") {
+        BuildConfig config(3.0f, 2.0f, 4.0f);
+        config.query.includeFlags = 2;
+        const BuildResult result = builder.build(*navMesh, config);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.graph.empty());
+    }
+    SUBCASE("Polygon predicate restricts island extraction") {
+        BuildConfig config(3.0f, 2.0f, 4.0f);
+        config.polygonFilter = [](dtPolyRef, const dtMeshTile&, const dtPoly&) {
+            return false;
+        };
+        const BuildResult result = builder.build(*navMesh, config);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.graph.empty());
+    }
+    SUBCASE("Custom link ranker participates in candidate selection") {
+        BuildConfig config(3.0f, 2.0f, 4.0f);
+        int rankCalls = 0;
+        config.linkRanker = [&rankCalls](const Link& link, const IslandGraph&) {
+            ++rankCalls;
+            return link.horizontalDistance;
+        };
+        const BuildResult result = builder.build(*navMesh, config);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(rankCalls > 0);
     }
 }
 
@@ -821,8 +890,13 @@ TEST_CASE("Builder mass-aware tuning") {
         massAwareConfig.massAware.targetPreference = 2.0f;
         massAwareConfig.massAware.lowMassPruneRadiusScale = 1.5f;
         massAwareConfig.massAware.highMassPruneRadiusScale = 0.75f;
-        CHECK(massAwareConfig.massAware.targetPreferenceFor(0.5f) == 1.0f);
+        CHECK(massAwareConfig.massAware.targetPreferenceFor(0.5f, 30.0f) == 1.0f);
         CHECK(massAwareConfig.massAware.pruneRadiusScaleFor(0.5f) == 1.125f);
+    }
+    SUBCASE("Target preference supports a horizontal-gap ratio") {
+        BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
+        massAwareConfig.massAware.targetPreferenceRatio = 0.5f;
+        CHECK(massAwareConfig.massAware.targetPreferenceFor(0.5f, 30.0f) == 7.5f);
     }
     SUBCASE("Mass-aware scores are normalized and ordered") {
         BuildConfig massAwareConfig(30.0f, 30.0f, 30.0f);
@@ -941,5 +1015,13 @@ TEST_CASE("Serializer") {
         bytes[59] = 0;
         std::stringstream oversized(bytes, std::ios::in | std::ios::binary);
         CHECK(IslandGraphSerializer::read(oversized).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Read limits are configurable") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        serialized.seekg(0);
+        DeserializationLimits limits;
+        limits.maxIslandCount = 2;
+        CHECK(IslandGraphSerializer::read(serialized, limits).status == SerializationStatus::MalformedData);
     }
 }
