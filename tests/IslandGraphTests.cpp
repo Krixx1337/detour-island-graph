@@ -523,13 +523,16 @@ TEST_CASE("Builder density tuning") {
         CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(15.0f, 30.0f) == 1.5f);
         CHECK(densityConfig.density.localPruning.pruneRadiusScaleFor(60.0f, 30.0f) == 3.0f);
     }
-    SUBCASE("Candidate deduplication cell size resolves once from the horizontal gap") {
+    SUBCASE("Candidate deduplication cell size responds to link distance") {
         BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
         densityConfig.density.candidateDeduplication.enabled = true;
-        densityConfig.density.candidateDeduplication.cellSizeRatio = 0.25f;
-        CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(30.0f) == 7.5f);
+        densityConfig.density.candidateDeduplication.nearCellSizeRatio = 0.25f;
+        densityConfig.density.candidateDeduplication.farCellSizeRatio = 0.5f;
+        CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(0.0f, 30.0f) == 7.5f);
+        CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(15.0f, 30.0f) == 11.25f);
+        CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(60.0f, 30.0f) == 15.0f);
         densityConfig.density.candidateDeduplication.cellSize = 4.0f;
-        CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(30.0f) == 4.0f);
+        CHECK(densityConfig.density.candidateDeduplication.effectiveCellSize(15.0f, 30.0f) == 4.0f);
     }
     SUBCASE("Coarse candidate deduplication does not increase accepted links") {
         BuildConfig coarseCandidateConfig = buildConfig;
@@ -640,6 +643,23 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.boundaries.representativeCount == result.stats.boundaries.deduplicatedCount);
         CHECK(result.stats.boundaries.representativeTrimmedCount == 0);
     }
+    SUBCASE("Boundary representative ranking is customizable") {
+        BuildConfig representativeConfig = buildConfig;
+        representativeConfig.boundaries.representativeReductionEnabled = true;
+        representativeConfig.boundaries.representativeCellSize = 10.0f;
+        std::size_t rankCallCount = 0;
+        representativeConfig.boundaries.representativeRanker =
+            [&rankCallCount](
+                const BoundaryRepresentativeCandidate& candidate,
+                const IslandGraph& graph) {
+                ++rankCallCount;
+                CHECK(candidate.island < graph.islands().size());
+                return candidate.midpoint.x;
+            };
+        const BuildResult result = builder.build(*navMesh, representativeConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(rankCallCount == result.stats.boundaries.deduplicatedCount);
+    }
     SUBCASE("Rejects invalid boundary representative cell size ratio") {
         BuildConfig invalidRepresentativeConfig = buildConfig;
         invalidRepresentativeConfig.boundaries.representativeReductionEnabled = true;
@@ -700,6 +720,10 @@ TEST_CASE("Builder density tuning") {
         invalidDensityConfig.density.candidateDeduplication.enabled = true;
         invalidDensityConfig.density.candidateDeduplication.cellSize = -0.01f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+
+        invalidDensityConfig.density.candidateDeduplication.cellSize = 0.0f;
+        invalidDensityConfig.density.candidateDeduplication.farCellSizeRatio = 0.0f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects density caps below one") {
         BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
@@ -710,7 +734,8 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Disabled global pruning preserves baseline") {
         BuildConfig disabledGlobalPruningConfig = buildConfig;
         disabledGlobalPruningConfig.density.globalPruning.enabled = false;
-        disabledGlobalPruningConfig.density.globalPruning.cellSizeRatio = 0.0f;
+        disabledGlobalPruningConfig.density.globalPruning.nearRadiusRatio = 0.0f;
+        disabledGlobalPruningConfig.density.globalPruning.farRadiusRatio = 0.0f;
         const BuildResult result = builder.build(*navMesh, disabledGlobalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount == baseline.stats.candidates.acceptedLinkCount);
@@ -718,7 +743,8 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Enabled global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
         globalPruningConfig.density.globalPruning.enabled = true;
-        globalPruningConfig.density.globalPruning.cellSizeRatio = 2.0f;
+        globalPruningConfig.density.globalPruning.nearRadiusRatio = 2.0f;
+        globalPruningConfig.density.globalPruning.farRadiusRatio = 2.0f;
         const BuildResult result = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount <= baseline.stats.candidates.acceptedLinkCount);
@@ -726,21 +752,36 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Stronger global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
         globalPruningConfig.density.globalPruning.enabled = true;
-        globalPruningConfig.density.globalPruning.cellSizeRatio = 2.0f;
+        globalPruningConfig.density.globalPruning.nearRadiusRatio = 2.0f;
+        globalPruningConfig.density.globalPruning.farRadiusRatio = 2.0f;
         const BuildResult globalPruningBuild = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(globalPruningBuild));
 
         BuildConfig strongerGlobalPruningConfig = buildConfig;
         strongerGlobalPruningConfig.density.globalPruning.enabled = true;
-        strongerGlobalPruningConfig.density.globalPruning.cellSizeRatio = 4.0f;
+        strongerGlobalPruningConfig.density.globalPruning.nearRadiusRatio = 4.0f;
+        strongerGlobalPruningConfig.density.globalPruning.farRadiusRatio = 4.0f;
         const BuildResult result = builder.build(*navMesh, strongerGlobalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount <= globalPruningBuild.stats.candidates.acceptedLinkCount);
     }
-    SUBCASE("Rejects negative global prune cell size ratio") {
+    SUBCASE("Global pruning radius responds to link distance") {
+        BuildConfig densityConfig(30.0f, 30.0f, 30.0f);
+        densityConfig.density.globalPruning.enabled = true;
+        densityConfig.density.globalPruning.nearRadiusRatio = 0.5f;
+        densityConfig.density.globalPruning.farRadiusRatio = 1.0f;
+        CHECK(densityConfig.density.globalPruning.effectiveRadius(0.0f, 30.0f) == 15.0f);
+        CHECK(densityConfig.density.globalPruning.effectiveRadius(15.0f, 30.0f) == 22.5f);
+        CHECK(densityConfig.density.globalPruning.effectiveRadius(60.0f, 30.0f) == 30.0f);
+    }
+    SUBCASE("Rejects negative global prune radius ratios") {
         BuildConfig invalidGlobalPruningConfig(30.0f, 30.0f, 30.0f);
         invalidGlobalPruningConfig.density.globalPruning.enabled = true;
-        invalidGlobalPruningConfig.density.globalPruning.cellSizeRatio = -0.01f;
+        invalidGlobalPruningConfig.density.globalPruning.nearRadiusRatio = -0.01f;
+        CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
+
+        invalidGlobalPruningConfig.density.globalPruning.nearRadiusRatio = 0.5f;
+        invalidGlobalPruningConfig.density.globalPruning.farRadiusRatio = -0.01f;
         CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Disabled spanner pruning preserves baseline") {
@@ -831,7 +872,8 @@ TEST_CASE("Builder pruning diagnostics") {
     SUBCASE("Pruning reject counts and accepted count sum to deduplicated count") {
         BuildConfig allPruningConfig = buildConfig;
         allPruningConfig.density.globalPruning.enabled = true;
-        allPruningConfig.density.globalPruning.cellSizeRatio = 2.0f;
+        allPruningConfig.density.globalPruning.nearRadiusRatio = 2.0f;
+        allPruningConfig.density.globalPruning.farRadiusRatio = 2.0f;
         allPruningConfig.density.spannerPruning.enabled = true;
         allPruningConfig.density.spannerPruning.pathRatio = 2.0f;
         const BuildResult result = builder.build(*navMesh, allPruningConfig);
@@ -846,7 +888,8 @@ TEST_CASE("Builder pruning diagnostics") {
     SUBCASE("Stronger pruning increases reject counts") {
         BuildConfig weakConfig = buildConfig;
         weakConfig.density.globalPruning.enabled = true;
-        weakConfig.density.globalPruning.cellSizeRatio = 1.0f;
+        weakConfig.density.globalPruning.nearRadiusRatio = 1.0f;
+        weakConfig.density.globalPruning.farRadiusRatio = 1.0f;
         weakConfig.density.localPruning.enabled = true;
         weakConfig.density.localPruning.baseRadius = 2.0f;
         const BuildResult weakResult = builder.build(*navMesh, weakConfig);
@@ -854,7 +897,8 @@ TEST_CASE("Builder pruning diagnostics") {
 
         BuildConfig strongConfig = buildConfig;
         strongConfig.density.globalPruning.enabled = true;
-        strongConfig.density.globalPruning.cellSizeRatio = 4.0f;
+        strongConfig.density.globalPruning.nearRadiusRatio = 4.0f;
+        strongConfig.density.globalPruning.farRadiusRatio = 4.0f;
         strongConfig.density.localPruning.enabled = true;
         strongConfig.density.localPruning.baseRadius = 10.0f;
         const BuildResult strongResult = builder.build(*navMesh, strongConfig);

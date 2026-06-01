@@ -35,11 +35,17 @@ struct MassAwareTuning {
 
 struct CandidateDeduplicationTuning {
     bool enabled = true;
-    float cellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * cellSizeRatio
-    float cellSizeRatio = 0.25f;
+    float cellSize = 0.0f; // 0.0 = auto: interpolate ratios across the horizontal gap range
+    float nearCellSizeRatio = 0.25f;
+    float farCellSizeRatio = 0.25f;
 
-    float effectiveCellSize(float maxHorizontalGap) const noexcept {
-        return cellSize > 0.0f ? cellSize : (maxHorizontalGap * cellSizeRatio);
+    float effectiveCellSize(float horizontalDistance, float maxHorizontalGap) const noexcept {
+        if (cellSize > 0.0f) {
+            return cellSize;
+        }
+        const float alpha = std::clamp(horizontalDistance / maxHorizontalGap, 0.0f, 1.0f);
+        const float ratio = nearCellSizeRatio + (alpha * (farCellSizeRatio - nearCellSizeRatio));
+        return maxHorizontalGap * ratio;
     }
 };
 
@@ -80,11 +86,17 @@ struct LocalPruningTuning {
 
 struct GlobalPruningTuning {
     bool enabled = false;
-    float cellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * cellSizeRatio
-    float cellSizeRatio = 0.5f;
+    float radius = 0.0f; // 0.0 = auto: interpolate ratios across the horizontal gap range
+    float nearRadiusRatio = 0.5f;
+    float farRadiusRatio = 0.5f;
 
-    float effectiveCellSize(float maxHorizontalGap) const noexcept {
-        return cellSize > 0.0f ? cellSize : (maxHorizontalGap * cellSizeRatio);
+    float effectiveRadius(float horizontalDistance, float maxHorizontalGap) const noexcept {
+        if (radius > 0.0f) {
+            return radius;
+        }
+        const float alpha = std::clamp(horizontalDistance / maxHorizontalGap, 0.0f, 1.0f);
+        const float ratio = nearRadiusRatio + (alpha * (farRadiusRatio - nearRadiusRatio));
+        return maxHorizontalGap * ratio;
     }
 };
 
@@ -108,6 +120,17 @@ struct GapDiscoveryTuning {
     float maxVerticalGapDown;
 };
 
+struct BoundaryRepresentativeCandidate {
+    IslandId island = 0;
+    dtPolyRef polygon = 0;
+    Vec3 start;
+    Vec3 end;
+    Vec3 midpoint;
+};
+
+using BoundaryRepresentativeRanker =
+    std::function<float(const BoundaryRepresentativeCandidate&, const IslandGraph&)>;
+
 struct BoundaryTuning {
     bool deduplicationEnabled = true;
     float deduplicationCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * deduplicationCellSizeRatio
@@ -115,6 +138,7 @@ struct BoundaryTuning {
     bool representativeReductionEnabled = false;
     float representativeCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * representativeCellSizeRatio
     float representativeCellSizeRatio = 0.25f;
+    BoundaryRepresentativeRanker representativeRanker;
 
     float effectiveDeduplicationCellSize(float maxHorizontalGap) const noexcept {
         return deduplicationCellSize > 0.0f

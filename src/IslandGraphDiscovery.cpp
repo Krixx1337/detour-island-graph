@@ -199,6 +199,18 @@ SpatialCoordinate quantize(float value, float cellSize) {
     return static_cast<SpatialCoordinate>(quantized);
 }
 
+SpatialCoordinate offsetCoordinate(SpatialCoordinate value, int offset) {
+    if (offset > 0 &&
+        value > (std::numeric_limits<SpatialCoordinate>::max)() - offset) {
+        return (std::numeric_limits<SpatialCoordinate>::max)();
+    }
+    if (offset < 0 &&
+        value < (std::numeric_limits<SpatialCoordinate>::min)() - offset) {
+        return (std::numeric_limits<SpatialCoordinate>::min)();
+    }
+    return value + offset;
+}
+
 class PolygonCollector final : public dtPolyQuery {
 public:
     explicit PolygonCollector(std::vector<dtPolyRef>& polygons)
@@ -337,9 +349,11 @@ bool validate(const BuildConfig& config, std::string& message) {
             !density.candidateDeduplication.enabled ||
                 (std::isfinite(density.candidateDeduplication.cellSize) &&
                  density.candidateDeduplication.cellSize >= 0.0f &&
-                 std::isfinite(density.candidateDeduplication.cellSizeRatio) &&
-                 density.candidateDeduplication.cellSizeRatio > 0.0f),
-            "Enabled candidate deduplication requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+                 std::isfinite(density.candidateDeduplication.nearCellSizeRatio) &&
+                 density.candidateDeduplication.nearCellSizeRatio > 0.0f &&
+                 std::isfinite(density.candidateDeduplication.farCellSizeRatio) &&
+                 density.candidateDeduplication.farCellSizeRatio > 0.0f),
+            "Enabled candidate deduplication requires a non-negative finite cell size and positive finite near/far cell-size ratios.")) return false;
     if (!require(
             !density.localPruning.enabled ||
                 (std::isfinite(density.localPruning.baseRadius) &&
@@ -359,11 +373,13 @@ bool validate(const BuildConfig& config, std::string& message) {
             "Enabled local-pruning distance scaling requires non-negative finite distance scales and a finite maximum radius scale of at least one.")) return false;
     if (!require(
             !density.globalPruning.enabled ||
-                (std::isfinite(density.globalPruning.cellSize) &&
-                 density.globalPruning.cellSize >= 0.0f &&
-                 std::isfinite(density.globalPruning.cellSizeRatio) &&
-                 density.globalPruning.cellSizeRatio > 0.0f),
-            "Enabled global pruning requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+                (std::isfinite(density.globalPruning.radius) &&
+                 density.globalPruning.radius >= 0.0f &&
+                 std::isfinite(density.globalPruning.nearRadiusRatio) &&
+                 density.globalPruning.nearRadiusRatio > 0.0f &&
+                 std::isfinite(density.globalPruning.farRadiusRatio) &&
+                 density.globalPruning.farRadiusRatio > 0.0f),
+            "Enabled global pruning requires a non-negative finite radius and positive finite near/far radius ratios.")) return false;
     if (!require(
             !density.spannerPruning.enabled ||
                 (std::isfinite(density.spannerPruning.pathRatio) &&
@@ -440,6 +456,7 @@ std::vector<Boundary> extractBoundaries(
 
 std::vector<Boundary> selectBoundaryRepresentatives(
     const std::vector<Boundary>& boundaries,
+    const IslandGraph& graph,
     const BuildConfig& config,
     BuildStats& stats) {
     if (!config.boundaries.representativeReductionEnabled) {
@@ -449,7 +466,12 @@ std::vector<Boundary> selectBoundaryRepresentatives(
 
     const float cellSize = config.boundaries.effectiveRepresentativeCellSize(
         config.gapDiscovery.maxHorizontalGap);
-    std::unordered_set<BoundaryKey, BoundaryKeyHash> occupiedCells;
+    struct RankedBoundary {
+        Boundary boundary;
+        float rank = 0.0f;
+    };
+
+    std::unordered_map<BoundaryKey, RankedBoundary, BoundaryKeyHash> bestByCell;
     std::vector<Boundary> representatives;
     representatives.reserve(boundaries.size());
     for (const Boundary& boundary : boundaries) {
@@ -465,10 +487,35 @@ std::vector<Boundary> selectBoundaryRepresentatives(
             quantize(direction.x, cellSize),
             quantize(direction.y, cellSize),
             quantize(direction.z, cellSize)};
-        if (occupiedCells.emplace(key).second) {
-            representatives.push_back(boundary);
+        const BoundaryRepresentativeCandidate candidate{
+            boundary.island,
+            boundary.polygon,
+            boundary.start,
+            boundary.end,
+            boundary.midpoint};
+        float rank = detail::distanceSquared(boundary.start, boundary.end);
+        if (config.boundaries.representativeRanker) {
+            const float customRank = config.boundaries.representativeRanker(candidate, graph);
+            if (std::isfinite(customRank)) {
+                rank = customRank;
+            }
+        }
+        const auto existing = bestByCell.find(key);
+        if (existing == bestByCell.end() || rank > existing->second.rank) {
+            bestByCell[key] = RankedBoundary{boundary, rank};
         }
     }
+    representatives.reserve(bestByCell.size());
+    for (const auto& entry : bestByCell) {
+        representatives.push_back(entry.second.boundary);
+    }
+    std::sort(representatives.begin(), representatives.end(), [](const Boundary& lhs, const Boundary& rhs) {
+        if (lhs.island != rhs.island) return lhs.island < rhs.island;
+        if (lhs.polygon != rhs.polygon) return lhs.polygon < rhs.polygon;
+        if (lhs.midpoint.x != rhs.midpoint.x) return lhs.midpoint.x < rhs.midpoint.x;
+        if (lhs.midpoint.y != rhs.midpoint.y) return lhs.midpoint.y < rhs.midpoint.y;
+        return lhs.midpoint.z < rhs.midpoint.z;
+    });
     stats.boundaries.representativeCount = representatives.size();
     stats.boundaries.representativeTrimmedCount = boundaries.size() - representatives.size();
     return representatives;
@@ -578,8 +625,6 @@ BuildStatus discoverCandidates(
     std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
     std::vector<dtPolyRef> nearby;
     PolygonCollector collector(nearby);
-    const float candidateCellSize = config.density.candidateDeduplication.effectiveCellSize(
-        config.gapDiscovery.maxHorizontalGap);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
     const float extents[3]{
@@ -650,6 +695,10 @@ BuildStatus discoverCandidates(
                 candidates.push_back(link);
                 continue;
             }
+            const float candidateCellSize =
+                config.density.candidateDeduplication.effectiveCellSize(
+                    link.horizontalDistance,
+                    config.gapDiscovery.maxHorizontalGap);
             const LinkKey key{
                 link.fromIsland,
                 link.toIsland,
@@ -686,24 +735,72 @@ void pruneCandidates(
         return isBetterLink(lhs, rhs, graph, config);
     });
 
-    std::unordered_set<GlobalCellKey, GlobalCellKeyHash> occupiedGlobalCells;
+    std::vector<Vec3> occupiedGlobalPoints;
+    std::unordered_map<GlobalCellKey, std::vector<Vec3>, GlobalCellKeyHash> occupiedGlobalCells;
+    if (config.density.globalPruning.enabled) {
+        occupiedGlobalPoints.reserve(candidates.size() * 2U);
+        occupiedGlobalCells.reserve(candidates.size() * 2U);
+    }
+    const float globalBaseRadius = config.density.globalPruning.enabled
+        ? (config.density.globalPruning.radius > 0.0f
+            ? config.density.globalPruning.radius
+            : config.gapDiscovery.maxHorizontalGap * (std::min)(
+                config.density.globalPruning.nearRadiusRatio,
+                config.density.globalPruning.farRadiusRatio))
+        : 1.0f;
+    const auto isNearOccupiedGlobalPoint = [&](const Vec3& candidatePoint, float radiusSquared) {
+        return std::any_of(
+            occupiedGlobalPoints.begin(),
+            occupiedGlobalPoints.end(),
+            [&](const Vec3& point) {
+                return detail::distanceSquared(candidatePoint, point) <= radiusSquared;
+            });
+    };
+    const auto isOccupiedGlobalPoint = [&](const Vec3& candidatePoint, float radius) {
+        const float radiusSquared = radius * radius;
+        const float cellRangeFloat = std::ceil(radius / globalBaseRadius);
+        if (!std::isfinite(cellRangeFloat) || cellRangeFloat > 4.0f) {
+            return isNearOccupiedGlobalPoint(candidatePoint, radiusSquared);
+        }
+        const int cellRange = static_cast<int>(cellRangeFloat);
+        const GlobalCellKey center{
+            quantize(candidatePoint.x, globalBaseRadius),
+            quantize(candidatePoint.y, globalBaseRadius),
+            quantize(candidatePoint.z, globalBaseRadius)};
+        for (int x = -cellRange; x <= cellRange; ++x) {
+            for (int y = -cellRange; y <= cellRange; ++y) {
+                for (int z = -cellRange; z <= cellRange; ++z) {
+                    const auto cell = occupiedGlobalCells.find({
+                        offsetCoordinate(center.x, x),
+                        offsetCoordinate(center.y, y),
+                        offsetCoordinate(center.z, z)});
+                    if (cell != occupiedGlobalCells.end() &&
+                        std::any_of(cell->second.begin(), cell->second.end(), [&](const Vec3& point) {
+                            return detail::distanceSquared(candidatePoint, point) <= radiusSquared;
+                        })) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    const auto occupyGlobalPoint = [&](const Vec3& point) {
+        occupiedGlobalPoints.push_back(point);
+        occupiedGlobalCells[{
+            quantize(point.x, globalBaseRadius),
+            quantize(point.y, globalBaseRadius),
+            quantize(point.z, globalBaseRadius)}].push_back(point);
+    };
     std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
-    const float globalCellSize = config.density.globalPruning.effectiveCellSize(
-        config.gapDiscovery.maxHorizontalGap);
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
         if (config.density.globalPruning.enabled) {
-            const GlobalCellKey startCell{
-                quantize(candidate.start.x, globalCellSize),
-                quantize(candidate.start.y, globalCellSize),
-                quantize(candidate.start.z, globalCellSize)
-            };
-            const GlobalCellKey endCell{
-                quantize(candidate.end.x, globalCellSize),
-                quantize(candidate.end.y, globalCellSize),
-                quantize(candidate.end.z, globalCellSize)
-            };
-            if (occupiedGlobalCells.count(startCell) > 0 || occupiedGlobalCells.count(endCell) > 0) {
+            const float globalRadius = config.density.globalPruning.effectiveRadius(
+                candidate.horizontalDistance,
+                config.gapDiscovery.maxHorizontalGap);
+            if (isOccupiedGlobalPoint(candidate.start, globalRadius) ||
+                isOccupiedGlobalPoint(candidate.end, globalRadius)) {
                 ++stats.candidates.globalPruningRejectCount;
                 continue;
             }
@@ -740,18 +837,8 @@ void pruneCandidates(
             ++stats.candidates.acceptedLinkCount;
 
             if (config.density.globalPruning.enabled) {
-                const GlobalCellKey startCell{
-                    quantize(candidate.start.x, globalCellSize),
-                    quantize(candidate.start.y, globalCellSize),
-                    quantize(candidate.start.z, globalCellSize)
-                };
-                const GlobalCellKey endCell{
-                    quantize(candidate.end.x, globalCellSize),
-                    quantize(candidate.end.y, globalCellSize),
-                    quantize(candidate.end.z, globalCellSize)
-                };
-                occupiedGlobalCells.insert(startCell);
-                occupiedGlobalCells.insert(endCell);
+                occupyGlobalPoint(candidate.start);
+                occupyGlobalPoint(candidate.end);
             }
         }
     }
@@ -776,7 +863,7 @@ BuildStatus discoverLinks(
 
     const Clock::time_point boundaryStart = Clock::now();
     const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
-    const std::vector<Boundary> representatives = selectBoundaryRepresentatives(boundaries, config, stats);
+    const std::vector<Boundary> representatives = selectBoundaryRepresentatives(boundaries, graph, config, stats);
     stats.timings.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
 
     std::vector<Link> candidates;
