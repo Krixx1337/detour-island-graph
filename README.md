@@ -41,6 +41,17 @@ auto reference = detour_island_graph::BuildConfig::forProfile(
     detour_island_graph::BuildProfile::Unpruned, 20.0f, 4.0f, 15.0f);
 ```
 
+## Tuning Strategy
+
+Start with a profile and customize only when the resulting graph or build cost requires it.
+
+- Use the conservative defaults when predictable graph shaping matters more than minimum graph size.
+- Use the sparse profile when graph size or build cost matters. It retains a focused recovery pass for short gaps that could otherwise be hidden by coarse density reduction.
+- Use the unpruned profile as a diagnostic reference, not as a typical production configuration.
+- Treat gap limits as movement capabilities. Use density and pruning controls to shape graph size.
+- Prefer relative tuning ratios over fixed distances unless a value represents a real movement constraint.
+- Adjust one graph-shaping stage at a time. Compare connectivity, accepted-link density, link distribution, and build cost after each change.
+
 Query the high-level graph with `IslandGraphPathfinder`:
 
 ```cpp
