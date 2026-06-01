@@ -129,6 +129,34 @@ struct BoundaryKeyHash {
     }
 };
 
+struct BoundaryRepresentativeKey {
+    IslandId island = 0;
+    SpatialCoordinate midpointX = 0;
+    SpatialCoordinate midpointY = 0;
+    SpatialCoordinate midpointZ = 0;
+    int directionBucket = 0;
+
+    bool operator==(const BoundaryRepresentativeKey& other) const {
+        return island == other.island &&
+            midpointX == other.midpointX &&
+            midpointY == other.midpointY &&
+            midpointZ == other.midpointZ &&
+            directionBucket == other.directionBucket;
+    }
+};
+
+struct BoundaryRepresentativeKeyHash {
+    std::size_t operator()(const BoundaryRepresentativeKey& key) const {
+        std::size_t hash = 0;
+        hashCombine(hash, key.island);
+        hashCombine(hash, key.midpointX);
+        hashCombine(hash, key.midpointY);
+        hashCombine(hash, key.midpointZ);
+        hashCombine(hash, key.directionBucket);
+        return hash;
+    }
+};
+
 struct LinkKeyHash {
     std::size_t operator()(const LinkKey& key) const {
         std::size_t hash = 0;
@@ -316,8 +344,9 @@ bool validate(const BuildConfig& config, std::string& message) {
                 (std::isfinite(config.boundaries.representativeCellSize) &&
                  config.boundaries.representativeCellSize >= 0.0f &&
                  std::isfinite(config.boundaries.representativeCellSizeRatio) &&
-                 config.boundaries.representativeCellSizeRatio > 0.0f),
-            "Enabled boundary representative reduction requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
+                 config.boundaries.representativeCellSizeRatio > 0.0f &&
+                 config.boundaries.representativeDirectionBuckets > 0),
+            "Enabled boundary representative reduction requires a non-negative finite cell size, a positive finite cell-size ratio, and at least one direction bucket.")) return false;
     if (!require(
             config.query.maxNodes > 0 && config.query.maxNodes <= 65535,
             "query.maxNodes must be in the range [1, 65535].")) return false;
@@ -459,9 +488,23 @@ std::vector<Boundary> selectBoundaryRepresentatives(
     const IslandGraph& graph,
     const BuildConfig& config,
     BuildStats& stats) {
+    std::vector<bool> outboundIslands(graph.islands().size(), true);
+    if (config.outboundIslandFilter) {
+        for (const Island& island : graph.islands()) {
+            outboundIslands[island.id] = config.outboundIslandFilter(island, graph);
+        }
+    }
+    std::vector<Boundary> outboundBoundaries;
+    outboundBoundaries.reserve(boundaries.size());
+    for (const Boundary& boundary : boundaries) {
+        if (outboundIslands[boundary.island]) {
+            outboundBoundaries.push_back(boundary);
+        }
+    }
+    stats.boundaries.outboundFilteredCount = boundaries.size() - outboundBoundaries.size();
     if (!config.boundaries.representativeReductionEnabled) {
-        stats.boundaries.representativeCount = boundaries.size();
-        return boundaries;
+        stats.boundaries.representativeCount = outboundBoundaries.size();
+        return outboundBoundaries;
     }
 
     const float cellSize = config.boundaries.effectiveRepresentativeCellSize(
@@ -471,22 +514,20 @@ std::vector<Boundary> selectBoundaryRepresentatives(
         float rank = 0.0f;
     };
 
-    std::unordered_map<BoundaryKey, RankedBoundary, BoundaryKeyHash> bestByCell;
+    std::unordered_map<BoundaryRepresentativeKey, RankedBoundary, BoundaryRepresentativeKeyHash> bestByCell;
     std::vector<Boundary> representatives;
-    representatives.reserve(boundaries.size());
-    for (const Boundary& boundary : boundaries) {
+    representatives.reserve(outboundBoundaries.size());
+    for (const Boundary& boundary : outboundBoundaries) {
         const Vec3 direction{
             boundary.end.x - boundary.start.x,
             boundary.end.y - boundary.start.y,
             boundary.end.z - boundary.start.z};
-        const BoundaryKey key{
+        const BoundaryRepresentativeKey key{
             boundary.island,
             quantize(boundary.midpoint.x, cellSize),
             quantize(boundary.midpoint.y, cellSize),
             quantize(boundary.midpoint.z, cellSize),
-            quantize(direction.x, cellSize),
-            quantize(direction.y, cellSize),
-            quantize(direction.z, cellSize)};
+            config.boundaries.representativeDirectionBucket(direction)};
         const BoundaryRepresentativeCandidate candidate{
             boundary.island,
             boundary.polygon,
@@ -517,7 +558,7 @@ std::vector<Boundary> selectBoundaryRepresentatives(
         return lhs.midpoint.z < rhs.midpoint.z;
     });
     stats.boundaries.representativeCount = representatives.size();
-    stats.boundaries.representativeTrimmedCount = boundaries.size() - representatives.size();
+    stats.boundaries.representativeTrimmedCount = outboundBoundaries.size() - representatives.size();
     return representatives;
 }
 

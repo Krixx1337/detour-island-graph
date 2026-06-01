@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 #include <functional>
 #include <string>
 
@@ -138,6 +139,7 @@ struct BoundaryTuning {
     bool representativeReductionEnabled = false;
     float representativeCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * representativeCellSizeRatio
     float representativeCellSizeRatio = 0.25f;
+    int representativeDirectionBuckets = 8;
     BoundaryRepresentativeRanker representativeRanker;
 
     float effectiveDeduplicationCellSize(float maxHorizontalGap) const noexcept {
@@ -151,6 +153,16 @@ struct BoundaryTuning {
             ? representativeCellSize
             : (maxHorizontalGap * representativeCellSizeRatio);
     }
+
+    int representativeDirectionBucket(const Vec3& direction) const noexcept {
+        constexpr float tau = 6.28318530718f;
+        const int bucketCount = (std::max)(representativeDirectionBuckets, 1);
+        const float angle = std::atan2(direction.z, direction.x);
+        const float normalizedAngle = angle < 0.0f ? angle + tau : angle;
+        return static_cast<int>(
+            std::floor(normalizedAngle * static_cast<float>(bucketCount) / tau)) %
+            bucketCount;
+    }
 };
 
 struct QueryTuning {
@@ -160,6 +172,7 @@ struct QueryTuning {
 };
 
 using PolygonFilter = std::function<bool(dtPolyRef, const dtMeshTile&, const dtPoly&)>;
+using OutboundIslandFilter = std::function<bool(const Island&, const IslandGraph&)>;
 using LinkRanker = std::function<float(const Link&, const IslandGraph&)>;
 
 enum class BuildProfile {
@@ -192,6 +205,7 @@ struct BuildConfig {
     MassAwareTuning massAware;
     DensityTuning density;
     PolygonFilter polygonFilter;
+    OutboundIslandFilter outboundIslandFilter;
     LinkRanker linkRanker;
 };
 
@@ -207,6 +221,7 @@ struct TimingStats {
 struct BoundaryStats {
     std::size_t rawCount = 0;
     std::size_t deduplicatedCount = 0;
+    std::size_t outboundFilteredCount = 0;
     std::size_t representativeCount = 0;
     std::size_t representativeTrimmedCount = 0;
 };

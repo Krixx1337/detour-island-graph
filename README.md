@@ -65,7 +65,7 @@ The public configuration API lives in:
 
 Key extension points include:
 
-- Detour polygon include/exclude flags and an optional polygon predicate.
+- Detour polygon include/exclude flags, an optional polygon predicate, and optional outbound-island policy.
 - Independent density and pruning controls.
 - Optional custom link ranking.
 - Optional custom path costs, filters, and heuristics.

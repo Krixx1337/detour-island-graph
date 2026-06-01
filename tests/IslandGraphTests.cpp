@@ -418,6 +418,9 @@ TEST_CASE("Builder with disconnected navmesh") {
     SUBCASE("Spatial query count matches representative boundaries") {
         CHECK(buildResult.stats.queries.count == buildResult.stats.boundaries.representativeCount);
     }
+    SUBCASE("Default outbound policy preserves every boundary") {
+        CHECK(buildResult.stats.boundaries.outboundFilteredCount == 0);
+    }
     SUBCASE("Spatial queries report complete polygon totals") {
         CHECK(buildResult.stats.queries.nearbyPolygonCount >= buildResult.stats.queries.count);
     }
@@ -438,6 +441,22 @@ TEST_CASE("Builder with disconnected navmesh") {
     SUBCASE("Builder discovers forward and reverse gaps") {
         CHECK(hasLink(buildResult.graph, 0, 1));
         CHECK(hasLink(buildResult.graph, 1, 0));
+    }
+    SUBCASE("Outbound island filtering preserves islands and incoming links") {
+        BuildConfig filteredConfig = buildConfig;
+        std::size_t filterCallCount = 0;
+        filteredConfig.outboundIslandFilter = [&filterCallCount](const Island& island, const IslandGraph&) {
+            ++filterCallCount;
+            return island.id != 0;
+        };
+        const BuildResult filtered = builder.build(*navMesh, filteredConfig);
+        REQUIRE(static_cast<bool>(filtered));
+        CHECK(filtered.graph.islands().size() == buildResult.graph.islands().size());
+        CHECK(filterCallCount == filtered.graph.islands().size());
+        CHECK(filtered.stats.boundaries.outboundFilteredCount > 0);
+        CHECK(filtered.stats.queries.count < buildResult.stats.queries.count);
+        CHECK(filtered.graph.islands()[0].outgoingLinks.empty());
+        CHECK(hasLink(filtered.graph, 1, 0));
     }
     SUBCASE("Upward gap obeys upward limit") {
         CHECK(!hasLink(buildResult.graph, 1, 2));
@@ -634,6 +653,15 @@ TEST_CASE("Builder density tuning") {
             result.stats.boundaries.deduplicatedCount);
         CHECK(result.stats.queries.count == result.stats.boundaries.representativeCount);
     }
+    SUBCASE("Boundary representative direction buckets are angular") {
+        BuildConfig representativeConfig = buildConfig;
+        representativeConfig.boundaries.representativeDirectionBuckets = 8;
+        CHECK(representativeConfig.boundaries.representativeDirectionBucket({1.0f, 0.0f, 0.0f}) == 0);
+        CHECK(representativeConfig.boundaries.representativeDirectionBucket({10.0f, 0.0f, 0.0f}) == 0);
+        CHECK(representativeConfig.boundaries.representativeDirectionBucket({0.0f, 0.0f, 1.0f}) == 2);
+        CHECK(representativeConfig.boundaries.representativeDirectionBucket({-1.0f, 0.0f, 0.0f}) == 4);
+        CHECK(representativeConfig.boundaries.representativeDirectionBucket({0.0f, 0.0f, -1.0f}) == 6);
+    }
     SUBCASE("Disabled boundary representative reduction preserves deduplicated boundaries") {
         BuildConfig representativeConfig = buildConfig;
         representativeConfig.boundaries.representativeReductionEnabled = false;
@@ -664,6 +692,12 @@ TEST_CASE("Builder density tuning") {
         BuildConfig invalidRepresentativeConfig = buildConfig;
         invalidRepresentativeConfig.boundaries.representativeReductionEnabled = true;
         invalidRepresentativeConfig.boundaries.representativeCellSizeRatio = 0.0f;
+        CHECK(builder.build(*navMesh, invalidRepresentativeConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Rejects invalid boundary representative direction bucket count") {
+        BuildConfig invalidRepresentativeConfig = buildConfig;
+        invalidRepresentativeConfig.boundaries.representativeReductionEnabled = true;
+        invalidRepresentativeConfig.boundaries.representativeDirectionBuckets = 0;
         CHECK(builder.build(*navMesh, invalidRepresentativeConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Enabled density does not increase accepted links") {
