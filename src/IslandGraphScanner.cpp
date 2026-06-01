@@ -12,6 +12,8 @@ namespace {
 struct LinkKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
+    // Guardrail: candidate dedup is lateral on purpose. Fragmented vertical topology often moves
+    // only in y between samples; treating that as a new link identity restores graph bloat.
     SpatialCoordinate startX = 0;
     SpatialCoordinate startZ = 0;
     SpatialCoordinate endX = 0;
@@ -43,6 +45,8 @@ struct LinkKeyHash {
 struct PairScanKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
+    // Guardrail: scan suppression tracks lateral boundary cells so repeated probes of the same
+    // corridor at slightly different heights do not explode discovery cost on complex 3D maps.
     SpatialCoordinate midpointX = 0;
     SpatialCoordinate midpointZ = 0;
 

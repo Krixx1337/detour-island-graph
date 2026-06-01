@@ -51,6 +51,8 @@ float linkImportance(const Link& link, const IslandGraph& graph) {
     if (link.fromIsland >= graph.islands().size() || link.toIsland >= graph.islands().size()) {
         return 0.0f;
     }
+    // Guardrail: when nearby source corridors compete, rank by combined mass first so pruning
+    // removes tiny-island fan-out before it deletes the main traversal spine.
     return graph.islands()[link.fromIsland].massScore * graph.islands()[link.toIsland].massScore;
 }
 
@@ -207,6 +209,9 @@ BuildStatus pruneCandidates(
             quantize(point.y, globalBaseRadius),
             quantize(point.z, globalBaseRadius)}].push_back(point);
     };
+    // Guardrail: locality ownership lives at the source island, not the (source,target) pair.
+    // Complex 3D maps can fragment one real exit into many tiny neighboring targets; pruning only
+    // per pair keeps the full fan-out and recreates link bloat even after dedup elsewhere.
     std::unordered_map<IslandId, std::vector<Link>> acceptedBySource;
     auto& islands = IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
@@ -246,6 +251,8 @@ BuildStatus pruneCandidates(
                 // Guardrail: fragmented maps often produce many links that differ only by which
                 // tiny target island owns the far endpoint. Collapse those as one local corridor
                 // so source islands keep meaningful exits instead of a full fan-out neighborhood.
+                // Keep this horizontal-first check. Replacing it with full 3D distance makes
+                // vertically offset samples look unique again and brings back severe link bloat.
                 return (startHorizontalDistance * startHorizontalDistance) <= radiusSquared &&
                     (endHorizontalDistance * endHorizontalDistance) <= radiusSquared;
             });

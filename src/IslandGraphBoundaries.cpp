@@ -10,6 +10,9 @@ namespace {
 
 struct BoundaryKey {
     IslandId island = 0;
+    // Guardrail: boundary identity stays lateral. Complex 3D maps often produce many vertically
+    // offset samples for the same ledge corridor; folding y into the key reintroduces boundary
+    // bloat upstream and cascades into millions of extra candidates.
     SpatialCoordinate midpointX = 0;
     SpatialCoordinate midpointZ = 0;
     SpatialCoordinate directionX = 0;
@@ -38,6 +41,8 @@ struct BoundaryKeyHash {
 
 struct BoundaryRepresentativeKey {
     IslandId island = 0;
+    // Guardrail: representative reduction must collapse by x/z corridor, not full 3D midpoint.
+    // Distinct heights along the same lateral ledge are usually sampling noise, not new exits.
     SpatialCoordinate midpointX = 0;
     SpatialCoordinate midpointZ = 0;
     int directionBucket = 0;
