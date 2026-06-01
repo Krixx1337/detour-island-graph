@@ -16,7 +16,6 @@ BuildConfig BuildConfig::forProfile(
     case BuildProfile::Sparse:
         config.boundaries.representativeReductionEnabled = true;
         config.density.pairScanSuppression.enabled = true;
-        config.density.globalPruning.enabled = true;
         config.density.spannerPruning.enabled = true;
         break;
     case BuildProfile::Unpruned:

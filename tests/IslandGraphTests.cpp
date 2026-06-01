@@ -293,7 +293,7 @@ TEST_CASE("Build profiles expose conservative sparse and unpruned defaults") {
         BuildConfig::forProfile(BuildProfile::Sparse, 30.0f, 30.0f, 30.0f);
     CHECK(sparse.boundaries.representativeReductionEnabled);
     CHECK(sparse.density.pairScanSuppression.enabled);
-    CHECK(sparse.density.globalPruning.enabled);
+    CHECK_FALSE(sparse.density.globalPruning.enabled);
     CHECK(sparse.density.spannerPruning.enabled);
 
     const BuildConfig unpruned =
