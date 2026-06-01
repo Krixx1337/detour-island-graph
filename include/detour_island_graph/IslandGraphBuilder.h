@@ -60,6 +60,19 @@ struct PairScanSuppressionTuning {
     }
 };
 
+struct ShortGapRecoveryTuning {
+    bool enabled = false;
+    float maxHorizontalGap = 0.0f; // 0.0 = auto: gapDiscovery.maxHorizontalGap * maxHorizontalGapRatio
+    float maxHorizontalGapRatio = 0.2f;
+
+    float effectiveMaxHorizontalGap(float configuredMaxHorizontalGap) const noexcept {
+        const float requestedGap = maxHorizontalGap > 0.0f
+            ? maxHorizontalGap
+            : (configuredMaxHorizontalGap * maxHorizontalGapRatio);
+        return (std::min)(requestedGap, configuredMaxHorizontalGap);
+    }
+};
+
 struct LocalPruningTuning {
     bool enabled = true;
     float baseRadius = 0.0f; // 0.0 = auto: maxHorizontalGap * baseRadiusRatio
@@ -109,6 +122,7 @@ struct SpannerPruningTuning {
 
 struct DensityTuning {
     PairScanSuppressionTuning pairScanSuppression;
+    ShortGapRecoveryTuning shortGapRecovery;
     CandidateDeduplicationTuning candidateDeduplication;
     LocalPruningTuning localPruning;
     GlobalPruningTuning globalPruning;
@@ -234,6 +248,8 @@ struct QueryStats {
 struct CandidateStats {
     std::size_t pairScanCandidateCount = 0;
     std::size_t pairScanSuppressedCount = 0;
+    std::size_t shortGapRecoveryQueryCount = 0;
+    std::size_t shortGapRecoveredCount = 0;
     std::size_t closestPointQueryCount = 0;
     std::size_t closestPointFailureCount = 0;
     std::size_t projectedCount = 0;

@@ -375,6 +375,14 @@ bool validate(const BuildConfig& config, std::string& message) {
                  density.pairScanSuppression.cellSizeRatio > 0.0f),
             "Enabled pair-scan suppression requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
     if (!require(
+            !density.shortGapRecovery.enabled ||
+                (std::isfinite(density.shortGapRecovery.maxHorizontalGap) &&
+                 density.shortGapRecovery.maxHorizontalGap >= 0.0f &&
+                 std::isfinite(density.shortGapRecovery.maxHorizontalGapRatio) &&
+                 density.shortGapRecovery.maxHorizontalGapRatio > 0.0f &&
+                 density.shortGapRecovery.maxHorizontalGapRatio <= 1.0f),
+            "Enabled short-gap recovery requires a non-negative finite gap and a finite gap ratio in the range (0, 1].")) return false;
+    if (!require(
             !density.candidateDeduplication.enabled ||
                 (std::isfinite(density.candidateDeduplication.cellSize) &&
                  density.candidateDeduplication.cellSize >= 0.0f &&
@@ -681,6 +689,7 @@ BuildStatus discoverCandidates(
     IslandGraph& graph,
     const BuildConfig& config,
     const BuildOptions& options,
+    const std::vector<Boundary>& boundaries,
     const std::vector<Boundary>& representatives,
     BuildStats& stats,
     std::vector<Link>& candidates,
@@ -692,97 +701,120 @@ BuildStatus discoverCandidates(
     PolygonCollector collector(nearby);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
-    const float extents[3]{
-        config.gapDiscovery.maxHorizontalGap,
-        (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown),
-        config.gapDiscovery.maxHorizontalGap};
     dtQueryFilter filter;
     filter.setIncludeFlags(config.query.includeFlags);
     filter.setExcludeFlags(config.query.excludeFlags);
 
-    for (const Boundary& boundary : representatives) {
-        if (detail::cancellationRequested(options)) {
-            return BuildStatus::Cancelled;
-        }
-        float center[3];
-        detail::toDetour(boundary.midpoint, center);
-        nearby.clear();
-        ++stats.queries.count;
-        if (dtStatusFailed(query.queryPolygons(
-                center,
-                extents,
-                &filter,
-                &collector))) {
-            message = "dtNavMeshQuery::queryPolygons failed.";
-            return BuildStatus::QueryFailed;
-        }
-        stats.queries.nearbyPolygonCount += nearby.size();
-        for (dtPolyRef candidatePolygon : nearby) {
+    const auto scan = [&](const std::vector<Boundary>& scanBoundaries, float maxHorizontalGap, bool recovery) {
+        const float configuredVerticalExtent =
+            (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown);
+        const float extents[3]{
+            maxHorizontalGap,
+            recovery ? (std::min)(maxHorizontalGap, configuredVerticalExtent) : configuredVerticalExtent,
+            maxHorizontalGap};
+        for (const Boundary& boundary : scanBoundaries) {
             if (detail::cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
-                continue;
+            float center[3];
+            detail::toDetour(boundary.midpoint, center);
+            nearby.clear();
+            ++stats.queries.count;
+            if (recovery) {
+                ++stats.candidates.shortGapRecoveryQueryCount;
             }
-            const auto target = graph.findIslandForPolygon(candidatePolygon);
-            if (!target || *target == boundary.island) {
-                continue;
+            if (dtStatusFailed(query.queryPolygons(center, extents, &filter, &collector))) {
+                message = "dtNavMeshQuery::queryPolygons failed.";
+                return BuildStatus::QueryFailed;
             }
-            ++stats.candidates.pairScanCandidateCount;
-            if (config.density.pairScanSuppression.enabled) {
-                const PairScanKey pairScanKey{
-                    boundary.island,
-                    *target,
-                    quantize(boundary.midpoint.x, pairScanCellSize),
-                    quantize(boundary.midpoint.y, pairScanCellSize),
-                    quantize(boundary.midpoint.z, pairScanCellSize)};
-                if (!scannedPairCells.insert(pairScanKey).second) {
-                    ++stats.candidates.pairScanSuppressedCount;
+            stats.queries.nearbyPolygonCount += nearby.size();
+            for (dtPolyRef candidatePolygon : nearby) {
+                if (detail::cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
+                if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
                     continue;
                 }
+                const auto target = graph.findIslandForPolygon(candidatePolygon);
+                if (!target || *target == boundary.island) {
+                    continue;
+                }
+                ++stats.candidates.pairScanCandidateCount;
+                if (!recovery && config.density.pairScanSuppression.enabled) {
+                    const PairScanKey pairScanKey{
+                        boundary.island,
+                        *target,
+                        quantize(boundary.midpoint.x, pairScanCellSize),
+                        quantize(boundary.midpoint.y, pairScanCellSize),
+                        quantize(boundary.midpoint.z, pairScanCellSize)};
+                    if (!scannedPairCells.insert(pairScanKey).second) {
+                        ++stats.candidates.pairScanSuppressedCount;
+                        continue;
+                    }
+                }
+                float projected[3];
+                bool overPolygon = false;
+                ++stats.candidates.closestPointQueryCount;
+                if (dtStatusFailed(query.closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
+                    ++stats.candidates.closestPointFailureCount;
+                    continue;
+                }
+                ++stats.candidates.projectedCount;
+                (void)overPolygon;
+                Link link;
+                link.fromIsland = boundary.island;
+                link.toIsland = *target;
+                link.start = boundary.midpoint;
+                link.end = detail::fromDetour(projected);
+                link.horizontalDistance = detail::horizontalDistance(link.start, link.end);
+                link.verticalDistance = link.end.y - link.start.y;
+                if (link.horizontalDistance > maxHorizontalGap ||
+                    link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
+                    link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown) {
+                    continue;
+                }
+                if (!config.density.candidateDeduplication.enabled) {
+                    if (recovery) {
+                        ++stats.candidates.shortGapRecoveredCount;
+                    }
+                    candidates.push_back(link);
+                    continue;
+                }
+                const float candidateCellSize =
+                    config.density.candidateDeduplication.effectiveCellSize(
+                        link.horizontalDistance,
+                        config.gapDiscovery.maxHorizontalGap);
+                const LinkKey key{
+                    link.fromIsland,
+                    link.toIsland,
+                    quantize(link.start.x, candidateCellSize),
+                    quantize(link.start.y, candidateCellSize),
+                    quantize(link.start.z, candidateCellSize),
+                    quantize(link.end.x, candidateCellSize),
+                    quantize(link.end.y, candidateCellSize),
+                    quantize(link.end.z, candidateCellSize)};
+                const auto existing = deduplicated.find(key);
+                if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
+                    if (recovery) {
+                        ++stats.candidates.shortGapRecoveredCount;
+                    }
+                    deduplicated[key] = link;
+                }
             }
-            float projected[3];
-            bool overPolygon = false;
-            ++stats.candidates.closestPointQueryCount;
-            if (dtStatusFailed(query.closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
-                ++stats.candidates.closestPointFailureCount;
-                continue;
-            }
-            ++stats.candidates.projectedCount;
-            (void)overPolygon;
-            Link link;
-            link.fromIsland = boundary.island;
-            link.toIsland = *target;
-            link.start = boundary.midpoint;
-            link.end = detail::fromDetour(projected);
-            link.horizontalDistance = detail::horizontalDistance(link.start, link.end);
-            link.verticalDistance = link.end.y - link.start.y;
-            if (link.horizontalDistance > config.gapDiscovery.maxHorizontalGap ||
-                link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
-                link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown) {
-                continue;
-            }
-            if (!config.density.candidateDeduplication.enabled) {
-                candidates.push_back(link);
-                continue;
-            }
-            const float candidateCellSize =
-                config.density.candidateDeduplication.effectiveCellSize(
-                    link.horizontalDistance,
-                    config.gapDiscovery.maxHorizontalGap);
-            const LinkKey key{
-                link.fromIsland,
-                link.toIsland,
-                quantize(link.start.x, candidateCellSize),
-                quantize(link.start.y, candidateCellSize),
-                quantize(link.start.z, candidateCellSize),
-                quantize(link.end.x, candidateCellSize),
-                quantize(link.end.y, candidateCellSize),
-                quantize(link.end.z, candidateCellSize)};
-            const auto existing = deduplicated.find(key);
-            if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
-                deduplicated[key] = link;
-            }
+        }
+        return BuildStatus::Success;
+    };
+    BuildStatus status = scan(representatives, config.gapDiscovery.maxHorizontalGap, false);
+    if (status != BuildStatus::Success) {
+        return status;
+    }
+    if (config.density.shortGapRecovery.enabled) {
+        status = scan(
+            boundaries,
+            config.density.shortGapRecovery.effectiveMaxHorizontalGap(config.gapDiscovery.maxHorizontalGap),
+            true);
+        if (status != BuildStatus::Success) {
+            return status;
         }
     }
     if (config.density.candidateDeduplication.enabled) {
@@ -964,7 +996,7 @@ BuildStatus discoverLinks(
 
     std::vector<Link> candidates;
     const BuildStatus discoveryStatus =
-        discoverCandidates(*query, graph, config, options, representatives, stats, candidates, message);
+        discoverCandidates(*query, graph, config, options, boundaries, representatives, stats, candidates, message);
     if (discoveryStatus != BuildStatus::Success) {
         return discoveryStatus;
     }

@@ -16,12 +16,14 @@ BuildConfig BuildConfig::forProfile(
     case BuildProfile::Sparse:
         config.boundaries.representativeReductionEnabled = true;
         config.density.pairScanSuppression.enabled = true;
+        config.density.shortGapRecovery.enabled = true;
         config.density.spannerPruning.enabled = true;
         break;
     case BuildProfile::Unpruned:
         config.boundaries.deduplicationEnabled = false;
         config.boundaries.representativeReductionEnabled = false;
         config.density.pairScanSuppression.enabled = false;
+        config.density.shortGapRecovery.enabled = false;
         config.density.candidateDeduplication.enabled = false;
         config.density.localPruning.enabled = false;
         config.density.globalPruning.enabled = false;

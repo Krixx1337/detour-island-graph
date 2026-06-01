@@ -244,6 +244,7 @@ TEST_CASE("Build profiles expose conservative sparse and unpruned defaults") {
         BuildConfig::forProfile(BuildProfile::Sparse, 30.0f, 30.0f, 30.0f);
     CHECK(sparse.boundaries.representativeReductionEnabled);
     CHECK(sparse.density.pairScanSuppression.enabled);
+    CHECK(sparse.density.shortGapRecovery.enabled);
     CHECK_FALSE(sparse.density.globalPruning.enabled);
     CHECK(sparse.density.spannerPruning.enabled);
 
@@ -486,6 +487,17 @@ TEST_CASE("Builder density tuning") {
         CHECK(result.stats.candidates.pairScanSuppressedCount > 0);
         CHECK(result.stats.candidates.closestPointQueryCount <= baseline.stats.candidates.closestPointQueryCount);
     }
+    SUBCASE("Short-gap recovery rescans boundaries after pair suppression") {
+        BuildConfig recoveryConfig = buildConfig;
+        recoveryConfig.density.pairScanSuppression.enabled = true;
+        recoveryConfig.density.pairScanSuppression.cellSize = 10.0f;
+        recoveryConfig.density.shortGapRecovery.enabled = true;
+        recoveryConfig.density.shortGapRecovery.maxHorizontalGapRatio = 1.0f;
+        const BuildResult result = builder.build(*navMesh, recoveryConfig);
+        REQUIRE(static_cast<bool>(result));
+        CHECK(result.stats.candidates.shortGapRecoveryQueryCount > 0);
+        CHECK(result.stats.candidates.shortGapRecoveredCount > 0);
+    }
     SUBCASE("Rejects invalid pair scan suppression cell sizes") {
         BuildConfig invalidConfig(30.0f, 30.0f, 30.0f);
         invalidConfig.density.pairScanSuppression.enabled = true;
@@ -495,6 +507,17 @@ TEST_CASE("Builder density tuning") {
         invalidConfig.density.pairScanSuppression.cellSize = 0.0f;
         invalidConfig.density.pairScanSuppression.cellSizeRatio = 0.0f;
         CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Rejects invalid short-gap recovery ratios") {
+        BuildConfig invalidConfig(30.0f, 30.0f, 30.0f);
+        invalidConfig.density.shortGapRecovery.enabled = true;
+        invalidConfig.density.shortGapRecovery.maxHorizontalGapRatio = 0.0f;
+        CHECK(builder.build(*navMesh, invalidConfig).status == BuildStatus::InvalidConfiguration);
+    }
+    SUBCASE("Short-gap recovery cannot exceed the configured agent gap") {
+        BuildConfig recoveryConfig(30.0f, 30.0f, 30.0f);
+        recoveryConfig.density.shortGapRecovery.maxHorizontalGap = 60.0f;
+        CHECK(recoveryConfig.density.shortGapRecovery.effectiveMaxHorizontalGap(30.0f) == 30.0f);
     }
     SUBCASE("Boundary representative direction buckets are angular") {
         BuildConfig representativeConfig = buildConfig;
