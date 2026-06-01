@@ -75,6 +75,10 @@ bool readVec3(std::istream& stream, Vec3& value) {
         readFloat(stream, value.z);
 }
 
+bool isFinite(const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
 bool writeLink(std::ostream& stream, const Link& link) {
     return writeUnsigned(stream, link.fromIsland) &&
         writeUnsigned(stream, link.toIsland) &&
@@ -183,6 +187,9 @@ SerializationResult IslandGraphSerializer::read(
                 !readVec3(stream, island.center) ||
                 !readVec3(stream, island.boundsMin) ||
                 !readVec3(stream, island.boundsMax) ||
+                !isFinite(island.center) ||
+                !isFinite(island.boundsMin) ||
+                !isFinite(island.boundsMax) ||
                 !readFloat(stream, island.massScore) ||
                 !std::isfinite(island.massScore) ||
                 island.massScore < 0.0f ||
@@ -217,7 +224,13 @@ SerializationResult IslandGraphSerializer::read(
             }
             island.outgoingLinks.resize(linkCount);
             for (Link& link : island.outgoingLinks) {
-                if (!readLink(stream, link) || link.fromIsland != island.id || link.toIsland >= islandCount) {
+                if (!readLink(stream, link) ||
+                    link.fromIsland != island.id ||
+                    link.toIsland >= islandCount ||
+                    !isFinite(link.start) ||
+                    !isFinite(link.end) ||
+                    !std::isfinite(link.horizontalDistance) ||
+                    !std::isfinite(link.verticalDistance)) {
                     return malformed("Serialized link data is invalid.");
                 }
             }

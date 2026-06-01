@@ -283,6 +283,7 @@ enum class BuildStatus {
     Success,
     Cancelled,
     InvalidConfiguration,
+    InvalidNavMesh,
     QueryInitializationFailed,
     QueryFailed
 };

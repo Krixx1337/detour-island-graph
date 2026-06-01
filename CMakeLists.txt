@@ -14,6 +14,8 @@ option(DETOUR_ISLAND_GRAPH_BUILD_TESTS
     ${DETOUR_ISLAND_GRAPH_BUILD_TESTS_DEFAULT})
 option(DETOUR_ISLAND_GRAPH_FETCH_DETOUR
     "Fetch pinned upstream RecastNavigation when Detour is not provided" ON)
+option(DETOUR_ISLAND_GRAPH_DT_POLYREF64
+    "Build fetched Detour with 64-bit polygon references" OFF)
 set(DETOUR_ISLAND_GRAPH_DETOUR_INCLUDE_DIR "" CACHE PATH
     "Directory containing DetourNavMesh.h when Detour is not provided as a CMake target")
 set(DETOUR_ISLAND_GRAPH_DETOUR_LIBRARY "" CACHE FILEPATH
@@ -21,8 +23,11 @@ set(DETOUR_ISLAND_GRAPH_DETOUR_LIBRARY "" CACHE FILEPATH
 
 add_library(detour_island_graph
     src/IslandGraph.cpp
+    src/IslandGraphBoundaries.cpp
     src/IslandGraphBuilder.cpp
     src/IslandGraphDiscovery.cpp
+    src/IslandGraphPruning.cpp
+    src/IslandGraphScanner.cpp
     src/IslandGraphPathfinder.cpp
     src/IslandGraphSerializer.cpp
     src/IslandGraphTopology.cpp
@@ -53,7 +58,7 @@ if(NOT TARGET Detour AND
     endif()
     set(SOVERSION 1)
     set(LIB_VERSION 1.6.0)
-    set(RECASTNAVIGATION_DT_POLYREF64 OFF)
+    set(RECASTNAVIGATION_DT_POLYREF64 ${DETOUR_ISLAND_GRAPH_DT_POLYREF64})
     set(RECASTNAVIGATION_DT_VIRTUAL_QUERYFILTER OFF)
     set(RECASTNAVIGATION_ENABLE_ASSERTS "$<CONFIG:Debug>")
     add_subdirectory(

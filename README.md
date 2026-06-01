@@ -101,6 +101,12 @@ Standalone builds enable tests by default. Embedded builds do not. Override this
 -DDETOUR_ISLAND_GRAPH_BUILD_TESTS=ON
 ```
 
+When using the built-in Detour fetch, enable 64-bit polygon references with:
+
+```cmake
+-DDETOUR_ISLAND_GRAPH_DT_POLYREF64=ON
+```
+
 ## License
 
 MIT

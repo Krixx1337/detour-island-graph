@@ -10,6 +10,7 @@
 #include <DetourNavMeshBuilder.h>
 
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -439,6 +440,18 @@ TEST_CASE("Builder adjacent tiled navmesh") {
     CHECK(tiledBuild.graph.islands()[0].polygons.size() == 2);
 }
 
+TEST_CASE("Builder rejects non-finite navmesh boundary coordinates") {
+    const auto navMesh = buildDisconnectedNavMesh();
+    const dtMeshTile* tile = static_cast<const dtNavMesh&>(*navMesh).getTile(0);
+    REQUIRE(tile != nullptr);
+    tile->verts[0] = (std::numeric_limits<float>::quiet_NaN)();
+
+    const BuildResult result =
+        IslandGraphBuilder{}.build(*navMesh, disconnectedBuildConfig());
+    CHECK(result.status == BuildStatus::InvalidNavMesh);
+    CHECK(result.message == "Navmesh boundary contains non-finite coordinates.");
+}
+
 TEST_CASE("Builder density tuning") {
     const auto navMesh = buildDisconnectedNavMesh();
     const BuildConfig buildConfig = disconnectedBuildConfig();
@@ -776,6 +789,28 @@ TEST_CASE("Serializer") {
         IslandGraph invalidGraph({makeIsland(0, {42}), makeIsland(1, {42})});
         std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(IslandGraphSerializer::write(serialized, invalidGraph) == SerializationStatus::Success);
+        serialized.seekg(0);
+        CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects non-finite island coordinates") {
+        Island invalidIsland = makeIsland(0);
+        invalidIsland.center.x = (std::numeric_limits<float>::quiet_NaN)();
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(serialized, IslandGraph({invalidIsland})) ==
+            SerializationStatus::Success);
+        serialized.seekg(0);
+        CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects non-finite link coordinates") {
+        Link invalidLink{0, 1};
+        invalidLink.end.z = (std::numeric_limits<float>::infinity)();
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(
+                serialized,
+                IslandGraph({makeIsland(0, {}, {invalidLink}), makeIsland(1)})) ==
+            SerializationStatus::Success);
         serialized.seekg(0);
         CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);
     }
