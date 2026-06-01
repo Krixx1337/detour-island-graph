@@ -8,24 +8,6 @@
 namespace detour_island_graph::detail::discovery {
 namespace {
 
-struct IslandPair {
-    IslandId from = 0;
-    IslandId to = 0;
-
-    bool operator==(const IslandPair& other) const {
-        return from == other.from && to == other.to;
-    }
-};
-
-struct IslandPairHash {
-    std::size_t operator()(const IslandPair& pair) const {
-        std::size_t hash = 0;
-        hashCombine(hash, pair.from);
-        hashCombine(hash, pair.to);
-        return hash;
-    }
-};
-
 struct GlobalCellKey {
     SpatialCoordinate x = 0;
     SpatialCoordinate y = 0;
@@ -63,6 +45,13 @@ float rankScore(const Link& link, const IslandGraph& graph, const BuildConfig& c
             config.gapDiscovery.maxHorizontalGap)
         : 0.0f;
     return linkDistance(link) - preference;
+}
+
+float linkImportance(const Link& link, const IslandGraph& graph) {
+    if (link.fromIsland >= graph.islands().size() || link.toIsland >= graph.islands().size()) {
+        return 0.0f;
+    }
+    return graph.islands()[link.fromIsland].massScore * graph.islands()[link.toIsland].massScore;
 }
 
 float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig& config) {
@@ -121,6 +110,13 @@ bool hasAcceptableIndirectRoute(
 } // namespace
 
 bool isBetterLink(const Link& lhs, const Link& rhs, const IslandGraph& graph, const BuildConfig& config) {
+    if (config.massAware.enabled) {
+        const float lhsImportance = linkImportance(lhs, graph);
+        const float rhsImportance = linkImportance(rhs, graph);
+        if (std::abs(lhsImportance - rhsImportance) > 0.001f) {
+            return lhsImportance > rhsImportance;
+        }
+    }
     const float lhsRank = rankScore(lhs, graph, config);
     const float rhsRank = rankScore(rhs, graph, config);
     if (lhsRank != rhsRank) return lhsRank < rhsRank;
@@ -211,7 +207,7 @@ BuildStatus pruneCandidates(
             quantize(point.y, globalBaseRadius),
             quantize(point.z, globalBaseRadius)}].push_back(point);
     };
-    std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
+    std::unordered_map<IslandId, std::vector<Link>> acceptedBySource;
     auto& islands = IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
@@ -239,12 +235,19 @@ BuildStatus pruneCandidates(
 
         bool duplicate = false;
         if (config.density.localPruning.enabled) {
-            auto& accepted = acceptedByPair[{candidate.fromIsland, candidate.toIsland}];
+            auto& accepted = acceptedBySource[candidate.fromIsland];
             const float radius = pruneRadius(candidate, graph, config);
             const float radiusSquared = radius * radius;
             duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-                return distanceSquared(candidate.start, existing.start) <= radiusSquared &&
-                    distanceSquared(candidate.end, existing.end) <= radiusSquared;
+                const float startHorizontalDistance =
+                    horizontalDistance(candidate.start, existing.start);
+                const float endHorizontalDistance =
+                    horizontalDistance(candidate.end, existing.end);
+                // Guardrail: fragmented maps often produce many links that differ only by which
+                // tiny target island owns the far endpoint. Collapse those as one local corridor
+                // so source islands keep meaningful exits instead of a full fan-out neighborhood.
+                return (startHorizontalDistance * startHorizontalDistance) <= radiusSquared &&
+                    (endHorizontalDistance * endHorizontalDistance) <= radiusSquared;
             });
             if (!duplicate) {
                 accepted.push_back(candidate);

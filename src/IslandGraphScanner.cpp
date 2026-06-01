@@ -13,20 +13,16 @@ struct LinkKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
     SpatialCoordinate startX = 0;
-    SpatialCoordinate startY = 0;
     SpatialCoordinate startZ = 0;
     SpatialCoordinate endX = 0;
-    SpatialCoordinate endY = 0;
     SpatialCoordinate endZ = 0;
 
     bool operator==(const LinkKey& other) const {
         return fromIsland == other.fromIsland &&
             toIsland == other.toIsland &&
             startX == other.startX &&
-            startY == other.startY &&
             startZ == other.startZ &&
             endX == other.endX &&
-            endY == other.endY &&
             endZ == other.endZ;
     }
 };
@@ -37,10 +33,8 @@ struct LinkKeyHash {
         hashCombine(hash, key.fromIsland);
         hashCombine(hash, key.toIsland);
         hashCombine(hash, key.startX);
-        hashCombine(hash, key.startY);
         hashCombine(hash, key.startZ);
         hashCombine(hash, key.endX);
-        hashCombine(hash, key.endY);
         hashCombine(hash, key.endZ);
         return hash;
     }
@@ -50,14 +44,12 @@ struct PairScanKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
     SpatialCoordinate midpointX = 0;
-    SpatialCoordinate midpointY = 0;
     SpatialCoordinate midpointZ = 0;
 
     bool operator==(const PairScanKey& other) const {
         return fromIsland == other.fromIsland &&
             toIsland == other.toIsland &&
             midpointX == other.midpointX &&
-            midpointY == other.midpointY &&
             midpointZ == other.midpointZ;
     }
 };
@@ -68,7 +60,6 @@ struct PairScanKeyHash {
         hashCombine(hash, key.fromIsland);
         hashCombine(hash, key.toIsland);
         hashCombine(hash, key.midpointX);
-        hashCombine(hash, key.midpointY);
         hashCombine(hash, key.midpointZ);
         return hash;
     }
@@ -150,7 +141,6 @@ BuildStatus discoverCandidates(
                         boundary.island,
                         *target,
                         quantize(boundary.midpoint.x, pairScanCellSize),
-                        quantize(boundary.midpoint.y, pairScanCellSize),
                         quantize(boundary.midpoint.z, pairScanCellSize)};
                     if (!scannedPairCells.insert(pairScanKey).second) {
                         ++stats.candidates.pairScanSuppressedCount;
@@ -197,10 +187,8 @@ BuildStatus discoverCandidates(
                     link.fromIsland,
                     link.toIsland,
                     quantize(link.start.x, candidateCellSize),
-                    quantize(link.start.y, candidateCellSize),
                     quantize(link.start.z, candidateCellSize),
                     quantize(link.end.x, candidateCellSize),
-                    quantize(link.end.y, candidateCellSize),
                     quantize(link.end.z, candidateCellSize)};
                 const auto existing = deduplicated.find(key);
                 if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {

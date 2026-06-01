@@ -11,19 +11,15 @@ namespace {
 struct BoundaryKey {
     IslandId island = 0;
     SpatialCoordinate midpointX = 0;
-    SpatialCoordinate midpointY = 0;
     SpatialCoordinate midpointZ = 0;
     SpatialCoordinate directionX = 0;
-    SpatialCoordinate directionY = 0;
     SpatialCoordinate directionZ = 0;
 
     bool operator==(const BoundaryKey& other) const {
         return island == other.island &&
             midpointX == other.midpointX &&
-            midpointY == other.midpointY &&
             midpointZ == other.midpointZ &&
             directionX == other.directionX &&
-            directionY == other.directionY &&
             directionZ == other.directionZ;
     }
 };
@@ -33,10 +29,8 @@ struct BoundaryKeyHash {
         std::size_t hash = 0;
         hashCombine(hash, key.island);
         hashCombine(hash, key.midpointX);
-        hashCombine(hash, key.midpointY);
         hashCombine(hash, key.midpointZ);
         hashCombine(hash, key.directionX);
-        hashCombine(hash, key.directionY);
         hashCombine(hash, key.directionZ);
         return hash;
     }
@@ -45,14 +39,12 @@ struct BoundaryKeyHash {
 struct BoundaryRepresentativeKey {
     IslandId island = 0;
     SpatialCoordinate midpointX = 0;
-    SpatialCoordinate midpointY = 0;
     SpatialCoordinate midpointZ = 0;
     int directionBucket = 0;
 
     bool operator==(const BoundaryRepresentativeKey& other) const {
         return island == other.island &&
             midpointX == other.midpointX &&
-            midpointY == other.midpointY &&
             midpointZ == other.midpointZ &&
             directionBucket == other.directionBucket;
     }
@@ -63,7 +55,6 @@ struct BoundaryRepresentativeKeyHash {
         std::size_t hash = 0;
         hashCombine(hash, key.island);
         hashCombine(hash, key.midpointX);
-        hashCombine(hash, key.midpointY);
         hashCombine(hash, key.midpointZ);
         hashCombine(hash, key.directionBucket);
         return hash;
@@ -158,10 +149,8 @@ BuildStatus extractBoundaries(
                     const BoundaryKey key{
                         island.id,
                         quantize(midpoint.x, cellSize),
-                        quantize(midpoint.y, cellSize),
                         quantize(midpoint.z, cellSize),
                         quantize(direction.x, cellSize),
-                        quantize(direction.y, cellSize),
                         quantize(direction.z, cellSize)};
                     boundaries.emplace(key, boundary);
                 } else {
@@ -235,7 +224,6 @@ BuildStatus selectBoundaryRepresentatives(
         const BoundaryRepresentativeKey key{
             boundary.island,
             quantize(boundary.midpoint.x, cellSize),
-            quantize(boundary.midpoint.y, cellSize),
             quantize(boundary.midpoint.z, cellSize),
             config.boundaries.representativeDirectionBucket(direction)};
         const BoundaryRepresentativeCandidate candidate{

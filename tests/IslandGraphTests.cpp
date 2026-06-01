@@ -6,6 +6,8 @@
 #include <detour_island_graph/IslandGraphPathfinder.h>
 #include <detour_island_graph/IslandGraphSerializer.h>
 
+#include "../src/IslandGraphDiscoveryInternal.h"
+
 #include <DetourAlloc.h>
 #include <DetourNavMeshBuilder.h>
 
@@ -17,6 +19,9 @@
 #include <vector>
 
 namespace {
+using detour_island_graph::detail::discovery::Boundary;
+using detour_island_graph::detail::discovery::pruneCandidates;
+using detour_island_graph::detail::discovery::selectBoundaryRepresentatives;
 
 struct NavMeshDeleter {
     void operator()(dtNavMesh* navMesh) const {
@@ -712,6 +717,58 @@ TEST_CASE("Builder mass-aware tuning") {
         invalidMassAwareConfig.massAware.normalizationPercentile = 0.0f;
         CHECK(builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration);
     }
+}
+
+TEST_CASE("Boundary representative reduction collapses stacked vertical duplicates by corridor") {
+    IslandGraph graph({makeIsland(0)});
+    std::vector<Boundary> boundaries{
+        Boundary{0, 1, {0.0f, 0.0f, 0.0f}, {4.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}},
+        Boundary{0, 2, {0.0f, 6.0f, 0.0f}, {4.0f, 6.0f, 0.0f}, {2.0f, 6.0f, 0.0f}},
+        Boundary{0, 3, {0.0f, 0.0f, 6.0f}, {4.0f, 0.0f, 6.0f}, {2.0f, 0.0f, 6.0f}}};
+    BuildConfig config(8.0f, 8.0f, 8.0f);
+    config.boundaries.representativeReductionEnabled = true;
+    config.boundaries.representativeCellSize = 4.0f;
+    BuildStats stats;
+    std::vector<Boundary> representatives;
+
+    const BuildStatus status = selectBoundaryRepresentatives(
+        boundaries,
+        graph,
+        config,
+        BuildOptions{},
+        stats,
+        representatives);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(representatives.size() == 2);
+    CHECK(stats.boundaries.representativeTrimmedCount == 1);
+}
+
+TEST_CASE("Local pruning collapses nearby source-side corridors even across tiny target islands") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(8.0f, 8.0f, 8.0f);
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 3.0f;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    config.massAware.enabled = true;
+    graph = IslandGraph({makeIsland(0), makeIsland(1), makeIsland(2)});
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[0].massScore = 1.0f;
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[1].massScore = 1.0f;
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[2].massScore = 0.1f;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 0.0f, 0.0f}, {5.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 2, {0.0f, 5.0f, 0.0f}, {5.0f, 5.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 1, {0.0f, 0.0f, 5.0f}, {5.0f, 0.0f, 5.0f}, 5.0f, 0.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    REQUIRE(graph.findIsland(0) != nullptr);
+    CHECK(graph.findIsland(0)->outgoingLinks.size() == 2);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(graph.findIsland(0)->outgoingLinks[0].toIsland == 1);
 }
 
 TEST_CASE("Serializer") {
