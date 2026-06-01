@@ -32,32 +32,54 @@ BuildConfig BuildConfig::forProfile(
     return config;
 }
 
-BuildResult IslandGraphBuilder::build(const dtNavMesh& navMesh, const BuildConfig& config) const {
+BuildResult IslandGraphBuilder::build(
+    const dtNavMesh& navMesh,
+    const BuildConfig& config,
+    const BuildOptions& options) const {
     BuildResult result;
     const detail::Clock::time_point totalStart = detail::Clock::now();
-    if (!detail::validate(config, result.message)) {
-        result.status = BuildStatus::InvalidConfiguration;
+    const auto finish = [&]() {
+        if (result.status == BuildStatus::Cancelled) {
+            result.graph = {};
+            result.message = "Build cancelled.";
+        }
         result.stats.timings.totalMs = detail::elapsedMilliseconds(totalStart);
         return result;
+    };
+    if (!detail::validate(config, result.message)) {
+        result.status = BuildStatus::InvalidConfiguration;
+        return finish();
+    }
+    if (detail::cancellationRequested(options)) {
+        result.status = BuildStatus::Cancelled;
+        return finish();
     }
 
     const detail::Clock::time_point floodFillStart = detail::Clock::now();
-    detail::floodFill(navMesh, result.graph, config);
+    result.status = detail::floodFill(navMesh, result.graph, config, options);
     result.stats.timings.floodFillMs = detail::elapsedMilliseconds(floodFillStart);
+    if (result.status != BuildStatus::Success) {
+        return finish();
+    }
     result.stats.islandCount = result.graph.islands().size();
     for (const Island& island : result.graph.islands()) {
         result.stats.polygonCount += island.polygons.size();
     }
 
     const detail::Clock::time_point massScoringStart = detail::Clock::now();
-    detail::calculateMassScores(result.graph, config);
+    result.status = detail::calculateMassScores(result.graph, config, options);
     result.stats.timings.massScoringMs = detail::elapsedMilliseconds(massScoringStart);
+    if (result.status != BuildStatus::Success) {
+        return finish();
+    }
 
-    result.status = detail::discoverLinks(navMesh, result.graph, config, result.stats, result.message);
-    detail::calculateGraphHealthStats(result.graph, result.stats);
+    result.status = detail::discoverLinks(navMesh, result.graph, config, options, result.stats, result.message);
+    if (result.status != BuildStatus::Success) {
+        return finish();
+    }
+    result.status = detail::calculateGraphHealthStats(result.graph, options, result.stats);
 
-    result.stats.timings.totalMs = detail::elapsedMilliseconds(totalStart);
-    return result;
+    return finish();
 }
 
 } // namespace detour_island_graph

@@ -265,9 +265,14 @@ struct BuildStats {
 
 enum class BuildStatus {
     Success,
+    Cancelled,
     InvalidConfiguration,
     QueryInitializationFailed,
     QueryFailed
+};
+
+struct BuildOptions {
+    std::function<bool()> shouldCancel;
 };
 
 struct BuildResult {
@@ -283,7 +288,10 @@ struct BuildResult {
 
 class IslandGraphBuilder {
 public:
-    [[nodiscard]] BuildResult build(const dtNavMesh& navMesh, const BuildConfig& config) const;
+    [[nodiscard]] BuildResult build(
+        const dtNavMesh& navMesh,
+        const BuildConfig& config,
+        const BuildOptions& options = {}) const;
 };
 
 } // namespace detour_island_graph

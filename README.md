@@ -68,7 +68,8 @@ Key extension points include:
 - Detour polygon include/exclude flags, an optional polygon predicate, and optional outbound-island policy.
 - Independent density and pruning controls.
 - Optional custom link ranking.
-- Optional custom path costs, filters, and heuristics.
+- Optional cooperative build cancellation.
+- Optional route-aware path costs, filters, and heuristics.
 - Configurable deserialization safety limits.
 
 Use `detour_island_graph::makeVec3(engineVector)` to adapt vector types that expose `.x`, `.y`, and `.z`.

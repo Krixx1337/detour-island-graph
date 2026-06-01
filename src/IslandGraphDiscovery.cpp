@@ -427,13 +427,20 @@ std::vector<Boundary> extractBoundaries(
     const dtNavMesh& navMesh,
     const IslandGraph& graph,
     const BuildConfig& config,
+    const BuildOptions& options,
     BuildStats& stats) {
     std::unordered_map<BoundaryKey, Boundary, BoundaryKeyHash> boundaries;
     std::vector<Boundary> output;
     const float cellSize = config.boundaries.effectiveDeduplicationCellSize(
         config.gapDiscovery.maxHorizontalGap);
     for (const Island& island : graph.islands()) {
+        if (detail::cancellationRequested(options)) {
+            return {};
+        }
         for (dtPolyRef reference : island.polygons) {
+            if (detail::cancellationRequested(options)) {
+                return {};
+            }
             const dtMeshTile* tile = nullptr;
             const dtPoly* polygon = nullptr;
             if (!resolvePolygon(navMesh, reference, tile, polygon)) {
@@ -469,6 +476,9 @@ std::vector<Boundary> extractBoundaries(
     if (config.boundaries.deduplicationEnabled) {
         output.reserve(boundaries.size());
         for (const auto& entry : boundaries) {
+            if (detail::cancellationRequested(options)) {
+                return {};
+            }
             output.push_back(entry.second);
         }
     }
@@ -487,16 +497,23 @@ std::vector<Boundary> selectBoundaryRepresentatives(
     const std::vector<Boundary>& boundaries,
     const IslandGraph& graph,
     const BuildConfig& config,
+    const BuildOptions& options,
     BuildStats& stats) {
     std::vector<bool> outboundIslands(graph.islands().size(), true);
     if (config.outboundIslandFilter) {
         for (const Island& island : graph.islands()) {
+            if (detail::cancellationRequested(options)) {
+                return {};
+            }
             outboundIslands[island.id] = config.outboundIslandFilter(island, graph);
         }
     }
     std::vector<Boundary> outboundBoundaries;
     outboundBoundaries.reserve(boundaries.size());
     for (const Boundary& boundary : boundaries) {
+        if (detail::cancellationRequested(options)) {
+            return {};
+        }
         if (outboundIslands[boundary.island]) {
             outboundBoundaries.push_back(boundary);
         }
@@ -518,6 +535,9 @@ std::vector<Boundary> selectBoundaryRepresentatives(
     std::vector<Boundary> representatives;
     representatives.reserve(outboundBoundaries.size());
     for (const Boundary& boundary : outboundBoundaries) {
+        if (detail::cancellationRequested(options)) {
+            return {};
+        }
         const Vec3 direction{
             boundary.end.x - boundary.start.x,
             boundary.end.y - boundary.start.y,
@@ -548,6 +568,9 @@ std::vector<Boundary> selectBoundaryRepresentatives(
     }
     representatives.reserve(bestByCell.size());
     for (const auto& entry : bestByCell) {
+        if (detail::cancellationRequested(options)) {
+            return {};
+        }
         representatives.push_back(entry.second.boundary);
     }
     std::sort(representatives.begin(), representatives.end(), [](const Boundary& lhs, const Boundary& rhs) {
@@ -657,6 +680,7 @@ BuildStatus discoverCandidates(
     dtNavMeshQuery& query,
     IslandGraph& graph,
     const BuildConfig& config,
+    const BuildOptions& options,
     const std::vector<Boundary>& representatives,
     BuildStats& stats,
     std::vector<Link>& candidates,
@@ -677,6 +701,9 @@ BuildStatus discoverCandidates(
     filter.setExcludeFlags(config.query.excludeFlags);
 
     for (const Boundary& boundary : representatives) {
+        if (detail::cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         float center[3];
         detail::toDetour(boundary.midpoint, center);
         nearby.clear();
@@ -691,6 +718,9 @@ BuildStatus discoverCandidates(
         }
         stats.queries.nearbyPolygonCount += nearby.size();
         for (dtPolyRef candidatePolygon : nearby) {
+            if (detail::cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
             if (candidatePolygon == 0 || candidatePolygon == boundary.polygon) {
                 continue;
             }
@@ -758,6 +788,9 @@ BuildStatus discoverCandidates(
     if (config.density.candidateDeduplication.enabled) {
         candidates.reserve(deduplicated.size());
         for (const auto& entry : deduplicated) {
+            if (detail::cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
             candidates.push_back(entry.second);
         }
     }
@@ -766,15 +799,22 @@ BuildStatus discoverCandidates(
     return BuildStatus::Success;
 }
 
-void pruneCandidates(
+BuildStatus pruneCandidates(
     IslandGraph& graph,
     const BuildConfig& config,
+    const BuildOptions& options,
     BuildStats& stats,
     std::vector<Link>& candidates) {
     const Clock::time_point pruningStart = Clock::now();
+    if (detail::cancellationRequested(options)) {
+        return BuildStatus::Cancelled;
+    }
     std::sort(candidates.begin(), candidates.end(), [&](const Link& lhs, const Link& rhs) {
         return isBetterLink(lhs, rhs, graph, config);
     });
+    if (detail::cancellationRequested(options)) {
+        return BuildStatus::Cancelled;
+    }
 
     std::vector<Vec3> occupiedGlobalPoints;
     std::unordered_map<GlobalCellKey, std::vector<Vec3>, GlobalCellKeyHash> occupiedGlobalCells;
@@ -836,6 +876,9 @@ void pruneCandidates(
     std::unordered_map<IslandPair, std::vector<Link>, IslandPairHash> acceptedByPair;
     auto& islands = detail::IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
+        if (detail::cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         if (config.density.globalPruning.enabled) {
             const float globalRadius = config.density.globalPruning.effectiveRadius(
                 candidate.horizontalDistance,
@@ -884,6 +927,7 @@ void pruneCandidates(
         }
     }
     stats.timings.pruningMs = elapsedMilliseconds(pruningStart);
+    return BuildStatus::Success;
 }
 
 } // namespace
@@ -894,8 +938,12 @@ BuildStatus discoverLinks(
     const dtNavMesh& navMesh,
     IslandGraph& graph,
     const BuildConfig& config,
+    const BuildOptions& options,
     BuildStats& stats,
     std::string& message) {
+    if (cancellationRequested(options)) {
+        return BuildStatus::Cancelled;
+    }
     std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
     if (!query || dtStatusFailed(query->init(&navMesh, config.query.maxNodes))) {
         message = "Failed to initialize dtNavMeshQuery.";
@@ -903,18 +951,24 @@ BuildStatus discoverLinks(
     }
 
     const Clock::time_point boundaryStart = Clock::now();
-    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, stats);
-    const std::vector<Boundary> representatives = selectBoundaryRepresentatives(boundaries, graph, config, stats);
+    const std::vector<Boundary> boundaries = extractBoundaries(navMesh, graph, config, options, stats);
+    if (cancellationRequested(options)) {
+        return BuildStatus::Cancelled;
+    }
+    const std::vector<Boundary> representatives =
+        selectBoundaryRepresentatives(boundaries, graph, config, options, stats);
+    if (cancellationRequested(options)) {
+        return BuildStatus::Cancelled;
+    }
     stats.timings.boundaryExtractionMs = elapsedMilliseconds(boundaryStart);
 
     std::vector<Link> candidates;
     const BuildStatus discoveryStatus =
-        discoverCandidates(*query, graph, config, representatives, stats, candidates, message);
+        discoverCandidates(*query, graph, config, options, representatives, stats, candidates, message);
     if (discoveryStatus != BuildStatus::Success) {
         return discoveryStatus;
     }
-    pruneCandidates(graph, config, stats, candidates);
-    return BuildStatus::Success;
+    return pruneCandidates(graph, config, options, stats, candidates);
 }
 
 } // namespace detail

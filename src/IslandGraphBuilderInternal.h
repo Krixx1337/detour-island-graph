@@ -14,6 +14,10 @@ inline double elapsedMilliseconds(Clock::time_point start) {
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
+inline bool cancellationRequested(const BuildOptions& options) {
+    return options.shouldCancel && options.shouldCancel();
+}
+
 struct IslandGraphAccess {
     static std::vector<Island>& islands(IslandGraph& graph) {
         return graph.m_islands;
@@ -25,14 +29,25 @@ struct IslandGraphAccess {
 };
 
 bool validate(const BuildConfig& config, std::string& message);
-void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& config);
-void calculateMassScores(IslandGraph& graph, const BuildConfig& config);
+BuildStatus floodFill(
+    const dtNavMesh& navMesh,
+    IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options);
+BuildStatus calculateMassScores(
+    IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options);
 BuildStatus discoverLinks(
     const dtNavMesh& navMesh,
     IslandGraph& graph,
     const BuildConfig& config,
+    const BuildOptions& options,
     BuildStats& stats,
     std::string& message);
-void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats);
+BuildStatus calculateGraphHealthStats(
+    const IslandGraph& graph,
+    const BuildOptions& options,
+    BuildStats& stats);
 
 } // namespace detour_island_graph::detail

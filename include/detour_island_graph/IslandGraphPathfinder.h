@@ -7,8 +7,14 @@
 
 namespace detour_island_graph {
 
-using LinkCost = std::function<float(const Link&)>;
-using LinkFilter = std::function<bool(const Link&)>;
+struct LinkCostContext {
+    const IslandGraph& graph;
+    IslandId startIsland;
+    IslandId endIsland;
+};
+
+using LinkCost = std::function<float(const Link&, const LinkCostContext&)>;
+using LinkFilter = std::function<bool(const Link&, const LinkCostContext&)>;
 using HeuristicCost = std::function<float(const Vec3&, const Vec3&)>;
 
 struct PathOptions {

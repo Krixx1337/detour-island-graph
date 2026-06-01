@@ -53,14 +53,15 @@ PathResult IslandGraphPathfinder::findPath(
         return result;
     }
 
+    const LinkCostContext callbackContext{graph, startIsland, endIsland};
     const bool useDefaultGeometricCost = !options.linkCost;
     if (useDefaultGeometricCost) {
-        options.linkCost = [](const Link& link) {
+        options.linkCost = [](const Link& link, const LinkCostContext&) {
             return detail::distance(link.start, link.end);
         };
     }
     if (!options.linkFilter) {
-        options.linkFilter = [](const Link&) {
+        options.linkFilter = [](const Link&, const LinkCostContext&) {
             return true;
         };
     }
@@ -93,10 +94,12 @@ PathResult IslandGraphPathfinder::findPath(
     const Island& start = graph.islands()[startIsland];
     for (std::size_t linkIndex = 0; linkIndex < start.outgoingLinks.size(); ++linkIndex) {
         const Link& link = start.outgoingLinks[linkIndex];
-        if (link.fromIsland != start.id || !graph.findIsland(link.toIsland) || !options.linkFilter(link)) {
+        if (link.fromIsland != start.id ||
+            !graph.findIsland(link.toIsland) ||
+            !options.linkFilter(link, callbackContext)) {
             continue;
         }
-        const float gapCost = options.linkCost(link);
+        const float gapCost = options.linkCost(link, callbackContext);
         if (!isUsableCost(gapCost)) {
             continue;
         }
@@ -136,10 +139,10 @@ PathResult IslandGraphPathfinder::findPath(
             const Link& nextLink = nextIsland.outgoingLinks[linkIndex];
             if (nextLink.fromIsland != nextIsland.id ||
                 !graph.findIsland(nextLink.toIsland) ||
-                !options.linkFilter(nextLink)) {
+                !options.linkFilter(nextLink, callbackContext)) {
                 continue;
             }
-            const float gapCost = options.linkCost(nextLink);
+            const float gapCost = options.linkCost(nextLink, callbackContext);
             if (!isUsableCost(gapCost)) {
                 continue;
             }

@@ -334,7 +334,7 @@ TEST_CASE("Pathfinder filtered path") {
         2,
         {0.0f, 0.0f, 0.0f},
         {3.0f, 0.0f, 0.0f},
-        PathOptions{{}, [](const Link& link) { return link.toIsland != 1; }, {}});
+        PathOptions{{}, [](const Link& link, const LinkCostContext&) { return link.toIsland != 1; }, {}});
     CHECK(filteredPath.links.size() == 1);
 }
 
@@ -380,7 +380,7 @@ TEST_CASE("Pathfinder custom costs use an admissible search order") {
         {},
         {},
         PathOptions{
-            [](const Link& link) { return link.horizontalDistance; },
+            [](const Link& link, const LinkCostContext&) { return link.horizontalDistance; },
             {},
             [&heuristicCalls](const Vec3&, const Vec3&) {
                 ++heuristicCalls;
@@ -390,6 +390,45 @@ TEST_CASE("Pathfinder custom costs use an admissible search order") {
     CHECK(path.links.size() == 3);
     CHECK(path.totalCost == 3.0f);
     CHECK(heuristicCalls > 0);
+}
+
+TEST_CASE("Pathfinder callbacks receive route context") {
+    const Link firstHop{0, 1, {}, {}, 1.0f, 0.0f};
+    const Link finalHop{1, 2, {}, {}, 1.0f, 0.0f};
+    IslandGraph routeGraph({
+        makeIsland(0, {}, {firstHop}),
+        makeIsland(1, {}, {finalHop}),
+        makeIsland(2)});
+    const IslandGraphPathfinder pathfinder;
+    bool sawIntermediateHop = false;
+    bool sawFinalHop = false;
+    bool filterSawContext = false;
+    const PathResult path = pathfinder.findPath(
+        routeGraph,
+        0,
+        2,
+        {},
+        {},
+        PathOptions{
+            [&](const Link& link, const LinkCostContext& context) {
+                CHECK(&context.graph == &routeGraph);
+                CHECK(context.startIsland == 0);
+                CHECK(context.endIsland == 2);
+                sawIntermediateHop |= link.toIsland != context.endIsland;
+                sawFinalHop |= link.toIsland == context.endIsland;
+                return link.horizontalDistance;
+            },
+            [&](const Link&, const LinkCostContext& context) {
+                filterSawContext = &context.graph == &routeGraph &&
+                    context.startIsland == 0 &&
+                    context.endIsland == 2;
+                return true;
+            },
+            {}});
+    REQUIRE(path.status == PathStatus::Success);
+    CHECK(sawIntermediateHop);
+    CHECK(sawFinalHop);
+    CHECK(filterSawContext);
 }
 
 TEST_CASE("Builder with disconnected navmesh") {
@@ -484,6 +523,32 @@ TEST_CASE("Builder with disconnected navmesh") {
         const BuildResult result = builder.build(*navMesh, invalidConfig);
         CHECK(result.status == BuildStatus::InvalidConfiguration);
         CHECK(result.message == "Enabled local pruning requires a non-negative finite base radius and a positive finite base-radius ratio.");
+    }
+}
+
+TEST_CASE("Builder cancellation is cooperative and discards partial graph") {
+    const auto navMesh = buildDisconnectedNavMesh();
+    const IslandGraphBuilder builder;
+    const BuildConfig config(30.0f, 30.0f, 30.0f);
+
+    SUBCASE("Cancellation before work returns a distinct result") {
+        const BuildResult result = builder.build(*navMesh, config, BuildOptions{[] { return true; }});
+        CHECK(result.status == BuildStatus::Cancelled);
+        CHECK(result.message == "Build cancelled.");
+        CHECK(result.graph.empty());
+    }
+    SUBCASE("Cancellation during work does not expose partial topology") {
+        int checks = 0;
+        const BuildResult result = builder.build(
+            *navMesh,
+            config,
+            BuildOptions{[&] {
+                ++checks;
+                return checks >= 4;
+            }});
+        CHECK(result.status == BuildStatus::Cancelled);
+        CHECK(checks >= 4);
+        CHECK(result.graph.empty());
     }
 }
 

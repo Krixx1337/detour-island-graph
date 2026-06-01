@@ -75,15 +75,21 @@ std::size_t percentile95(std::vector<std::size_t> values) {
 
 } // namespace
 
-void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
+BuildStatus calculateMassScores(
+    IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options) {
     auto& islands = IslandGraphAccess::islands(graph);
     if (!config.massAware.enabled || islands.empty()) {
-        return;
+        return cancellationRequested(options) ? BuildStatus::Cancelled : BuildStatus::Success;
     }
 
     std::vector<float> rawMasses;
     rawMasses.reserve(islands.size());
     for (const Island& island : islands) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         const float spanX = island.boundsMax.x - island.boundsMin.x;
         const float spanZ = island.boundsMax.z - island.boundsMin.z;
         const float dominantSpan = (std::max)(spanX, spanZ);
@@ -98,7 +104,7 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
         }
     }
     if (sortedMasses.empty()) {
-        return;
+        return BuildStatus::Success;
     }
     std::sort(sortedMasses.begin(), sortedMasses.end());
     const float percentileIndex =
@@ -114,6 +120,9 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
     const float referenceLogRatio = std::log(referenceMass / minimumMass);
 
     for (std::size_t index = 0; index < islands.size(); ++index) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         if (rawMasses[index] <= 0.0f) {
             islands[index].massScore = 0.0f;
             continue;
@@ -122,9 +131,14 @@ void calculateMassScores(IslandGraph& graph, const BuildConfig& config) {
             ? std::clamp(std::log(rawMasses[index] / minimumMass) / referenceLogRatio, 0.0f, 1.0f)
             : 1.0f;
     }
+    return BuildStatus::Success;
 }
 
-void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& config) {
+BuildStatus floodFill(
+    const dtNavMesh& navMesh,
+    IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options) {
     auto& islands = IslandGraphAccess::islands(graph);
     auto& polygonToIsland = IslandGraphAccess::polygonToIsland(graph);
     dtQueryFilter filter;
@@ -132,11 +146,17 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& 
     filter.setExcludeFlags(config.query.excludeFlags);
     std::queue<dtPolyRef> pending;
     for (int tileIndex = 0; tileIndex < navMesh.getMaxTiles(); ++tileIndex) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         const dtMeshTile* tile = navMesh.getTile(tileIndex);
         if (!tile || !tile->header) {
             continue;
         }
         for (int polygonIndex = 0; polygonIndex < tile->header->polyCount; ++polygonIndex) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
             const dtPoly& polygon = tile->polys[polygonIndex];
             const dtPolyRef start = navMesh.getPolyRefBase(tile) | static_cast<dtPolyRef>(polygonIndex);
             if (!isEligiblePolygon(start, *tile, polygon, config, filter)) {
@@ -159,6 +179,9 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& 
             pending.push(start);
 
             while (!pending.empty()) {
+                if (cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
                 const dtPolyRef current = pending.front();
                 pending.pop();
                 if (polygonToIsland.find(current) != polygonToIsland.end()) {
@@ -203,9 +226,13 @@ void floodFill(const dtNavMesh& navMesh, IslandGraph& graph, const BuildConfig& 
             }
         }
     }
+    return BuildStatus::Success;
 }
 
-void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
+BuildStatus calculateGraphHealthStats(
+    const IslandGraph& graph,
+    const BuildOptions& options,
+    BuildStats& stats) {
     const std::size_t islandCount = graph.islands().size();
     std::vector<std::size_t> outgoingDegrees(islandCount);
     std::vector<std::size_t> incomingDegrees(islandCount);
@@ -214,8 +241,14 @@ void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
     std::size_t totalLinks = 0;
 
     for (const Island& island : graph.islands()) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         outgoingDegrees[island.id] = island.outgoingLinks.size();
         for (const Link& link : island.outgoingLinks) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
             if (link.toIsland >= islandCount) {
                 continue;
             }
@@ -228,6 +261,9 @@ void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
     }
 
     for (std::size_t island = 0; island < islandCount; ++island) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         if (outgoingDegrees[island] > 0) {
             ++stats.islandsWithOutgoingLinks;
         }
@@ -254,6 +290,9 @@ void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
     std::vector<bool> visited(islandCount);
     std::queue<IslandId> pending;
     for (IslandId island = 0; island < islandCount; ++island) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
         if (visited[island]) {
             continue;
         }
@@ -262,10 +301,16 @@ void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
         visited[island] = true;
         pending.push(island);
         while (!pending.empty()) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
             const IslandId current = pending.front();
             pending.pop();
             ++componentSize;
             for (IslandId neighbor : neighbors[current]) {
+                if (cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
                 if (!visited[neighbor]) {
                     visited[neighbor] = true;
                     pending.push(neighbor);
@@ -275,6 +320,7 @@ void calculateGraphHealthStats(const IslandGraph& graph, BuildStats& stats) {
         stats.largestConnectedComponentIslandCount =
             (std::max)(stats.largestConnectedComponentIslandCount, componentSize);
     }
+    return BuildStatus::Success;
 }
 
 } // namespace detour_island_graph::detail
