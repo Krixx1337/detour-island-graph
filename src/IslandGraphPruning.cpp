@@ -84,6 +84,30 @@ bool withinLocalPruningWindow(
         std::abs(candidate.end.y - existing.end.y) <= verticalWindow;
 }
 
+bool withinSamePairBand(
+    const Link& candidate,
+    const Link& existing,
+    float verticalWindow) {
+    const float startDelta = std::abs(candidate.start.y - existing.start.y);
+    const float endDelta = std::abs(candidate.end.y - existing.end.y);
+    if (startDelta <= verticalWindow && endDelta <= verticalWindow) {
+        return true;
+    }
+
+    const float candidateMidY = (candidate.start.y + candidate.end.y) * 0.5f;
+    const float existingMidY = (existing.start.y + existing.end.y) * 0.5f;
+    return std::abs(candidateMidY - existingMidY) <= verticalWindow &&
+        std::abs(candidate.verticalDistance - existing.verticalDistance) <= verticalWindow;
+}
+
+Link reverseLink(const Link& link) {
+    Link reversed = link;
+    std::swap(reversed.fromIsland, reversed.toIsland);
+    std::swap(reversed.start, reversed.end);
+    reversed.verticalDistance = -reversed.verticalDistance;
+    return reversed;
+}
+
 bool hasAcceptableIndirectRoute(
     const Link& candidate,
     const std::vector<std::vector<Link>>& acceptedOutgoing,
@@ -121,6 +145,32 @@ bool hasAcceptableIndirectRoute(
         }
     }
     return false;
+}
+
+void collapseAcceptedSamePairBands(
+    std::vector<std::vector<Link>>& acceptedOutgoing,
+    float verticalWindow,
+    BuildStats& stats) {
+    for (auto& outgoing : acceptedOutgoing) {
+        if (outgoing.size() < 2) {
+            continue;
+        }
+
+        std::vector<Link> collapsed;
+        collapsed.reserve(outgoing.size());
+        for (const Link& link : outgoing) {
+            const bool duplicate = std::any_of(collapsed.begin(), collapsed.end(), [&](const Link& existing) {
+                return existing.toIsland == link.toIsland &&
+                    withinSamePairBand(link, existing, verticalWindow);
+            });
+            if (duplicate) {
+                ++stats.candidates.localPruningRejectCount;
+                continue;
+            }
+            collapsed.push_back(link);
+        }
+        outgoing = std::move(collapsed);
+    }
 }
 
 } // namespace
@@ -235,19 +285,9 @@ BuildStatus pruneCandidates(
     // Complex 3D maps can fragment one real exit into many tiny neighboring targets; pruning only
     // per pair keeps the full fan-out and recreates link bloat even after dedup elsewhere.
     std::unordered_map<IslandId, std::vector<Link>> acceptedBySource;
-    // Guardrail: source-local collapse must not delete every ingress edge to a nearby target.
-    // Retain the best candidate for each target so density pruning stays sparse without turning
-    // visually connected islands into directed dead ends.
-    std::unordered_map<IslandId, const Link*> preferredIngressByTarget;
-    preferredIngressByTarget.reserve(candidates.size());
     const float verticalWindow = effectiveVerticalCollapseWindow(config);
-    for (const Link& candidate : candidates) {
-        if (cancellationRequested(options)) {
-            return BuildStatus::Cancelled;
-        }
-        preferredIngressByTarget.try_emplace(candidate.toIsland, &candidate);
-    }
     std::vector<std::vector<Link>> acceptedOutgoing(islands.size());
+    std::vector<std::vector<Link>> spannerOutgoing(islands.size());
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
@@ -265,7 +305,7 @@ BuildStatus pruneCandidates(
         if (config.density.spannerPruning.enabled &&
             hasAcceptableIndirectRoute(
                 candidate,
-                acceptedOutgoing,
+                spannerOutgoing,
                 config.density.spannerPruning.pathRatio,
                 config.density.spannerPruning.verticalWeight)) {
             ++stats.candidates.spannerPruningRejectCount;
@@ -277,16 +317,18 @@ BuildStatus pruneCandidates(
             auto& accepted = acceptedBySource[candidate.fromIsland];
             const float radius = pruneRadius(candidate, graph, config);
             const float radiusSquared = radius * radius;
-            const bool isPreferredIngress =
-                preferredIngressByTarget[candidate.toIsland] == &candidate;
-            if (!isPreferredIngress) {
-                duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-                    // Guardrail: fragmented maps often produce many links that differ only by which
-                    // tiny target island owns the far endpoint. Collapse those as one local corridor,
-                    // but keep clearly separated vertical layers so stacked traversal routes survive.
-                    return withinLocalPruningWindow(candidate, existing, radiusSquared, verticalWindow);
-                });
-            }
+            duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
+                if (existing.toIsland == candidate.toIsland) {
+                    // Guardrail: once two links connect the same island pair, keep only distinct
+                    // vertical layers. Same-pair horizontal variants explode branching on highly
+                    // fragmented maps without adding new traversal reachability.
+                    return withinSamePairBand(candidate, existing, verticalWindow);
+                }
+                // Guardrail: fragmented maps often produce many links that differ only by which
+                // tiny target island owns the far endpoint. Collapse those as one local corridor,
+                // but keep clearly separated vertical layers so stacked traversal routes survive.
+                return withinLocalPruningWindow(candidate, existing, radiusSquared, verticalWindow);
+            });
             if (!duplicate) {
                 accepted.push_back(candidate);
             } else {
@@ -295,6 +337,10 @@ BuildStatus pruneCandidates(
         }
         if (!duplicate) {
             acceptedOutgoing[candidate.fromIsland].push_back(candidate);
+            spannerOutgoing[candidate.fromIsland].push_back(candidate);
+            if (symmetricCapabilities && candidate.toIsland < spannerOutgoing.size()) {
+                spannerOutgoing[candidate.toIsland].push_back(reverseLink(candidate));
+            }
             ++stats.candidates.acceptedLinkCount;
             if (config.density.globalPruning.enabled) {
                 occupyGlobalPoint(candidate.start);
@@ -302,6 +348,8 @@ BuildStatus pruneCandidates(
             }
         }
     }
+
+    collapseAcceptedSamePairBands(acceptedOutgoing, verticalWindow, stats);
 
     struct EdgeKey {
         IslandId islandA = 0;

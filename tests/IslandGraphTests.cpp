@@ -770,7 +770,7 @@ TEST_CASE("Boundary representative reduction preserves clearly separated vertica
     CHECK(stats.boundaries.representativeTrimmedCount == 0);
 }
 
-TEST_CASE("Local pruning collapses nearby source-side corridors while preserving target ingress") {
+TEST_CASE("Local pruning collapses nearby source-side corridors across fragmented targets") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(8.0f, 8.0f, 8.0f);
     config.density.localPruning.enabled = true;
@@ -793,8 +793,8 @@ TEST_CASE("Local pruning collapses nearby source-side corridors while preserving
 
     REQUIRE(status == BuildStatus::Success);
     REQUIRE(graph.findIsland(0) != nullptr);
-    CHECK(graph.findIsland(0)->edgeIndices.size() == 3);
-    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(graph.findIsland(0)->edgeIndices.size() == 2);
+    CHECK(stats.candidates.localPruningRejectCount == 2);
     REQUIRE_FALSE(graph.findIsland(0)->edgeIndices.empty());
     const auto firstTraversal = makeTraversalLink(
         graph.edges()[graph.findIsland(0)->edgeIndices[0]],
@@ -802,6 +802,89 @@ TEST_CASE("Local pruning collapses nearby source-side corridors while preserving
     REQUIRE(firstTraversal.has_value());
     CHECK(firstTraversal->toIsland == 1);
     CHECK(hasLink(graph, 0, 2));
+}
+
+TEST_CASE("Local pruning aggressively collapses same-pair horizontal variants on one layer") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 1.0f;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 10.0f, 0.0f}, {5.0f, 12.0f, 0.0f}, 5.0f, 2.0f},
+        Link{0, 1, {20.0f, 10.2f, 0.0f}, {30.0f, 12.2f, 0.0f}, 10.0f, 2.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(hasLink(graph, 0, 1));
+}
+
+TEST_CASE("Local pruning preserves same-pair links on distinct vertical layers") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 1.0f;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 10.0f, 0.0f}, {5.0f, 12.0f, 0.0f}, 5.0f, 2.0f},
+        Link{0, 1, {20.0f, 18.0f, 0.0f}, {30.0f, 20.0f, 0.0f}, 10.0f, 2.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 2);
+    CHECK(stats.candidates.localPruningRejectCount == 0);
+}
+
+TEST_CASE("Local pruning collapses same-pair links with matching vertical-distance bands") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 1.0f;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 480.33f, 0.0f}, {5.0f, 486.08f, 0.0f}, 5.0f, 5.75f},
+        Link{0, 1, {20.0f, 480.98f, 0.0f}, {30.0f, 488.48f, 0.0f}, 10.0f, 7.50f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
+}
+
+TEST_CASE("Symmetric spanner sees reverse traversal without duplicating stored edges") {
+    IslandGraph graph({makeIsland(0), makeIsland(1), makeIsland(2)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    config.density.spannerPruning.enabled = true;
+    config.density.spannerPruning.pathRatio = 2.0f;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{1, 0, {5.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{1, 2, {5.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 2, {0.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, 10.0f, 0.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(stats.candidates.spannerPruningRejectCount == 1);
+    CHECK(graph.edges().size() == 2);
+    CHECK(hasLink(graph, 0, 1));
+    CHECK(hasLink(graph, 1, 0));
+    CHECK(hasLink(graph, 1, 2));
+    CHECK(hasLink(graph, 2, 1));
+    CHECK_FALSE(hasLink(graph, 0, 2));
 }
 
 TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {
