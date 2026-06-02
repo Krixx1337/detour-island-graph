@@ -26,6 +26,14 @@ struct IslandGraphAccess {
     static std::unordered_map<dtPolyRef, IslandId>& polygonToIsland(IslandGraph& graph) {
         return graph.m_polygonToIsland;
     }
+
+    static std::vector<Edge>& edges(IslandGraph& graph) {
+        return graph.m_edges;
+    }
+
+    static void rebuildAdjacency(IslandGraph& graph) {
+        graph.rebuildAdjacency();
+    }
 };
 
 bool validate(const BuildConfig& config, std::string& message);

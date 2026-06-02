@@ -57,6 +57,15 @@ inline SpatialCoordinate offsetCoordinate(SpatialCoordinate value, int offset) {
     return value + offset;
 }
 
+inline float effectiveVerticalCollapseWindow(const BuildConfig& config) {
+    const float configuredVerticalExtent =
+        (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown);
+    const float baseExtent = configuredVerticalExtent > 0.0f
+        ? (std::min)(config.gapDiscovery.maxHorizontalGap, configuredVerticalExtent)
+        : config.gapDiscovery.maxHorizontalGap;
+    return (std::max)(baseExtent * 0.25f, 0.5f);
+}
+
 BuildStatus extractBoundaries(
     const dtNavMesh& navMesh,
     const IslandGraph& graph,

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace detour_island_graph::detail::discovery {
 namespace {
@@ -70,12 +71,25 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
     return config.density.localPruning.effectiveBaseRadius(config.gapDiscovery.maxHorizontalGap) * scale;
 }
 
+bool withinLocalPruningWindow(
+    const Link& candidate,
+    const Link& existing,
+    float horizontalRadiusSquared,
+    float verticalWindow) {
+    const float startHorizontalDistance = horizontalDistance(candidate.start, existing.start);
+    const float endHorizontalDistance = horizontalDistance(candidate.end, existing.end);
+    return (startHorizontalDistance * startHorizontalDistance) <= horizontalRadiusSquared &&
+        std::abs(candidate.start.y - existing.start.y) <= verticalWindow &&
+        (endHorizontalDistance * endHorizontalDistance) <= horizontalRadiusSquared &&
+        std::abs(candidate.end.y - existing.end.y) <= verticalWindow;
+}
+
 bool hasAcceptableIndirectRoute(
     const Link& candidate,
-    const std::vector<Island>& islands,
+    const std::vector<std::vector<Link>>& acceptedOutgoing,
     float pathRatio,
     float verticalWeight) {
-    const auto& outgoing = islands[candidate.fromIsland].outgoingLinks;
+    const auto& outgoing = acceptedOutgoing[candidate.fromIsland];
     const auto effort = [verticalWeight](const Link& link) {
         const float weightedVertical = link.verticalDistance * verticalWeight;
         return std::sqrt(
@@ -88,7 +102,7 @@ bool hasAcceptableIndirectRoute(
         if (firstHop.toIsland == candidate.toIsland) {
             continue;
         }
-        const auto& secondOutgoing = islands[firstHop.toIsland].outgoingLinks;
+        const auto& secondOutgoing = acceptedOutgoing[firstHop.toIsland];
         float bestSecondHopDist = (std::numeric_limits<float>::max)();
         for (const Link& secondHop : secondOutgoing) {
             if (secondHop.toIsland == candidate.toIsland) {
@@ -150,6 +164,13 @@ BuildStatus pruneCandidates(
     });
     if (cancellationRequested(options)) {
         return BuildStatus::Cancelled;
+    }
+
+    auto& islands = IslandGraphAccess::islands(graph);
+    auto& edges = IslandGraphAccess::edges(graph);
+    edges.clear();
+    for (Island& island : islands) {
+        island.edgeIndices.clear();
     }
 
     std::vector<Vec3> occupiedGlobalPoints;
@@ -218,13 +239,14 @@ BuildStatus pruneCandidates(
     // visually connected islands into directed dead ends.
     std::unordered_map<IslandId, const Link*> preferredIngressByTarget;
     preferredIngressByTarget.reserve(candidates.size());
+    const float verticalWindow = effectiveVerticalCollapseWindow(config);
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
         preferredIngressByTarget.try_emplace(candidate.toIsland, &candidate);
     }
-    auto& islands = IslandGraphAccess::islands(graph);
+    std::vector<std::vector<Link>> acceptedOutgoing(islands.size());
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
@@ -242,7 +264,7 @@ BuildStatus pruneCandidates(
         if (config.density.spannerPruning.enabled &&
             hasAcceptableIndirectRoute(
                 candidate,
-                islands,
+                acceptedOutgoing,
                 config.density.spannerPruning.pathRatio,
                 config.density.spannerPruning.verticalWeight)) {
             ++stats.candidates.spannerPruningRejectCount;
@@ -258,17 +280,10 @@ BuildStatus pruneCandidates(
                 preferredIngressByTarget[candidate.toIsland] == &candidate;
             if (!isPreferredIngress) {
                 duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-                    const float startHorizontalDistance =
-                        horizontalDistance(candidate.start, existing.start);
-                    const float endHorizontalDistance =
-                        horizontalDistance(candidate.end, existing.end);
                     // Guardrail: fragmented maps often produce many links that differ only by which
-                    // tiny target island owns the far endpoint. Collapse those as one local corridor
-                    // so source islands keep meaningful exits instead of a full fan-out neighborhood.
-                    // Keep this horizontal-first check. Replacing it with full 3D distance makes
-                    // vertically offset samples look unique again and brings back severe link bloat.
-                    return (startHorizontalDistance * startHorizontalDistance) <= radiusSquared &&
-                        (endHorizontalDistance * endHorizontalDistance) <= radiusSquared;
+                    // tiny target island owns the far endpoint. Collapse those as one local corridor,
+                    // but keep clearly separated vertical layers so stacked traversal routes survive.
+                    return withinLocalPruningWindow(candidate, existing, radiusSquared, verticalWindow);
                 });
             }
             if (!duplicate) {
@@ -278,7 +293,7 @@ BuildStatus pruneCandidates(
             }
         }
         if (!duplicate) {
-            islands[candidate.fromIsland].outgoingLinks.push_back(candidate);
+            acceptedOutgoing[candidate.fromIsland].push_back(candidate);
             ++stats.candidates.acceptedLinkCount;
             if (config.density.globalPruning.enabled) {
                 occupyGlobalPoint(candidate.start);
@@ -286,6 +301,87 @@ BuildStatus pruneCandidates(
             }
         }
     }
+
+    struct EdgeKey {
+        IslandId islandA = 0;
+        IslandId islandB = 0;
+        SpatialCoordinate pointAX = 0;
+        SpatialCoordinate pointAY = 0;
+        SpatialCoordinate pointAZ = 0;
+        SpatialCoordinate pointBX = 0;
+        SpatialCoordinate pointBY = 0;
+        SpatialCoordinate pointBZ = 0;
+
+        bool operator==(const EdgeKey& other) const {
+            return islandA == other.islandA &&
+                islandB == other.islandB &&
+                pointAX == other.pointAX &&
+                pointAY == other.pointAY &&
+                pointAZ == other.pointAZ &&
+                pointBX == other.pointBX &&
+                pointBY == other.pointBY &&
+                pointBZ == other.pointBZ;
+        }
+    };
+
+    struct EdgeKeyHash {
+        std::size_t operator()(const EdgeKey& key) const {
+            std::size_t hash = 0;
+            hashCombine(hash, key.islandA);
+            hashCombine(hash, key.islandB);
+            hashCombine(hash, key.pointAX);
+            hashCombine(hash, key.pointAY);
+            hashCombine(hash, key.pointAZ);
+            hashCombine(hash, key.pointBX);
+            hashCombine(hash, key.pointBY);
+            hashCombine(hash, key.pointBZ);
+            return hash;
+        }
+    };
+
+    std::unordered_map<EdgeKey, std::uint32_t, EdgeKeyHash> edgeByKey;
+    for (IslandId fromIsland = 0; fromIsland < acceptedOutgoing.size(); ++fromIsland) {
+        for (const Link& link : acceptedOutgoing[fromIsland]) {
+            const float cellSize = config.density.candidateDeduplication.enabled
+                ? config.density.candidateDeduplication.effectiveCellSize(
+                    link.horizontalDistance,
+                    config.gapDiscovery.maxHorizontalGap)
+                : pruneRadius(link, graph, config);
+            const bool forward = link.fromIsland <= link.toIsland;
+            const EdgeKey key{
+                forward ? link.fromIsland : link.toIsland,
+                forward ? link.toIsland : link.fromIsland,
+                quantize(forward ? link.start.x : link.end.x, cellSize),
+                quantize(forward ? link.start.y : link.end.y, verticalWindow),
+                quantize(forward ? link.start.z : link.end.z, cellSize),
+                quantize(forward ? link.end.x : link.start.x, cellSize),
+                quantize(forward ? link.end.y : link.start.y, verticalWindow),
+                quantize(forward ? link.end.z : link.start.z, cellSize)};
+            const auto existing = edgeByKey.find(key);
+            if (existing == edgeByKey.end()) {
+                Edge edge;
+                edge.islandA = key.islandA;
+                edge.islandB = key.islandB;
+                edge.pointA = forward ? link.start : link.end;
+                edge.pointB = forward ? link.end : link.start;
+                edge.horizontalDistance = link.horizontalDistance;
+                edge.verticalDeltaAB = edge.pointB.y - edge.pointA.y;
+                edge.traversableAB = forward;
+                edge.traversableBA = !forward;
+                edgeByKey.emplace(key, static_cast<std::uint32_t>(edges.size()));
+                edges.push_back(edge);
+                continue;
+            }
+            Edge& edge = edges[existing->second];
+            if (forward) {
+                edge.traversableAB = true;
+            } else {
+                edge.traversableBA = true;
+            }
+        }
+    }
+    IslandGraphAccess::rebuildAdjacency(graph);
+    stats.candidates.acceptedLinkCount = edges.size();
     stats.timings.pruningMs = elapsedMilliseconds(pruningStart);
     return BuildStatus::Success;
 }

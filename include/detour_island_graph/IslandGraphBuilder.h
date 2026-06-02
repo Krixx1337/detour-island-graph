@@ -180,7 +180,7 @@ struct BoundaryTuning {
 };
 
 struct QueryTuning {
-    int maxNodes = 4096;
+    int maxNodes = 8192;
     unsigned short includeFlags = 0xffff;
     unsigned short excludeFlags = 0;
 };
@@ -250,6 +250,8 @@ struct CandidateStats {
     std::size_t pairScanSuppressedCount = 0;
     std::size_t shortGapRecoveryQueryCount = 0;
     std::size_t shortGapRecoveredCount = 0;
+    std::size_t reverseLinksSynthesizedCount = 0;
+    std::size_t reverseLinksRejectedCount = 0;
     std::size_t closestPointQueryCount = 0;
     std::size_t closestPointFailureCount = 0;
     std::size_t projectedCount = 0;

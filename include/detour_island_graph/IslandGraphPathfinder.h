@@ -13,6 +13,11 @@ struct LinkCostContext {
     IslandId endIsland;
 };
 
+struct EdgeTraversal {
+    std::uint32_t edgeIndex = 0;
+    Link link;
+};
+
 using LinkCost = std::function<float(const Link&, const LinkCostContext&)>;
 using LinkFilter = std::function<bool(const Link&, const LinkCostContext&)>;
 using HeuristicCost = std::function<float(const Vec3&, const Vec3&)>;
@@ -33,6 +38,7 @@ enum class PathStatus {
 struct PathResult {
     PathStatus status = PathStatus::NoPath;
     std::vector<Link> links;
+    std::vector<std::uint32_t> edgeIndices;
     float totalCost = 0.0f;
 };
 

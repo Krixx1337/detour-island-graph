@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <limits>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -57,10 +58,61 @@ struct Link {
     float verticalDistance = 0.0f;
 };
 
+struct Edge {
+    IslandId islandA = 0;
+    IslandId islandB = 0;
+    Vec3 pointA;
+    Vec3 pointB;
+    float horizontalDistance = 0.0f;
+    float verticalDeltaAB = 0.0f;
+    bool traversableAB = false;
+    bool traversableBA = false;
+};
+
+inline bool connectsIsland(const Edge& edge, IslandId island) noexcept {
+    return edge.islandA == island || edge.islandB == island;
+}
+
+inline bool canTraverseFrom(const Edge& edge, IslandId island) noexcept {
+    if (edge.islandA == island) {
+        return edge.traversableAB;
+    }
+    if (edge.islandB == island) {
+        return edge.traversableBA;
+    }
+    return false;
+}
+
+inline IslandId otherIsland(const Edge& edge, IslandId island) noexcept {
+    return edge.islandA == island ? edge.islandB : edge.islandA;
+}
+
+inline std::optional<Link> makeTraversalLink(const Edge& edge, IslandId fromIsland) {
+    if (edge.islandA == fromIsland && edge.traversableAB) {
+        return std::optional<Link>(Link{
+            edge.islandA,
+            edge.islandB,
+            edge.pointA,
+            edge.pointB,
+            edge.horizontalDistance,
+            edge.verticalDeltaAB});
+    }
+    if (edge.islandB == fromIsland && edge.traversableBA) {
+        return std::optional<Link>(Link{
+            edge.islandB,
+            edge.islandA,
+            edge.pointB,
+            edge.pointA,
+            edge.horizontalDistance,
+            -edge.verticalDeltaAB});
+    }
+    return std::nullopt;
+}
+
 struct Island {
     IslandId id = 0;
     std::vector<dtPolyRef> polygons;
-    std::vector<Link> outgoingLinks;
+    std::vector<std::uint32_t> edgeIndices;
     Vec3 center;
     Vec3 boundsMin;
     Vec3 boundsMax;
@@ -71,9 +123,11 @@ class IslandGraph {
 public:
     IslandGraph() = default;
     explicit IslandGraph(std::vector<Island> islands);
+    IslandGraph(std::vector<Island> islands, std::vector<Edge> edges);
 
     [[nodiscard]] bool empty() const noexcept;
     [[nodiscard]] const std::vector<Island>& islands() const noexcept;
+    [[nodiscard]] const std::vector<Edge>& edges() const noexcept;
     [[nodiscard]] const Island* findIsland(IslandId id) const noexcept;
     [[nodiscard]] std::optional<IslandId> findIslandForPolygon(dtPolyRef polygon) const;
 
@@ -82,8 +136,10 @@ private:
     friend struct detail::IslandGraphAccess;
 
     void rebuildPolygonLookup();
+    void rebuildAdjacency();
 
     std::vector<Island> m_islands;
+    std::vector<Edge> m_edges;
     std::unordered_map<dtPolyRef, IslandId> m_polygonToIsland;
 };
 

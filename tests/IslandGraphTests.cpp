@@ -178,22 +178,44 @@ bool hasLink(const detour_island_graph::IslandGraph& graph, std::uint32_t from, 
     if (!island) {
         return false;
     }
-    for (const detour_island_graph::Link& link : island->outgoingLinks) {
-        if (link.toIsland == to) {
+    for (std::uint32_t edgeIndex : island->edgeIndices) {
+        if (edgeIndex >= graph.edges().size()) {
+            continue;
+        }
+        const std::optional<detour_island_graph::Link> traversal =
+            detour_island_graph::makeTraversalLink(graph.edges()[edgeIndex], from);
+        if (traversal.has_value() && traversal->toIsland == to) {
             return true;
         }
     }
     return false;
 }
 
+detour_island_graph::Edge makeEdge(const detour_island_graph::Link& link, bool reverse = false) {
+    detour_island_graph::Edge edge;
+    edge.islandA = link.fromIsland;
+    edge.islandB = link.toIsland;
+    edge.pointA = link.start;
+    edge.pointB = link.end;
+    edge.horizontalDistance = link.horizontalDistance;
+    edge.verticalDeltaAB = link.verticalDistance;
+    edge.traversableAB = true;
+    edge.traversableBA = reverse;
+    return edge;
+}
+
+detour_island_graph::IslandGraph makeGraph(
+    std::vector<detour_island_graph::Island> islands,
+    std::vector<detour_island_graph::Edge> edges = {}) {
+    return detour_island_graph::IslandGraph(std::move(islands), std::move(edges));
+}
+
 detour_island_graph::Island makeIsland(
     std::uint32_t id,
-    std::vector<dtPolyRef> polygons = {},
-    std::vector<detour_island_graph::Link> links = {}) {
+    std::vector<dtPolyRef> polygons = {}) {
     detour_island_graph::Island island;
     island.id = id;
     island.polygons = std::move(polygons);
-    island.outgoingLinks = std::move(links);
     return island;
 }
 
@@ -265,10 +287,9 @@ TEST_CASE("Pathfinder routes, filters, and reports edge cases") {
     const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
     const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
     const Link secondHop{1, 2, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
-    IslandGraph routeGraph({
-        makeIsland(0, {}, {direct, firstHop}),
-        makeIsland(1, {}, {secondHop}),
-        makeIsland(2)});
+    IslandGraph routeGraph = makeGraph(
+        {makeIsland(0), makeIsland(1), makeIsland(2)},
+        {makeEdge(direct), makeEdge(firstHop), makeEdge(secondHop)});
     const IslandGraphPathfinder pathfinder;
 
     SUBCASE("Uses the cheaper route") {
@@ -296,9 +317,9 @@ TEST_CASE("Pathfinder routes, filters, and reports edge cases") {
     SUBCASE("Ignores malformed links") {
         const Link wrongSource{7, 1, {}, {}, 1.0f, 0.0f};
         const Link invalidTarget{0, 9, {}, {}, 1.0f, 0.0f};
-        IslandGraph malformedGraph({
-            makeIsland(0, {}, {wrongSource, invalidTarget}),
-            makeIsland(1)});
+        IslandGraph malformedGraph = makeGraph(
+            {makeIsland(0), makeIsland(1)},
+            {makeEdge(wrongSource), makeEdge(invalidTarget)});
         CHECK(pathfinder.findPath(malformedGraph, 0, 1, {}, {}).status == PathStatus::NoPath);
     }
 }
@@ -308,11 +329,9 @@ TEST_CASE("Pathfinder custom costs use an admissible search order") {
     const Link cheapHop{0, 1, {}, {100.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
     const Link bridge{1, 2, {100.0f, 0.0f, 0.0f}, {}, 1.0f, 0.0f};
     const Link goal{2, 3, {}, {}, 1.0f, 0.0f};
-    IslandGraph routeGraph({
-        makeIsland(0, {}, {expensiveHop, cheapHop}),
-        makeIsland(1, {}, {bridge}),
-        makeIsland(2, {}, {goal}),
-        makeIsland(3)});
+    IslandGraph routeGraph = makeGraph(
+        {makeIsland(0), makeIsland(1), makeIsland(2), makeIsland(3)},
+        {makeEdge(expensiveHop), makeEdge(cheapHop), makeEdge(bridge), makeEdge(goal)});
     const IslandGraphPathfinder pathfinder;
     int heuristicCalls = 0;
     const PathResult path = pathfinder.findPath(
@@ -337,10 +356,9 @@ TEST_CASE("Pathfinder custom costs use an admissible search order") {
 TEST_CASE("Pathfinder callbacks receive route context") {
     const Link firstHop{0, 1, {}, {}, 1.0f, 0.0f};
     const Link finalHop{1, 2, {}, {}, 1.0f, 0.0f};
-    IslandGraph routeGraph({
-        makeIsland(0, {}, {firstHop}),
-        makeIsland(1, {}, {finalHop}),
-        makeIsland(2)});
+    IslandGraph routeGraph = makeGraph(
+        {makeIsland(0), makeIsland(1), makeIsland(2)},
+        {makeEdge(firstHop), makeEdge(finalHop)});
     const IslandGraphPathfinder pathfinder;
     bool sawIntermediateHop = false;
     bool sawFinalHop = false;
@@ -391,9 +409,17 @@ TEST_CASE("Builder with disconnected navmesh") {
     CHECK(buildResult.stats.largestConnectedComponentIslandCount > 0);
     CHECK(buildResult.stats.averageLinkLength > 0.0);
     for (const Island& island : buildResult.graph.islands()) {
-        for (const Link& link : island.outgoingLinks) {
-            CHECK(link.fromIsland != link.toIsland);
+        bool sawTraversableEdge = false;
+        for (std::uint32_t edgeIndex : island.edgeIndices) {
+            REQUIRE(edgeIndex < buildResult.graph.edges().size());
+            const auto traversal = makeTraversalLink(buildResult.graph.edges()[edgeIndex], island.id);
+            if (!traversal.has_value()) {
+                continue;
+            }
+            sawTraversableEdge = true;
+            CHECK(traversal->fromIsland != traversal->toIsland);
         }
+        CHECK((sawTraversableEdge || island.id == 1) == true);
     }
 
     SUBCASE("Outbound island filtering preserves islands and incoming links") {
@@ -404,7 +430,7 @@ TEST_CASE("Builder with disconnected navmesh") {
         const BuildResult filtered = builder.build(*navMesh, filteredConfig);
         REQUIRE(static_cast<bool>(filtered));
         CHECK(filtered.graph.islands().size() == buildResult.graph.islands().size());
-        CHECK(filtered.graph.islands()[0].outgoingLinks.empty());
+        CHECK_FALSE(hasLink(filtered.graph, 0, 1));
         CHECK(hasLink(filtered.graph, 1, 0));
     }
 }
@@ -719,7 +745,7 @@ TEST_CASE("Builder mass-aware tuning") {
     }
 }
 
-TEST_CASE("Boundary representative reduction collapses stacked vertical duplicates by corridor") {
+TEST_CASE("Boundary representative reduction preserves clearly separated vertical layers") {
     IslandGraph graph({makeIsland(0)});
     std::vector<Boundary> boundaries{
         Boundary{0, 1, {0.0f, 0.0f, 0.0f}, {4.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}},
@@ -740,8 +766,8 @@ TEST_CASE("Boundary representative reduction collapses stacked vertical duplicat
         representatives);
 
     REQUIRE(status == BuildStatus::Success);
-    CHECK(representatives.size() == 2);
-    CHECK(stats.boundaries.representativeTrimmedCount == 1);
+    CHECK(representatives.size() == 3);
+    CHECK(stats.boundaries.representativeTrimmedCount == 0);
 }
 
 TEST_CASE("Local pruning collapses nearby source-side corridors while preserving target ingress") {
@@ -767,20 +793,40 @@ TEST_CASE("Local pruning collapses nearby source-side corridors while preserving
 
     REQUIRE(status == BuildStatus::Success);
     REQUIRE(graph.findIsland(0) != nullptr);
-    CHECK(graph.findIsland(0)->outgoingLinks.size() == 3);
+    CHECK(graph.findIsland(0)->edgeIndices.size() == 3);
     CHECK(stats.candidates.localPruningRejectCount == 1);
-    CHECK(graph.findIsland(0)->outgoingLinks[0].toIsland == 1);
+    REQUIRE_FALSE(graph.findIsland(0)->edgeIndices.empty());
+    const auto firstTraversal = makeTraversalLink(
+        graph.edges()[graph.findIsland(0)->edgeIndices[0]],
+        0);
+    REQUIRE(firstTraversal.has_value());
+    CHECK(firstTraversal->toIsland == 1);
     CHECK(hasLink(graph, 0, 2));
+}
+
+TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {
+    const auto navMesh = buildDisconnectedNavMesh();
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.boundaries.deduplicationCellSize = 0.5f;
+    config.density.localPruning.baseRadius = 0.5f;
+
+    const BuildResult result = IslandGraphBuilder{}.build(*navMesh, config);
+
+    REQUIRE(static_cast<bool>(result));
+    CHECK(hasLink(result.graph, 0, 1));
+    CHECK(hasLink(result.graph, 1, 0));
+    CHECK(hasLink(result.graph, 1, 2));
+    CHECK(hasLink(result.graph, 2, 1));
+    CHECK(result.graph.edges().size() == result.stats.candidates.acceptedLinkCount);
 }
 
 TEST_CASE("Serializer") {
     const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
     const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
     const Link secondHop{1, 2, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
-    IslandGraph routeGraph({
-        makeIsland(0, {}, {direct, firstHop}),
-        makeIsland(1, {}, {secondHop}),
-        makeIsland(2)});
+    IslandGraph routeGraph = makeGraph(
+        {makeIsland(0), makeIsland(1), makeIsland(2)},
+        {makeEdge(direct), makeEdge(firstHop), makeEdge(secondHop)});
 
     SUBCASE("Round trip preserves graph") {
         std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
@@ -868,7 +914,7 @@ TEST_CASE("Serializer") {
         REQUIRE(
             IslandGraphSerializer::write(
                 serialized,
-                IslandGraph({makeIsland(0, {}, {invalidLink}), makeIsland(1)})) ==
+                makeGraph({makeIsland(0), makeIsland(1)}, {makeEdge(invalidLink)})) ==
             SerializationStatus::Success);
         serialized.seekg(0);
         CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);

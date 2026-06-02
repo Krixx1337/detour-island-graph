@@ -238,26 +238,35 @@ BuildStatus calculateGraphHealthStats(
     std::vector<std::size_t> incomingDegrees(islandCount);
     std::vector<std::vector<IslandId>> neighbors(islandCount);
     double totalLinkLength = 0.0;
-    std::size_t totalLinks = 0;
+    const std::size_t totalLinks = graph.edges().size();
 
     for (const Island& island : graph.islands()) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
-        outgoingDegrees[island.id] = island.outgoingLinks.size();
-        for (const Link& link : island.outgoingLinks) {
+        for (std::uint32_t edgeIndex : island.edgeIndices) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            if (link.toIsland >= islandCount) {
+            if (edgeIndex >= graph.edges().size()) {
                 continue;
             }
-            ++incomingDegrees[link.toIsland];
-            neighbors[link.fromIsland].push_back(link.toIsland);
-            neighbors[link.toIsland].push_back(link.fromIsland);
-            totalLinkLength += link.horizontalDistance;
-            ++totalLinks;
+            const Edge& edge = graph.edges()[edgeIndex];
+            const std::optional<Link> traversal = makeTraversalLink(edge, island.id);
+            if (!traversal.has_value() || traversal->toIsland >= islandCount) {
+                continue;
+            }
+            ++outgoingDegrees[island.id];
+            ++incomingDegrees[traversal->toIsland];
         }
+    }
+
+    for (const Edge& edge : graph.edges()) {
+        if (edge.islandA < islandCount && edge.islandB < islandCount) {
+            neighbors[edge.islandA].push_back(edge.islandB);
+            neighbors[edge.islandB].push_back(edge.islandA);
+        }
+        totalLinkLength += edge.horizontalDistance;
     }
 
     for (std::size_t island = 0; island < islandCount; ++island) {

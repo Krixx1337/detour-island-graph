@@ -79,22 +79,40 @@ bool isFinite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
-bool writeLink(std::ostream& stream, const Link& link) {
-    return writeUnsigned(stream, link.fromIsland) &&
-        writeUnsigned(stream, link.toIsland) &&
-        writeVec3(stream, link.start) &&
-        writeVec3(stream, link.end) &&
-        writeFloat(stream, link.horizontalDistance) &&
-        writeFloat(stream, link.verticalDistance);
+bool isFinite(const Edge& edge) {
+    return isFinite(edge.pointA) &&
+        isFinite(edge.pointB) &&
+        std::isfinite(edge.horizontalDistance) &&
+        std::isfinite(edge.verticalDeltaAB);
 }
 
-bool readLink(std::istream& stream, Link& link) {
-    return readUnsigned(stream, link.fromIsland) &&
-        readUnsigned(stream, link.toIsland) &&
-        readVec3(stream, link.start) &&
-        readVec3(stream, link.end) &&
-        readFloat(stream, link.horizontalDistance) &&
-        readFloat(stream, link.verticalDistance);
+bool writeEdge(std::ostream& stream, const Edge& edge) {
+    return writeUnsigned(stream, edge.islandA) &&
+        writeUnsigned(stream, edge.islandB) &&
+        writeVec3(stream, edge.pointA) &&
+        writeVec3(stream, edge.pointB) &&
+        writeFloat(stream, edge.horizontalDistance) &&
+        writeFloat(stream, edge.verticalDeltaAB) &&
+        writeUnsigned(stream, static_cast<std::uint8_t>(edge.traversableAB ? 1 : 0)) &&
+        writeUnsigned(stream, static_cast<std::uint8_t>(edge.traversableBA ? 1 : 0));
+}
+
+bool readEdge(std::istream& stream, Edge& edge) {
+    std::uint8_t traversableAB = 0;
+    std::uint8_t traversableBA = 0;
+    if (!readUnsigned(stream, edge.islandA) ||
+        !readUnsigned(stream, edge.islandB) ||
+        !readVec3(stream, edge.pointA) ||
+        !readVec3(stream, edge.pointB) ||
+        !readFloat(stream, edge.horizontalDistance) ||
+        !readFloat(stream, edge.verticalDeltaAB) ||
+        !readUnsigned(stream, traversableAB) ||
+        !readUnsigned(stream, traversableBA)) {
+        return false;
+    }
+    edge.traversableAB = traversableAB != 0;
+    edge.traversableBA = traversableBA != 0;
+    return true;
 }
 
 bool writeCount(std::ostream& stream, std::size_t count) {
@@ -118,9 +136,17 @@ SerializationResult malformed(const char* message) {
 SerializationStatus IslandGraphSerializer::write(std::ostream& stream, const IslandGraph& graph) {
     if (!writeUnsigned(stream, Magic) ||
         !writeUnsigned(stream, Version) ||
-        !writeCount(stream, graph.islands().size())) {
+        !writeCount(stream, graph.islands().size()) ||
+        !writeCount(stream, graph.edges().size())) {
         return SerializationStatus::IoError;
     }
+
+    for (const Edge& edge : graph.edges()) {
+        if (!writeEdge(stream, edge)) {
+            return SerializationStatus::IoError;
+        }
+    }
+
     for (const Island& island : graph.islands()) {
         if (!writeUnsigned(stream, island.id) ||
             !writeVec3(stream, island.center) ||
@@ -135,15 +161,16 @@ SerializationStatus IslandGraphSerializer::write(std::ostream& stream, const Isl
                 return SerializationStatus::IoError;
             }
         }
-        if (!writeCount(stream, island.outgoingLinks.size())) {
+        if (!writeCount(stream, island.edgeIndices.size())) {
             return SerializationStatus::IoError;
         }
-        for (const Link& link : island.outgoingLinks) {
-            if (!writeLink(stream, link)) {
+        for (std::uint32_t edgeIndex : island.edgeIndices) {
+            if (!writeUnsigned(stream, edgeIndex)) {
                 return SerializationStatus::IoError;
             }
         }
     }
+
     return stream.good() ? SerializationStatus::Success : SerializationStatus::IoError;
 }
 
@@ -169,15 +196,29 @@ SerializationResult IslandGraphSerializer::read(
     }
 
     std::uint32_t islandCount = 0;
-    if (!readCount(stream, limits.maxIslandCount, islandCount)) {
-        return malformed("Serialized graph island count is invalid.");
+    std::uint32_t edgeCount = 0;
+    if (!readCount(stream, limits.maxIslandCount, islandCount) ||
+        !readCount(stream, limits.maxElementsPerVector, edgeCount)) {
+        return malformed("Serialized graph header counts are invalid.");
     }
+
     std::size_t remainingAllocationBytes = limits.maxAllocationBytes;
-    if (!consumeAllocationBudget(remainingAllocationBytes, islandCount, sizeof(Island))) {
+    if (!consumeAllocationBudget(remainingAllocationBytes, islandCount, sizeof(Island)) ||
+        !consumeAllocationBudget(remainingAllocationBytes, edgeCount, sizeof(Edge))) {
         return malformed("Serialized graph exceeds the allocation budget.");
     }
 
     try {
+        std::vector<Edge> edges(edgeCount);
+        for (Edge& edge : edges) {
+            if (!readEdge(stream, edge) ||
+                edge.islandA >= islandCount ||
+                edge.islandB >= islandCount ||
+                !isFinite(edge)) {
+                return malformed("Serialized edge data is invalid.");
+            }
+        }
+
         std::vector<Island> islands(islandCount);
         std::unordered_map<dtPolyRef, IslandId> polygonOwners;
         for (std::uint32_t islandIndex = 0; islandIndex < islandCount; ++islandIndex) {
@@ -217,27 +258,23 @@ SerializationResult IslandGraphSerializer::read(
                 }
             }
 
-            std::uint32_t linkCount = 0;
-            if (!readCount(stream, limits.maxElementsPerVector, linkCount) ||
-                !consumeAllocationBudget(remainingAllocationBytes, linkCount, sizeof(Link))) {
-                return malformed("Serialized link count exceeds the allocation budget.");
+            std::uint32_t edgeIndexCount = 0;
+            if (!readCount(stream, limits.maxElementsPerVector, edgeIndexCount) ||
+                !consumeAllocationBudget(remainingAllocationBytes, edgeIndexCount, sizeof(std::uint32_t))) {
+                return malformed("Serialized adjacency count exceeds the allocation budget.");
             }
-            island.outgoingLinks.resize(linkCount);
-            for (Link& link : island.outgoingLinks) {
-                if (!readLink(stream, link) ||
-                    link.fromIsland != island.id ||
-                    link.toIsland >= islandCount ||
-                    !isFinite(link.start) ||
-                    !isFinite(link.end) ||
-                    !std::isfinite(link.horizontalDistance) ||
-                    !std::isfinite(link.verticalDistance)) {
-                    return malformed("Serialized link data is invalid.");
+            island.edgeIndices.resize(edgeIndexCount);
+            for (std::uint32_t& edgeIndex : island.edgeIndices) {
+                if (!readUnsigned(stream, edgeIndex) ||
+                    edgeIndex >= edgeCount ||
+                    !connectsIsland(edges[edgeIndex], island.id)) {
+                    return malformed("Serialized island adjacency is invalid.");
                 }
             }
         }
 
         SerializationResult result;
-        result.graph = IslandGraph(std::move(islands));
+        result.graph = IslandGraph(std::move(islands), std::move(edges));
         return result;
     } catch (const std::bad_alloc&) {
         return malformed("Serialized graph allocation failed.");

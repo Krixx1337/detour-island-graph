@@ -12,19 +12,23 @@ namespace {
 struct LinkKey {
     IslandId fromIsland = 0;
     IslandId toIsland = 0;
-    // Guardrail: candidate dedup is lateral on purpose. Fragmented vertical topology often moves
-    // only in y between samples; treating that as a new link identity restores graph bloat.
+    // Guardrail: preserve distinct vertical layers without turning every tiny height change into a
+    // brand new corridor. Large 3D maps need finite height awareness instead of an infinite y merge.
     SpatialCoordinate startX = 0;
+    SpatialCoordinate startY = 0;
     SpatialCoordinate startZ = 0;
     SpatialCoordinate endX = 0;
+    SpatialCoordinate endY = 0;
     SpatialCoordinate endZ = 0;
 
     bool operator==(const LinkKey& other) const {
         return fromIsland == other.fromIsland &&
             toIsland == other.toIsland &&
             startX == other.startX &&
+            startY == other.startY &&
             startZ == other.startZ &&
             endX == other.endX &&
+            endY == other.endY &&
             endZ == other.endZ;
     }
 };
@@ -35,8 +39,10 @@ struct LinkKeyHash {
         hashCombine(hash, key.fromIsland);
         hashCombine(hash, key.toIsland);
         hashCombine(hash, key.startX);
+        hashCombine(hash, key.startY);
         hashCombine(hash, key.startZ);
         hashCombine(hash, key.endX);
+        hashCombine(hash, key.endY);
         hashCombine(hash, key.endZ);
         return hash;
     }
@@ -99,11 +105,54 @@ BuildStatus discoverCandidates(
     std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
     std::vector<dtPolyRef> nearby;
     PolygonCollector collector(nearby);
+    std::vector<bool> outboundIslands(graph.islands().size(), true);
+    const float verticalCellSize = effectiveVerticalCollapseWindow(config);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
     dtQueryFilter filter;
     filter.setIncludeFlags(config.query.includeFlags);
     filter.setExcludeFlags(config.query.excludeFlags);
+    if (config.outboundIslandFilter) {
+        for (const Island& island : graph.islands()) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            outboundIslands[island.id] = config.outboundIslandFilter(island, graph);
+        }
+    }
+
+    const auto recordCandidate = [&](const Link& link, bool recovery) {
+        if (!outboundIslands[link.fromIsland]) {
+            return;
+        }
+        if (!config.density.candidateDeduplication.enabled) {
+            if (recovery) {
+                ++stats.candidates.shortGapRecoveredCount;
+            }
+            candidates.push_back(link);
+            return;
+        }
+        const float candidateCellSize =
+            config.density.candidateDeduplication.effectiveCellSize(
+                link.horizontalDistance,
+                config.gapDiscovery.maxHorizontalGap);
+        const LinkKey key{
+            link.fromIsland,
+            link.toIsland,
+            quantize(link.start.x, candidateCellSize),
+            quantize(link.start.y, verticalCellSize),
+            quantize(link.start.z, candidateCellSize),
+            quantize(link.end.x, candidateCellSize),
+            quantize(link.end.y, verticalCellSize),
+            quantize(link.end.z, candidateCellSize)};
+        const auto existing = deduplicated.find(key);
+        if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
+            if (recovery) {
+                ++stats.candidates.shortGapRecoveredCount;
+            }
+            deduplicated[key] = link;
+        }
+    };
 
     const auto scan = [&](const std::vector<Boundary>& scanBoundaries, float maxHorizontalGap, bool recovery) {
         const float configuredVerticalExtent =
@@ -176,31 +225,7 @@ BuildStatus discoverCandidates(
                     link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown) {
                     continue;
                 }
-                if (!config.density.candidateDeduplication.enabled) {
-                    if (recovery) {
-                        ++stats.candidates.shortGapRecoveredCount;
-                    }
-                    candidates.push_back(link);
-                    continue;
-                }
-                const float candidateCellSize =
-                    config.density.candidateDeduplication.effectiveCellSize(
-                        link.horizontalDistance,
-                        config.gapDiscovery.maxHorizontalGap);
-                const LinkKey key{
-                    link.fromIsland,
-                    link.toIsland,
-                    quantize(link.start.x, candidateCellSize),
-                    quantize(link.start.z, candidateCellSize),
-                    quantize(link.end.x, candidateCellSize),
-                    quantize(link.end.z, candidateCellSize)};
-                const auto existing = deduplicated.find(key);
-                if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
-                    if (recovery) {
-                        ++stats.candidates.shortGapRecoveredCount;
-                    }
-                    deduplicated[key] = link;
-                }
+                recordCandidate(link, recovery);
             }
         }
         return BuildStatus::Success;

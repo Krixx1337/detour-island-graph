@@ -10,10 +10,10 @@ namespace {
 
 struct BoundaryKey {
     IslandId island = 0;
-    // Guardrail: boundary identity stays lateral. Complex 3D maps often produce many vertically
-    // offset samples for the same ledge corridor; folding y into the key reintroduces boundary
-    // bloat upstream and cascades into millions of extra candidates.
+    // Guardrail: keep lateral sparsity, but do not collapse every stacked 3D ledge into one
+    // identity. Huge layered maps need a small amount of height awareness to preserve distinct exits.
     SpatialCoordinate midpointX = 0;
+    SpatialCoordinate midpointY = 0;
     SpatialCoordinate midpointZ = 0;
     SpatialCoordinate directionX = 0;
     SpatialCoordinate directionZ = 0;
@@ -21,6 +21,7 @@ struct BoundaryKey {
     bool operator==(const BoundaryKey& other) const {
         return island == other.island &&
             midpointX == other.midpointX &&
+            midpointY == other.midpointY &&
             midpointZ == other.midpointZ &&
             directionX == other.directionX &&
             directionZ == other.directionZ;
@@ -32,6 +33,7 @@ struct BoundaryKeyHash {
         std::size_t hash = 0;
         hashCombine(hash, key.island);
         hashCombine(hash, key.midpointX);
+        hashCombine(hash, key.midpointY);
         hashCombine(hash, key.midpointZ);
         hashCombine(hash, key.directionX);
         hashCombine(hash, key.directionZ);
@@ -41,15 +43,17 @@ struct BoundaryKeyHash {
 
 struct BoundaryRepresentativeKey {
     IslandId island = 0;
-    // Guardrail: representative reduction must collapse by x/z corridor, not full 3D midpoint.
-    // Distinct heights along the same lateral ledge are usually sampling noise, not new exits.
+    // Guardrail: representative reduction should still collapse noisy nearby samples, but it must
+    // keep clearly separated vertical layers for maps with stacked traversal routes.
     SpatialCoordinate midpointX = 0;
+    SpatialCoordinate midpointY = 0;
     SpatialCoordinate midpointZ = 0;
     int directionBucket = 0;
 
     bool operator==(const BoundaryRepresentativeKey& other) const {
         return island == other.island &&
             midpointX == other.midpointX &&
+            midpointY == other.midpointY &&
             midpointZ == other.midpointZ &&
             directionBucket == other.directionBucket;
     }
@@ -60,6 +64,7 @@ struct BoundaryRepresentativeKeyHash {
         std::size_t hash = 0;
         hashCombine(hash, key.island);
         hashCombine(hash, key.midpointX);
+        hashCombine(hash, key.midpointY);
         hashCombine(hash, key.midpointZ);
         hashCombine(hash, key.directionBucket);
         return hash;
@@ -118,6 +123,7 @@ BuildStatus extractBoundaries(
     std::unordered_map<BoundaryKey, Boundary, BoundaryKeyHash> boundaries;
     const float cellSize = config.boundaries.effectiveDeduplicationCellSize(
         config.gapDiscovery.maxHorizontalGap);
+    const float verticalCellSize = effectiveVerticalCollapseWindow(config);
     for (const Island& island : graph.islands()) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
@@ -154,6 +160,7 @@ BuildStatus extractBoundaries(
                     const BoundaryKey key{
                         island.id,
                         quantize(midpoint.x, cellSize),
+                        quantize(midpoint.y, verticalCellSize),
                         quantize(midpoint.z, cellSize),
                         quantize(direction.x, cellSize),
                         quantize(direction.z, cellSize)};
@@ -213,6 +220,7 @@ BuildStatus selectBoundaryRepresentatives(
 
     const float cellSize = config.boundaries.effectiveRepresentativeCellSize(
         config.gapDiscovery.maxHorizontalGap);
+    const float verticalCellSize = effectiveVerticalCollapseWindow(config);
     struct RankedBoundary {
         Boundary boundary;
         float rank = 0.0f;
@@ -229,6 +237,7 @@ BuildStatus selectBoundaryRepresentatives(
         const BoundaryRepresentativeKey key{
             boundary.island,
             quantize(boundary.midpoint.x, cellSize),
+            quantize(boundary.midpoint.y, verticalCellSize),
             quantize(boundary.midpoint.z, cellSize),
             config.boundaries.representativeDirectionBucket(direction)};
         const BoundaryRepresentativeCandidate candidate{
