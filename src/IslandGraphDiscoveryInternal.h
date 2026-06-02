@@ -66,6 +66,11 @@ inline float effectiveVerticalCollapseWindow(const BuildConfig& config) {
     return (std::max)(baseExtent * 0.25f, 0.5f);
 }
 
+inline bool hasSymmetricTraversalCapabilities(const BuildConfig& config) {
+    return std::abs(config.gapDiscovery.maxVerticalGapUp - config.gapDiscovery.maxVerticalGapDown) <= 0.001f &&
+        !config.outboundIslandFilter;
+}
+
 BuildStatus extractBoundaries(
     const dtNavMesh& navMesh,
     const IslandGraph& graph,

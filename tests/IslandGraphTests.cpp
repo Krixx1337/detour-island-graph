@@ -820,6 +820,27 @@ TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {
     CHECK(result.graph.edges().size() == result.stats.candidates.acceptedLinkCount);
 }
 
+TEST_CASE("Symmetric candidate dedup collapses reverse duplicates into one edge") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = false;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    config.density.candidateDeduplication.enabled = true;
+    config.density.candidateDeduplication.cellSize = 2.0f;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 10.0f, 0.0f}, {5.0f, 12.0f, 0.0f}, 5.0f, 2.0f},
+        Link{1, 0, {5.0f, 12.0f, 0.0f}, {0.0f, 10.0f, 0.0f}, 5.0f, -2.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(hasLink(graph, 0, 1));
+    CHECK(hasLink(graph, 1, 0));
+}
+
 TEST_CASE("Serializer") {
     const Link direct{0, 2, {0.0f, 0.0f, 0.0f}, {100.0f, 0.0f, 0.0f}, 100.0f, 0.0f};
     const Link firstHop{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};

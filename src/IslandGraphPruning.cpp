@@ -168,6 +168,7 @@ BuildStatus pruneCandidates(
 
     auto& islands = IslandGraphAccess::islands(graph);
     auto& edges = IslandGraphAccess::edges(graph);
+    const bool symmetricCapabilities = hasSymmetricTraversalCapabilities(config);
     edges.clear();
     for (Island& island : islands) {
         island.edgeIndices.clear();
@@ -366,16 +367,17 @@ BuildStatus pruneCandidates(
                 edge.pointB = forward ? link.end : link.start;
                 edge.horizontalDistance = link.horizontalDistance;
                 edge.verticalDeltaAB = edge.pointB.y - edge.pointA.y;
-                edge.traversableAB = forward;
-                edge.traversableBA = !forward;
+                edge.traversableAB = symmetricCapabilities || forward;
+                edge.traversableBA = symmetricCapabilities || !forward;
                 edgeByKey.emplace(key, static_cast<std::uint32_t>(edges.size()));
                 edges.push_back(edge);
                 continue;
             }
             Edge& edge = edges[existing->second];
-            if (forward) {
+            if (symmetricCapabilities || forward) {
                 edge.traversableAB = true;
-            } else {
+            }
+            if (symmetricCapabilities || !forward) {
                 edge.traversableBA = true;
             }
         }

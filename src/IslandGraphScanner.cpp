@@ -10,8 +10,8 @@ namespace detour_island_graph::detail::discovery {
 namespace {
 
 struct LinkKey {
-    IslandId fromIsland = 0;
-    IslandId toIsland = 0;
+    IslandId islandA = 0;
+    IslandId islandB = 0;
     // Guardrail: preserve distinct vertical layers without turning every tiny height change into a
     // brand new corridor. Large 3D maps need finite height awareness instead of an infinite y merge.
     SpatialCoordinate startX = 0;
@@ -22,8 +22,8 @@ struct LinkKey {
     SpatialCoordinate endZ = 0;
 
     bool operator==(const LinkKey& other) const {
-        return fromIsland == other.fromIsland &&
-            toIsland == other.toIsland &&
+        return islandA == other.islandA &&
+            islandB == other.islandB &&
             startX == other.startX &&
             startY == other.startY &&
             startZ == other.startZ &&
@@ -36,8 +36,8 @@ struct LinkKey {
 struct LinkKeyHash {
     std::size_t operator()(const LinkKey& key) const {
         std::size_t hash = 0;
-        hashCombine(hash, key.fromIsland);
-        hashCombine(hash, key.toIsland);
+        hashCombine(hash, key.islandA);
+        hashCombine(hash, key.islandB);
         hashCombine(hash, key.startX);
         hashCombine(hash, key.startY);
         hashCombine(hash, key.startZ);
@@ -106,6 +106,7 @@ BuildStatus discoverCandidates(
     std::vector<dtPolyRef> nearby;
     PolygonCollector collector(nearby);
     std::vector<bool> outboundIslands(graph.islands().size(), true);
+    const bool symmetricCapabilities = hasSymmetricTraversalCapabilities(config);
     const float verticalCellSize = effectiveVerticalCollapseWindow(config);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         config.gapDiscovery.maxHorizontalGap);
@@ -136,15 +137,16 @@ BuildStatus discoverCandidates(
             config.density.candidateDeduplication.effectiveCellSize(
                 link.horizontalDistance,
                 config.gapDiscovery.maxHorizontalGap);
+        const bool normalizeOrder = symmetricCapabilities && link.toIsland < link.fromIsland;
         const LinkKey key{
-            link.fromIsland,
-            link.toIsland,
-            quantize(link.start.x, candidateCellSize),
-            quantize(link.start.y, verticalCellSize),
-            quantize(link.start.z, candidateCellSize),
-            quantize(link.end.x, candidateCellSize),
-            quantize(link.end.y, verticalCellSize),
-            quantize(link.end.z, candidateCellSize)};
+            normalizeOrder ? link.toIsland : link.fromIsland,
+            normalizeOrder ? link.fromIsland : link.toIsland,
+            quantize(normalizeOrder ? link.end.x : link.start.x, candidateCellSize),
+            quantize(normalizeOrder ? link.end.y : link.start.y, verticalCellSize),
+            quantize(normalizeOrder ? link.end.z : link.start.z, candidateCellSize),
+            quantize(normalizeOrder ? link.start.x : link.end.x, candidateCellSize),
+            quantize(normalizeOrder ? link.start.y : link.end.y, verticalCellSize),
+            quantize(normalizeOrder ? link.start.z : link.end.z, candidateCellSize)};
         const auto existing = deduplicated.find(key);
         if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
             if (recovery) {
