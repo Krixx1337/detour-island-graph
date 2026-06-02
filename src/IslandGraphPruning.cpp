@@ -213,6 +213,17 @@ BuildStatus pruneCandidates(
     // Complex 3D maps can fragment one real exit into many tiny neighboring targets; pruning only
     // per pair keeps the full fan-out and recreates link bloat even after dedup elsewhere.
     std::unordered_map<IslandId, std::vector<Link>> acceptedBySource;
+    // Guardrail: source-local collapse must not delete every ingress edge to a nearby target.
+    // Retain the best candidate for each target so density pruning stays sparse without turning
+    // visually connected islands into directed dead ends.
+    std::unordered_map<IslandId, const Link*> preferredIngressByTarget;
+    preferredIngressByTarget.reserve(candidates.size());
+    for (const Link& candidate : candidates) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        preferredIngressByTarget.try_emplace(candidate.toIsland, &candidate);
+    }
     auto& islands = IslandGraphAccess::islands(graph);
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
@@ -243,19 +254,23 @@ BuildStatus pruneCandidates(
             auto& accepted = acceptedBySource[candidate.fromIsland];
             const float radius = pruneRadius(candidate, graph, config);
             const float radiusSquared = radius * radius;
-            duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-                const float startHorizontalDistance =
-                    horizontalDistance(candidate.start, existing.start);
-                const float endHorizontalDistance =
-                    horizontalDistance(candidate.end, existing.end);
-                // Guardrail: fragmented maps often produce many links that differ only by which
-                // tiny target island owns the far endpoint. Collapse those as one local corridor
-                // so source islands keep meaningful exits instead of a full fan-out neighborhood.
-                // Keep this horizontal-first check. Replacing it with full 3D distance makes
-                // vertically offset samples look unique again and brings back severe link bloat.
-                return (startHorizontalDistance * startHorizontalDistance) <= radiusSquared &&
-                    (endHorizontalDistance * endHorizontalDistance) <= radiusSquared;
-            });
+            const bool isPreferredIngress =
+                preferredIngressByTarget[candidate.toIsland] == &candidate;
+            if (!isPreferredIngress) {
+                duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
+                    const float startHorizontalDistance =
+                        horizontalDistance(candidate.start, existing.start);
+                    const float endHorizontalDistance =
+                        horizontalDistance(candidate.end, existing.end);
+                    // Guardrail: fragmented maps often produce many links that differ only by which
+                    // tiny target island owns the far endpoint. Collapse those as one local corridor
+                    // so source islands keep meaningful exits instead of a full fan-out neighborhood.
+                    // Keep this horizontal-first check. Replacing it with full 3D distance makes
+                    // vertically offset samples look unique again and brings back severe link bloat.
+                    return (startHorizontalDistance * startHorizontalDistance) <= radiusSquared &&
+                        (endHorizontalDistance * endHorizontalDistance) <= radiusSquared;
+                });
+            }
             if (!duplicate) {
                 accepted.push_back(candidate);
             } else {

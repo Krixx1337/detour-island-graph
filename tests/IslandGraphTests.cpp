@@ -744,7 +744,7 @@ TEST_CASE("Boundary representative reduction collapses stacked vertical duplicat
     CHECK(stats.boundaries.representativeTrimmedCount == 1);
 }
 
-TEST_CASE("Local pruning collapses nearby source-side corridors even across tiny target islands") {
+TEST_CASE("Local pruning collapses nearby source-side corridors while preserving target ingress") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(8.0f, 8.0f, 8.0f);
     config.density.localPruning.enabled = true;
@@ -760,15 +760,17 @@ TEST_CASE("Local pruning collapses nearby source-side corridors even across tiny
     std::vector<Link> candidates{
         Link{0, 1, {0.0f, 0.0f, 0.0f}, {5.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
         Link{0, 2, {0.0f, 5.0f, 0.0f}, {5.0f, 5.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 2, {0.0f, 6.0f, 0.0f}, {5.0f, 6.0f, 0.0f}, 5.0f, 0.0f},
         Link{0, 1, {0.0f, 0.0f, 5.0f}, {5.0f, 0.0f, 5.0f}, 5.0f, 0.0f}};
 
     const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
 
     REQUIRE(status == BuildStatus::Success);
     REQUIRE(graph.findIsland(0) != nullptr);
-    CHECK(graph.findIsland(0)->outgoingLinks.size() == 2);
+    CHECK(graph.findIsland(0)->outgoingLinks.size() == 3);
     CHECK(stats.candidates.localPruningRejectCount == 1);
     CHECK(graph.findIsland(0)->outgoingLinks[0].toIsland == 1);
+    CHECK(hasLink(graph, 0, 2));
 }
 
 TEST_CASE("Serializer") {
