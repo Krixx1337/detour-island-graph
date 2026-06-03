@@ -11,6 +11,7 @@ It identifies disconnected navmesh islands, discovers potential gap crossings be
 - **Granular graph shaping:** Density and pruning stages can be toggled and tuned independently. Applications can retain conservative defaults, request a sparse graph, build an unpruned reference graph, or apply a custom policy.
 - **Layer-aware by default:** Discovery and pruning preserve clearly separated vertical routes while still collapsing nearby sampling noise, which keeps stacked 3D worlds connected without exploding graph density.
 - **Single physical corridor model:** The graph stores one edge for a discovered island-to-island corridor and records which traversal directions are valid. Symmetric climb/drop capabilities naturally produce one bi-directional edge; asymmetric capabilities can still represent one-way climb/drop routes without duplicating corridor geometry.
+- **Symmetric-first traversal:** The library is optimized and most heavily exercised for agents whose climb and drop capabilities are symmetric. Asymmetric climb/drop limits are represented with directional traversal flags, but applications with strongly one-way movement should validate the resulting routes against their movement model.
 - **Detour-native integration:** The library operates on `dtNavMesh`, uses Detour query filters, and does not impose an engine-specific vector type or threading model.
 - **Portable persistence:** Graphs can be serialized through standard C++ streams.
 
