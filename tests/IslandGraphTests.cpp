@@ -956,16 +956,31 @@ TEST_CASE("Graph health components follow traversal direction") {
     const Link oneWay{0, 1, {}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
     const Link twoWay{1, 2, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
     IslandGraph graph = makeGraph(
-        {makeIsland(0), makeIsland(1), makeIsland(2)},
+        {
+            makeIsland(0, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}),
+            makeIsland(1, {11, 12, 13, 14, 15, 16, 17, 18, 19, 20}),
+            makeIsland(2, {21, 22, 23, 24, 25, 26, 27, 28, 29, 30}),
+            makeIsland(3, {31, 32})
+        },
         {makeEdge(oneWay), makeEdge(twoWay, true)});
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[0].massScore = 0.1f;
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[1].massScore = 0.8f;
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[2].massScore = 0.9f;
+    detour_island_graph::detail::IslandGraphAccess::islands(graph)[3].massScore = 0.05f;
     BuildStats stats;
 
     const BuildStatus status =
         detour_island_graph::detail::calculateGraphHealthStats(graph, BuildOptions{}, stats);
 
     REQUIRE(status == BuildStatus::Success);
-    CHECK(stats.connectedComponentCount == 2);
+    CHECK(stats.connectedComponentCount == 3);
     CHECK(stats.largestConnectedComponentIslandCount == 2);
+    CHECK(stats.largestConnectedComponentPolygonCount == 20);
+    CHECK(stats.largestConnectedComponentMass == doctest::Approx(1.7));
+    CHECK(stats.isolatedIslandCount == 1);
+    CHECK(stats.isolatedIslandPolygonCount == 2);
+    CHECK(stats.isolatedIslandMass == doctest::Approx(0.05));
+    CHECK(stats.totalIslandMass == doctest::Approx(1.85));
     CHECK(stats.islandsWithOutgoingLinks == 3);
     CHECK(stats.islandsWithIncomingLinks == 2);
 }

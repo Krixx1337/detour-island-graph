@@ -275,6 +275,11 @@ struct BuildStats {
     std::size_t isolatedIslandCount = 0;
     std::size_t connectedComponentCount = 0;
     std::size_t largestConnectedComponentIslandCount = 0;
+    std::size_t isolatedIslandPolygonCount = 0;
+    std::size_t largestConnectedComponentPolygonCount = 0;
+    double totalIslandMass = 0.0;
+    double isolatedIslandMass = 0.0;
+    double largestConnectedComponentMass = 0.0;
     std::size_t maxOutgoingLinksOnIsland = 0;
     std::size_t p95OutgoingLinksOnIsland = 0;
     std::size_t maxIncomingLinksOnIsland = 0;

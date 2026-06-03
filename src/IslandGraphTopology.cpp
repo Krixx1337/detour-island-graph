@@ -278,8 +278,12 @@ BuildStatus calculateGraphHealthStats(
         if (incomingDegrees[island] > 0) {
             ++stats.islandsWithIncomingLinks;
         }
+        const Island& graphIsland = graph.islands()[island];
+        stats.totalIslandMass += static_cast<double>(graphIsland.massScore);
         if (outgoingDegrees[island] == 0 && incomingDegrees[island] == 0) {
             ++stats.isolatedIslandCount;
+            stats.isolatedIslandPolygonCount += graphIsland.polygons.size();
+            stats.isolatedIslandMass += static_cast<double>(graphIsland.massScore);
         }
     }
 
@@ -339,6 +343,8 @@ BuildStatus calculateGraphHealthStats(
         }
         ++stats.connectedComponentCount;
         std::size_t componentSize = 0;
+        std::size_t componentPolygonCount = 0;
+        double componentMass = 0.0;
         std::vector<IslandId> stack{*orderIt};
         visited[*orderIt] = true;
         while (!stack.empty()) {
@@ -348,6 +354,9 @@ BuildStatus calculateGraphHealthStats(
             const IslandId current = stack.back();
             stack.pop_back();
             ++componentSize;
+            const Island& graphIsland = graph.islands()[current];
+            componentPolygonCount += graphIsland.polygons.size();
+            componentMass += static_cast<double>(graphIsland.massScore);
             for (IslandId neighbor : reverseNeighbors[current]) {
                 if (!visited[neighbor]) {
                     visited[neighbor] = true;
@@ -355,8 +364,11 @@ BuildStatus calculateGraphHealthStats(
                 }
             }
         }
-        stats.largestConnectedComponentIslandCount =
-            (std::max)(stats.largestConnectedComponentIslandCount, componentSize);
+        if (componentSize > stats.largestConnectedComponentIslandCount) {
+            stats.largestConnectedComponentIslandCount = componentSize;
+            stats.largestConnectedComponentPolygonCount = componentPolygonCount;
+            stats.largestConnectedComponentMass = componentMass;
+        }
     }
     return BuildStatus::Success;
 }
