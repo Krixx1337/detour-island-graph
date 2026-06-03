@@ -130,8 +130,12 @@ bool validate(const BuildConfig& config, std::string& message) {
                  std::isfinite(density.globalPruning.nearRadiusRatio) &&
                  density.globalPruning.nearRadiusRatio > 0.0f &&
                  std::isfinite(density.globalPruning.farRadiusRatio) &&
-                 density.globalPruning.farRadiusRatio > 0.0f),
-            "Enabled global pruning requires a non-negative finite radius and positive finite near/far radius ratios.")) return false;
+                 density.globalPruning.farRadiusRatio > 0.0f &&
+                 std::isfinite(density.globalPruning.lowMassRadiusScale) &&
+                 density.globalPruning.lowMassRadiusScale > 0.0f &&
+                 std::isfinite(density.globalPruning.highMassRadiusScale) &&
+                 density.globalPruning.highMassRadiusScale > 0.0f),
+            "Enabled global pruning requires a non-negative finite radius, positive finite near/far radius ratios, and positive finite mass radius scales.")) return false;
     if (!require(
             !density.spannerPruning.enabled ||
                 (std::isfinite(density.spannerPruning.pathRatio) &&

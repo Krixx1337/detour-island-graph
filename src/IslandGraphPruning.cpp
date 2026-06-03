@@ -71,6 +71,21 @@ float pruneRadius(const Link& link, const IslandGraph& graph, const BuildConfig&
     return config.density.localPruning.effectiveBaseRadius(config.gapDiscovery.maxHorizontalGap) * scale;
 }
 
+float globalPruneRadius(
+    const Link& link,
+    IslandId endpointIsland,
+    const IslandGraph& graph,
+    const BuildConfig& config) {
+    float radius = config.density.globalPruning.effectiveRadius(
+        link.horizontalDistance,
+        config.gapDiscovery.maxHorizontalGap);
+    if (config.massAware.enabled && endpointIsland < graph.islands().size()) {
+        radius *= config.density.globalPruning.massRadiusScaleFor(
+            graph.islands()[endpointIsland].massScore);
+    }
+    return radius;
+}
+
 bool withinLocalPruningWindow(
     const Link& candidate,
     const Link& existing,
@@ -286,32 +301,14 @@ BuildStatus pruneCandidates(
     // per pair keeps the full fan-out and recreates link bloat even after dedup elsewhere.
     std::unordered_map<IslandId, std::vector<Link>> acceptedBySource;
     const float verticalWindow = effectiveVerticalCollapseWindow(config);
+    std::vector<Link> locallyAccepted;
+    locallyAccepted.reserve(candidates.size());
     std::vector<std::vector<Link>> acceptedOutgoing(islands.size());
     std::vector<std::vector<Link>> spannerOutgoing(islands.size());
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
-        if (config.density.globalPruning.enabled) {
-            const float globalRadius = config.density.globalPruning.effectiveRadius(
-                candidate.horizontalDistance,
-                config.gapDiscovery.maxHorizontalGap);
-            if (isOccupiedGlobalPoint(candidate.start, globalRadius) ||
-                isOccupiedGlobalPoint(candidate.end, globalRadius)) {
-                ++stats.candidates.globalPruningRejectCount;
-                continue;
-            }
-        }
-        if (config.density.spannerPruning.enabled &&
-            hasAcceptableIndirectRoute(
-                candidate,
-                spannerOutgoing,
-                config.density.spannerPruning.pathRatio,
-                config.density.spannerPruning.verticalWeight)) {
-            ++stats.candidates.spannerPruningRejectCount;
-            continue;
-        }
-
         bool duplicate = false;
         if (config.density.localPruning.enabled) {
             auto& accepted = acceptedBySource[candidate.fromIsland];
@@ -342,20 +339,50 @@ BuildStatus pruneCandidates(
             }
         }
         if (!duplicate) {
-            acceptedOutgoing[candidate.fromIsland].push_back(candidate);
-            spannerOutgoing[candidate.fromIsland].push_back(candidate);
-            if (symmetricCapabilities && candidate.toIsland < spannerOutgoing.size()) {
-                spannerOutgoing[candidate.toIsland].push_back(reverseLink(candidate));
+            locallyAccepted.push_back(candidate);
+        }
+    }
+
+    for (const Link& candidate : locallyAccepted) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (config.density.globalPruning.enabled) {
+            const float sourceRadius = globalPruneRadius(candidate, candidate.fromIsland, graph, config);
+            const float targetRadius = globalPruneRadius(candidate, candidate.toIsland, graph, config);
+            if (isOccupiedGlobalPoint(candidate.start, sourceRadius) ||
+                isOccupiedGlobalPoint(candidate.end, targetRadius)) {
+                ++stats.candidates.globalPruningRejectCount;
+                continue;
             }
-            ++stats.candidates.acceptedLinkCount;
-            if (config.density.globalPruning.enabled) {
-                occupyGlobalPoint(candidate.start);
-                occupyGlobalPoint(candidate.end);
-            }
+        }
+        if (config.density.spannerPruning.enabled &&
+            hasAcceptableIndirectRoute(
+                candidate,
+                spannerOutgoing,
+                config.density.spannerPruning.pathRatio,
+                config.density.spannerPruning.verticalWeight)) {
+            ++stats.candidates.spannerPruningRejectCount;
+            continue;
+        }
+
+        acceptedOutgoing[candidate.fromIsland].push_back(candidate);
+        spannerOutgoing[candidate.fromIsland].push_back(candidate);
+        if (symmetricCapabilities && candidate.toIsland < spannerOutgoing.size()) {
+            spannerOutgoing[candidate.toIsland].push_back(reverseLink(candidate));
+        }
+        ++stats.candidates.acceptedLinkCount;
+        if (config.density.globalPruning.enabled) {
+            occupyGlobalPoint(candidate.start);
+            occupyGlobalPoint(candidate.end);
         }
     }
 
     collapseAcceptedSamePairBands(acceptedOutgoing, verticalWindow, stats);
+    stats.candidates.acceptedLinkCount = 0;
+    for (const auto& outgoing : acceptedOutgoing) {
+        stats.candidates.acceptedLinkCount += outgoing.size();
+    }
 
     struct EdgeKey {
         IslandId islandA = 0;

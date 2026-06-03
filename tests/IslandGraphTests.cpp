@@ -659,6 +659,16 @@ TEST_CASE("Builder density tuning") {
         invalidGlobalPruningConfig.density.globalPruning.farRadiusRatio = -0.01f;
         CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
     }
+    SUBCASE("Rejects invalid global prune mass radius scales") {
+        BuildConfig invalidGlobalPruningConfig(30.0f, 30.0f, 30.0f);
+        invalidGlobalPruningConfig.density.globalPruning.enabled = true;
+        invalidGlobalPruningConfig.density.globalPruning.lowMassRadiusScale = 0.0f;
+        CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
+
+        invalidGlobalPruningConfig.density.globalPruning.lowMassRadiusScale = 1.0f;
+        invalidGlobalPruningConfig.density.globalPruning.highMassRadiusScale = -0.01f;
+        CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
+    }
     SUBCASE("Enabled spanner pruning does not increase accepted links") {
         BuildConfig spannerConfig = buildConfig;
         spannerConfig.density.spannerPruning.enabled = true;
@@ -934,6 +944,56 @@ TEST_CASE("Symmetric local pruning collapses opposite-direction corridor samples
     CHECK(stats.candidates.localPruningRejectCount == 1);
     CHECK(hasLink(graph, 0, 1));
     CHECK(hasLink(graph, 1, 0));
+}
+
+TEST_CASE("Global pruning runs after local pruning") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 3.0f;
+    config.density.globalPruning.enabled = true;
+    config.density.globalPruning.radius = 5.0f;
+    config.density.spannerPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 10.0f, 0.0f}, {5.0f, 12.0f, 0.0f}, 5.0f, 2.0f},
+        Link{0, 1, {1.0f, 10.1f, 0.0f}, {6.0f, 12.1f, 0.0f}, 5.0f, 2.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(stats.candidates.globalPruningRejectCount == 0);
+}
+
+TEST_CASE("Mass-aware global pruning collapses low-mass endpoint clutter proportionally") {
+    IslandGraph graph({makeIsland(0), makeIsland(1), makeIsland(2), makeIsland(3)});
+    auto& islands = detour_island_graph::detail::IslandGraphAccess::islands(graph);
+    islands[0].massScore = 1.0f;
+    islands[1].massScore = 1.0f;
+    islands[2].massScore = 0.0f;
+    islands[3].massScore = 0.0f;
+    BuildConfig config(10.0f, 10.0f, 10.0f);
+    config.massAware.enabled = true;
+    config.density.localPruning.enabled = false;
+    config.density.globalPruning.enabled = true;
+    config.density.globalPruning.radius = 1.0f;
+    config.density.globalPruning.lowMassRadiusScale = 3.0f;
+    config.density.globalPruning.highMassRadiusScale = 0.5f;
+    config.density.spannerPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, 10.0f, 0.0f},
+        Link{2, 3, {2.0f, 0.0f, 0.0f}, {20.0f, 0.0f, 0.0f}, 10.0f, 0.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(stats.candidates.globalPruningRejectCount == 1);
+    CHECK(hasLink(graph, 0, 1));
+    CHECK_FALSE(hasLink(graph, 2, 3));
 }
 
 TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {

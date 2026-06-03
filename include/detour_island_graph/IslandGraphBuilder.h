@@ -103,6 +103,8 @@ struct GlobalPruningTuning {
     float radius = 0.0f; // 0.0 = auto: interpolate ratios across the horizontal gap range
     float nearRadiusRatio = 0.5f;
     float farRadiusRatio = 0.5f;
+    float lowMassRadiusScale = 1.0f;
+    float highMassRadiusScale = 1.0f;
 
     float effectiveRadius(float horizontalDistance, float maxHorizontalGap) const noexcept {
         if (radius > 0.0f) {
@@ -111,6 +113,11 @@ struct GlobalPruningTuning {
         const float alpha = std::clamp(horizontalDistance / maxHorizontalGap, 0.0f, 1.0f);
         const float ratio = nearRadiusRatio + (alpha * (farRadiusRatio - nearRadiusRatio));
         return maxHorizontalGap * ratio;
+    }
+
+    float massRadiusScaleFor(float massScore) const noexcept {
+        return lowMassRadiusScale +
+            ((highMassRadiusScale - lowMassRadiusScale) * massScore);
     }
 };
 
