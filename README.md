@@ -6,10 +6,10 @@ It identifies disconnected navmesh islands, discovers potential gap crossings be
 
 ## Design
 
-- **Responsive, map-agnostic tuning:** Required gap limits describe agent capabilities. Density defaults scale relative to those limits, similar to responsive layout units, rather than assuming fixed map units or dimensions.
-- **Continuous density tuning:** Graph-shaping defaults favor proportional scaling and gradual interpolation over hidden fixed thresholds. Hard limits remain explicit when they represent agent capabilities.
+- **Responsive, map-agnostic tuning:** Required gap limits describe agent capabilities. Density defaults scale relative to the largest configured traversal extent rather than assuming fixed map units or dimensions.
+- **Fixed 3D density tuning:** Graph-shaping uses explicit 3D voxel sizes and 3D pruning radii. Hard limits remain explicit when they represent agent capabilities.
 - **Granular graph shaping:** Density and pruning stages can be toggled and tuned independently. Applications can retain conservative defaults, request a sparse graph, build an unpruned reference graph, or apply a custom policy.
-- **Layer-aware graph shaping:** Discovery and pruning preserve clearly separated vertical routes while collapsing nearby sampling noise, keeping stacked 3D worlds connected without exploding graph density.
+- **Layer-aware graph shaping:** Discovery and pruning preserve clearly separated 3D routes while collapsing nearby sampling noise, keeping stacked worlds connected without exploding graph density.
 - **Symmetric-first corridor model:** The graph stores one edge per discovered island-to-island corridor and records valid traversal directions on that edge. Symmetric climb/drop capabilities naturally produce one bi-directional edge; asymmetric limits can represent one-way routes without duplicating corridor geometry.
 - **Detour-native integration:** The library operates on `dtNavMesh`, uses Detour query filters, and does not impose an engine-specific vector type or threading model.
 - **Portable persistence:** Graphs can be serialized through standard C++ streams.
@@ -52,8 +52,8 @@ Start with a profile and customize only when the resulting graph or build cost r
 - Use the unpruned profile as a diagnostic reference, not as a typical production configuration.
 - Treat gap limits as movement capabilities. Use density and pruning controls to shape graph size.
 - Expect symmetric climb/drop limits to produce bi-directional traversal on a single stored corridor edge. With asymmetric climb/drop limits, the same edge model records only the physically valid traversal direction(s).
-- Increase `density.verticalLayerCollapseRatio` to collapse nearby vertical sampling noise more aggressively while still scaling with the configured movement limits.
-- Prefer relative tuning ratios over fixed distances unless a value represents a real movement constraint.
+- Increase `density.candidateDeduplication.cellSize` or `density.localPruning.radius` to collapse nearby 3D sampling noise more aggressively.
+- Prefer explicit voxel sizes and radii when debugging sparse graph output; the `*Ratio` fields are only auto defaults relative to traversal capability.
 - Adjust one graph-shaping stage at a time. Compare connectivity, accepted-link density, link distribution, and build cost after each change.
 
 Query the high-level graph with `IslandGraphPathfinder`:

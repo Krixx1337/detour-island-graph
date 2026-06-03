@@ -101,48 +101,32 @@ bool validate(const BuildConfig& config, std::string& message) {
             !density.candidateDeduplication.enabled ||
                 (std::isfinite(density.candidateDeduplication.cellSize) &&
                  density.candidateDeduplication.cellSize >= 0.0f &&
-                 std::isfinite(density.candidateDeduplication.nearCellSizeRatio) &&
-                 density.candidateDeduplication.nearCellSizeRatio > 0.0f &&
-                 std::isfinite(density.candidateDeduplication.farCellSizeRatio) &&
-                 density.candidateDeduplication.farCellSizeRatio > 0.0f),
-            "Enabled candidate deduplication requires a non-negative finite cell size and positive finite near/far cell-size ratios.")) return false;
+                 std::isfinite(density.candidateDeduplication.cellSizeRatio) &&
+                 density.candidateDeduplication.cellSizeRatio > 0.0f),
+            "Enabled candidate deduplication requires a non-negative finite cell size and a positive finite cell-size ratio.")) return false;
     if (!require(
             !density.localPruning.enabled ||
-                (std::isfinite(density.localPruning.baseRadius) &&
-                 density.localPruning.baseRadius >= 0.0f &&
-                 std::isfinite(density.localPruning.baseRadiusRatio) &&
-                 density.localPruning.baseRadiusRatio > 0.0f),
-            "Enabled local pruning requires a non-negative finite base radius and a positive finite base-radius ratio.")) return false;
-    if (!require(
-            !density.localPruning.enabled ||
-                 !density.localPruning.enableDistanceScaling ||
-                (std::isfinite(density.localPruning.distanceScale) &&
-                 density.localPruning.distanceScale >= 0.0f &&
-                 std::isfinite(density.localPruning.distanceScaleRatio) &&
-                 density.localPruning.distanceScaleRatio >= 0.0f &&
-                 std::isfinite(density.localPruning.maxRadiusScale) &&
-                 density.localPruning.maxRadiusScale >= 1.0f),
-            "Enabled local-pruning distance scaling requires non-negative finite distance scales and a finite maximum radius scale of at least one.")) return false;
+                (std::isfinite(density.localPruning.radius) &&
+                 density.localPruning.radius >= 0.0f &&
+                 std::isfinite(density.localPruning.radiusRatio) &&
+                 density.localPruning.radiusRatio > 0.0f),
+            "Enabled local pruning requires a non-negative finite radius and a positive finite radius ratio.")) return false;
     if (!require(
             !density.globalPruning.enabled ||
                 (std::isfinite(density.globalPruning.radius) &&
                  density.globalPruning.radius >= 0.0f &&
-                 std::isfinite(density.globalPruning.nearRadiusRatio) &&
-                 density.globalPruning.nearRadiusRatio > 0.0f &&
-                 std::isfinite(density.globalPruning.farRadiusRatio) &&
-                 density.globalPruning.farRadiusRatio > 0.0f &&
+                 std::isfinite(density.globalPruning.radiusRatio) &&
+                 density.globalPruning.radiusRatio > 0.0f &&
                  std::isfinite(density.globalPruning.lowMassRadiusScale) &&
                  density.globalPruning.lowMassRadiusScale > 0.0f &&
                  std::isfinite(density.globalPruning.highMassRadiusScale) &&
                  density.globalPruning.highMassRadiusScale > 0.0f),
-            "Enabled global pruning requires a non-negative finite radius, positive finite near/far radius ratios, and positive finite mass radius scales.")) return false;
+            "Enabled global pruning requires a non-negative finite radius, a positive finite radius ratio, and positive finite mass radius scales.")) return false;
     if (!require(
             !density.spannerPruning.enabled ||
                 (std::isfinite(density.spannerPruning.pathRatio) &&
-                 density.spannerPruning.pathRatio >= 1.0f &&
-                 std::isfinite(density.spannerPruning.verticalWeight) &&
-                 density.spannerPruning.verticalWeight >= 0.0f),
-            "Enabled spanner pruning requires a finite path ratio of at least one and a non-negative finite vertical weight.")) return false;
+                 density.spannerPruning.pathRatio >= 1.0f),
+            "Enabled spanner pruning requires a finite path ratio of at least one.")) return false;
     return true;
 }
 

@@ -222,7 +222,7 @@ detour_island_graph::Island makeIsland(
 detour_island_graph::BuildConfig disconnectedBuildConfig() {
     detour_island_graph::BuildConfig config(3.0f, 2.0f, 4.0f);
     config.boundaries.deduplicationCellSize = 0.5f;
-    config.density.localPruning.baseRadius = 0.5f;
+    config.density.localPruning.radius = 0.5f;
     return config;
 }
 
@@ -493,7 +493,7 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Local pruning can be disabled independently") {
         BuildConfig unprunedConfig = buildConfig;
         unprunedConfig.density.localPruning.enabled = false;
-        unprunedConfig.density.localPruning.baseRadius = 0.0f;
+        unprunedConfig.density.localPruning.radius = 0.0f;
         const BuildResult result = builder.build(*navMesh, unprunedConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount >= baseline.stats.candidates.acceptedLinkCount);
@@ -601,21 +601,6 @@ TEST_CASE("Builder density tuning") {
         invalidRepresentativeConfig.boundaries.representativeDirectionBuckets = 0;
         CHECK(builder.build(*navMesh, invalidRepresentativeConfig).status == BuildStatus::InvalidConfiguration);
     }
-    SUBCASE("Enabled density does not increase accepted links") {
-        BuildConfig densityConfig = buildConfig;
-        densityConfig.density.localPruning.enableDistanceScaling = true;
-        densityConfig.density.localPruning.distanceScale = 0.25f;
-        densityConfig.density.localPruning.maxRadiusScale = 2.0f;
-        const BuildResult densityBuild = builder.build(*navMesh, densityConfig);
-        REQUIRE(static_cast<bool>(densityBuild));
-        CHECK(densityBuild.stats.candidates.acceptedLinkCount <= baseline.stats.candidates.acceptedLinkCount);
-    }
-    SUBCASE("Rejects negative density distance scale") {
-        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
-        invalidDensityConfig.density.localPruning.enableDistanceScaling = true;
-        invalidDensityConfig.density.localPruning.distanceScale = -0.01f;
-        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
-    }
     SUBCASE("Rejects invalid candidate deduplication cell sizes") {
         BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
         invalidDensityConfig.density.candidateDeduplication.enabled = true;
@@ -623,13 +608,7 @@ TEST_CASE("Builder density tuning") {
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
 
         invalidDensityConfig.density.candidateDeduplication.cellSize = 0.0f;
-        invalidDensityConfig.density.candidateDeduplication.farCellSizeRatio = 0.0f;
-        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
-    }
-    SUBCASE("Rejects density caps below one") {
-        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
-        invalidDensityConfig.density.localPruning.enableDistanceScaling = true;
-        invalidDensityConfig.density.localPruning.maxRadiusScale = 0.99f;
+        invalidDensityConfig.density.candidateDeduplication.cellSizeRatio = 0.0f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects invalid vertical layer collapse ratios") {
@@ -643,8 +622,7 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Enabled global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
         globalPruningConfig.density.globalPruning.enabled = true;
-        globalPruningConfig.density.globalPruning.nearRadiusRatio = 2.0f;
-        globalPruningConfig.density.globalPruning.farRadiusRatio = 2.0f;
+        globalPruningConfig.density.globalPruning.radiusRatio = 2.0f;
         const BuildResult result = builder.build(*navMesh, globalPruningConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.acceptedLinkCount <= baseline.stats.candidates.acceptedLinkCount);
@@ -652,11 +630,7 @@ TEST_CASE("Builder density tuning") {
     SUBCASE("Rejects negative global prune radius ratios") {
         BuildConfig invalidGlobalPruningConfig(30.0f, 30.0f, 30.0f);
         invalidGlobalPruningConfig.density.globalPruning.enabled = true;
-        invalidGlobalPruningConfig.density.globalPruning.nearRadiusRatio = -0.01f;
-        CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
-
-        invalidGlobalPruningConfig.density.globalPruning.nearRadiusRatio = 0.5f;
-        invalidGlobalPruningConfig.density.globalPruning.farRadiusRatio = -0.01f;
+        invalidGlobalPruningConfig.density.globalPruning.radiusRatio = -0.01f;
         CHECK(builder.build(*navMesh, invalidGlobalPruningConfig).status == BuildStatus::InvalidConfiguration);
     }
     SUBCASE("Rejects invalid global prune mass radius scales") {
@@ -788,11 +762,11 @@ TEST_CASE("Boundary representative reduction preserves clearly separated vertica
     CHECK(stats.boundaries.representativeTrimmedCount == 0);
 }
 
-TEST_CASE("Local pruning collapses nearby source-side corridors across fragmented targets") {
+TEST_CASE("Local pruning collapses only nearby 3D corridors across fragmented targets") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(8.0f, 8.0f, 8.0f);
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 3.0f;
+    config.density.localPruning.radius = 3.0f;
     config.density.spannerPruning.enabled = false;
     config.density.globalPruning.enabled = false;
     config.massAware.enabled = true;
@@ -811,8 +785,8 @@ TEST_CASE("Local pruning collapses nearby source-side corridors across fragmente
 
     REQUIRE(status == BuildStatus::Success);
     REQUIRE(graph.findIsland(0) != nullptr);
-    CHECK(graph.findIsland(0)->edgeIndices.size() == 2);
-    CHECK(stats.candidates.localPruningRejectCount == 2);
+    CHECK(graph.findIsland(0)->edgeIndices.size() == 3);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
     REQUIRE_FALSE(graph.findIsland(0)->edgeIndices.empty());
     const auto firstTraversal = makeTraversalLink(
         graph.edges()[graph.findIsland(0)->edgeIndices[0]],
@@ -822,11 +796,11 @@ TEST_CASE("Local pruning collapses nearby source-side corridors across fragmente
     CHECK(hasLink(graph, 0, 2));
 }
 
-TEST_CASE("Local pruning aggressively collapses same-pair horizontal variants on one layer") {
+TEST_CASE("Local pruning preserves distant same-pair corridors") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 1.0f;
+    config.density.localPruning.radius = 1.0f;
     config.density.spannerPruning.enabled = false;
     config.density.globalPruning.enabled = false;
     BuildStats stats;
@@ -837,8 +811,8 @@ TEST_CASE("Local pruning aggressively collapses same-pair horizontal variants on
     const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
 
     REQUIRE(status == BuildStatus::Success);
-    CHECK(graph.edges().size() == 1);
-    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(graph.edges().size() == 2);
+    CHECK(stats.candidates.localPruningRejectCount == 0);
     CHECK(hasLink(graph, 0, 1));
 }
 
@@ -846,7 +820,7 @@ TEST_CASE("Local pruning preserves same-pair links on distinct vertical layers")
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 1.0f;
+    config.density.localPruning.radius = 1.0f;
     config.density.spannerPruning.enabled = false;
     config.density.globalPruning.enabled = false;
     BuildStats stats;
@@ -861,12 +835,12 @@ TEST_CASE("Local pruning preserves same-pair links on distinct vertical layers")
     CHECK(stats.candidates.localPruningRejectCount == 0);
 }
 
-TEST_CASE("Vertical layer collapse ratio controls near-layer same-pair sparsity") {
+TEST_CASE("Local pruning ignores vertical layer collapse ratio for corridor identity") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.density.verticalLayerCollapseRatio = 0.4f;
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 1.0f;
+    config.density.localPruning.radius = 1.0f;
     config.density.spannerPruning.enabled = false;
     config.density.globalPruning.enabled = false;
     BuildStats stats;
@@ -877,15 +851,15 @@ TEST_CASE("Vertical layer collapse ratio controls near-layer same-pair sparsity"
     const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
 
     REQUIRE(status == BuildStatus::Success);
-    CHECK(graph.edges().size() == 1);
-    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(graph.edges().size() == 2);
+    CHECK(stats.candidates.localPruningRejectCount == 0);
 }
 
-TEST_CASE("Local pruning collapses same-pair links with matching vertical-distance bands") {
+TEST_CASE("Local pruning preserves same-pair links with distant 3D endpoints") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 1.0f;
+    config.density.localPruning.radius = 1.0f;
     config.density.spannerPruning.enabled = false;
     config.density.globalPruning.enabled = false;
     BuildStats stats;
@@ -896,8 +870,8 @@ TEST_CASE("Local pruning collapses same-pair links with matching vertical-distan
     const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
 
     REQUIRE(status == BuildStatus::Success);
-    CHECK(graph.edges().size() == 1);
-    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(graph.edges().size() == 2);
+    CHECK(stats.candidates.localPruningRejectCount == 0);
 }
 
 TEST_CASE("Symmetric spanner sees reverse traversal without duplicating stored edges") {
@@ -929,7 +903,7 @@ TEST_CASE("Symmetric local pruning collapses opposite-direction corridor samples
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 1.0f;
+    config.density.localPruning.radius = 1.0f;
     config.density.spannerPruning.enabled = false;
     config.density.globalPruning.enabled = false;
     BuildStats stats;
@@ -950,7 +924,7 @@ TEST_CASE("Global pruning runs after local pruning") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.density.localPruning.enabled = true;
-    config.density.localPruning.baseRadius = 3.0f;
+    config.density.localPruning.radius = 3.0f;
     config.density.globalPruning.enabled = true;
     config.density.globalPruning.radius = 5.0f;
     config.density.spannerPruning.enabled = false;
@@ -1000,7 +974,7 @@ TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {
     const auto navMesh = buildDisconnectedNavMesh();
     BuildConfig config(30.0f, 30.0f, 30.0f);
     config.boundaries.deduplicationCellSize = 0.5f;
-    config.density.localPruning.baseRadius = 0.5f;
+    config.density.localPruning.radius = 0.5f;
 
     const BuildResult result = IslandGraphBuilder{}.build(*navMesh, config);
 

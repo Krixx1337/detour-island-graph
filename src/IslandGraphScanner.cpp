@@ -49,17 +49,19 @@ struct LinkKeyHash {
 };
 
 struct PairScanKey {
-    IslandId fromIsland = 0;
-    IslandId toIsland = 0;
-    // Guardrail: scan suppression tracks lateral boundary cells so repeated probes of the same
-    // corridor at slightly different heights do not explode discovery cost on complex 3D maps.
+    IslandId islandA = 0;
+    IslandId islandB = 0;
+    // Guardrail: scan suppression uses a 3D cell so sparse builds do not erase stacked routes
+    // that share lateral coordinates but live on different vertical layers.
     SpatialCoordinate midpointX = 0;
+    SpatialCoordinate midpointY = 0;
     SpatialCoordinate midpointZ = 0;
 
     bool operator==(const PairScanKey& other) const {
-        return fromIsland == other.fromIsland &&
-            toIsland == other.toIsland &&
+        return islandA == other.islandA &&
+            islandB == other.islandB &&
             midpointX == other.midpointX &&
+            midpointY == other.midpointY &&
             midpointZ == other.midpointZ;
     }
 };
@@ -67,9 +69,10 @@ struct PairScanKey {
 struct PairScanKeyHash {
     std::size_t operator()(const PairScanKey& key) const {
         std::size_t hash = 0;
-        hashCombine(hash, key.fromIsland);
-        hashCombine(hash, key.toIsland);
+        hashCombine(hash, key.islandA);
+        hashCombine(hash, key.islandB);
         hashCombine(hash, key.midpointX);
+        hashCombine(hash, key.midpointY);
         hashCombine(hash, key.midpointZ);
         return hash;
     }
@@ -107,9 +110,8 @@ BuildStatus discoverCandidates(
     PolygonCollector collector(nearby);
     std::vector<bool> outboundIslands(graph.islands().size(), true);
     const bool symmetricCapabilities = hasSymmetricTraversalCapabilities(config);
-    const float verticalCellSize = effectiveVerticalCollapseWindow(config);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
-        config.gapDiscovery.maxHorizontalGap);
+        maxTraversalExtent(config));
     dtQueryFilter filter;
     filter.setIncludeFlags(config.query.includeFlags);
     filter.setExcludeFlags(config.query.excludeFlags);
@@ -134,18 +136,16 @@ BuildStatus discoverCandidates(
             return;
         }
         const float candidateCellSize =
-            config.density.candidateDeduplication.effectiveCellSize(
-                link.horizontalDistance,
-                config.gapDiscovery.maxHorizontalGap);
+            config.density.candidateDeduplication.effectiveCellSize(maxTraversalExtent(config));
         const bool normalizeOrder = symmetricCapabilities && link.toIsland < link.fromIsland;
         const LinkKey key{
             normalizeOrder ? link.toIsland : link.fromIsland,
             normalizeOrder ? link.fromIsland : link.toIsland,
             quantize(normalizeOrder ? link.end.x : link.start.x, candidateCellSize),
-            quantize(normalizeOrder ? link.end.y : link.start.y, verticalCellSize),
+            quantize(normalizeOrder ? link.end.y : link.start.y, candidateCellSize),
             quantize(normalizeOrder ? link.end.z : link.start.z, candidateCellSize),
             quantize(normalizeOrder ? link.start.x : link.end.x, candidateCellSize),
-            quantize(normalizeOrder ? link.start.y : link.end.y, verticalCellSize),
+            quantize(normalizeOrder ? link.start.y : link.end.y, candidateCellSize),
             quantize(normalizeOrder ? link.start.z : link.end.z, candidateCellSize)};
         const auto existing = deduplicated.find(key);
         if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
@@ -192,10 +192,12 @@ BuildStatus discoverCandidates(
                 }
                 ++stats.candidates.pairScanCandidateCount;
                 if (!recovery && config.density.pairScanSuppression.enabled) {
+                    const bool normalizePair = symmetricCapabilities && *target < boundary.island;
                     const PairScanKey pairScanKey{
-                        boundary.island,
-                        *target,
+                        normalizePair ? *target : boundary.island,
+                        normalizePair ? boundary.island : *target,
                         quantize(boundary.midpoint.x, pairScanCellSize),
+                        quantize(boundary.midpoint.y, pairScanCellSize),
                         quantize(boundary.midpoint.z, pairScanCellSize)};
                     if (!scannedPairCells.insert(pairScanKey).second) {
                         ++stats.candidates.pairScanSuppressedCount;
@@ -222,9 +224,12 @@ BuildStatus discoverCandidates(
                 }
                 link.horizontalDistance = horizontalDistance(link.start, link.end);
                 link.verticalDistance = link.end.y - link.start.y;
-                if (link.horizontalDistance > maxHorizontalGap ||
+                if (symmetricCapabilities && distance(link.start, link.end) > maxTraversalExtent(config)) {
+                    continue;
+                }
+                if (!symmetricCapabilities && (link.horizontalDistance > maxHorizontalGap ||
                     link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
-                    link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown) {
+                    link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown)) {
                     continue;
                 }
                 recordCandidate(link, recovery);

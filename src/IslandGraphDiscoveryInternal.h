@@ -66,9 +66,15 @@ inline float effectiveVerticalCollapseWindow(const BuildConfig& config) {
     return (std::max)(baseExtent * config.density.verticalLayerCollapseRatio, 0.5f);
 }
 
+inline float maxTraversalExtent(const BuildConfig& config) {
+    return (std::max)(
+        config.gapDiscovery.maxHorizontalGap,
+        (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown));
+}
+
 inline bool hasSymmetricTraversalCapabilities(const BuildConfig& config) {
-    return std::abs(config.gapDiscovery.maxVerticalGapUp - config.gapDiscovery.maxVerticalGapDown) <= 0.001f &&
-        !config.outboundIslandFilter;
+    return std::abs(config.gapDiscovery.maxHorizontalGap - config.gapDiscovery.maxVerticalGapUp) <= 0.001f &&
+        std::abs(config.gapDiscovery.maxHorizontalGap - config.gapDiscovery.maxVerticalGapDown) <= 0.001f;
 }
 
 BuildStatus extractBoundaries(

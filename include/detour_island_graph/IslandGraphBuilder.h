@@ -37,27 +37,24 @@ struct MassAwareTuning {
 
 struct CandidateDeduplicationTuning {
     bool enabled = true;
-    float cellSize = 0.0f; // 0.0 = auto: interpolate ratios across the horizontal gap range
-    float nearCellSizeRatio = 0.25f;
-    float farCellSizeRatio = 0.25f;
+    float cellSize = 0.0f; // 0.0 = auto: max traversal extent * cellSizeRatio
+    float cellSizeRatio = 0.25f;
 
-    float effectiveCellSize(float horizontalDistance, float maxHorizontalGap) const noexcept {
+    float effectiveCellSize(float maxTraversalExtent) const noexcept {
         if (cellSize > 0.0f) {
             return cellSize;
         }
-        const float alpha = std::clamp(horizontalDistance / maxHorizontalGap, 0.0f, 1.0f);
-        const float ratio = nearCellSizeRatio + (alpha * (farCellSizeRatio - nearCellSizeRatio));
-        return maxHorizontalGap * ratio;
+        return maxTraversalExtent * cellSizeRatio;
     }
 };
 
 struct PairScanSuppressionTuning {
     bool enabled = false;
-    float cellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * cellSizeRatio
+    float cellSize = 0.0f; // 0.0 = auto: max traversal extent * cellSizeRatio
     float cellSizeRatio = 0.25f;
 
-    float effectiveCellSize(float maxHorizontalGap) const noexcept {
-        return cellSize > 0.0f ? cellSize : (maxHorizontalGap * cellSizeRatio);
+    float effectiveCellSize(float maxTraversalExtent) const noexcept {
+        return cellSize > 0.0f ? cellSize : (maxTraversalExtent * cellSizeRatio);
     }
 };
 
@@ -76,44 +73,26 @@ struct ShortGapRecoveryTuning {
 
 struct LocalPruningTuning {
     bool enabled = true;
-    float baseRadius = 0.0f; // 0.0 = auto: maxHorizontalGap * baseRadiusRatio
-    float baseRadiusRatio = 0.25f;
-    bool enableDistanceScaling = false;
-    float distanceScale = 0.0f; // 0.0 = auto: distanceScaleRatio / maxHorizontalGap
-    float distanceScaleRatio = 0.0f;
-    float maxRadiusScale = 1.0f;
+    float radius = 0.0f; // 0.0 = auto: max traversal extent * radiusRatio
+    float radiusRatio = 0.25f;
 
-    float effectiveDistanceScale(float maxHorizontalGap) const noexcept {
-        return distanceScale > 0.0f
-            ? distanceScale
-            : (distanceScaleRatio / maxHorizontalGap);
-    }
-
-    float pruneRadiusScaleFor(float horizontalDistance, float maxHorizontalGap) const noexcept {
-        const float scale = 1.0f + (effectiveDistanceScale(maxHorizontalGap) * horizontalDistance);
-        return scale < maxRadiusScale ? scale : maxRadiusScale;
-    }
-
-    float effectiveBaseRadius(float maxHorizontalGap) const noexcept {
-        return baseRadius > 0.0f ? baseRadius : (maxHorizontalGap * baseRadiusRatio);
+    float effectiveRadius(float maxTraversalExtent) const noexcept {
+        return radius > 0.0f ? radius : (maxTraversalExtent * radiusRatio);
     }
 };
 
 struct GlobalPruningTuning {
     bool enabled = false;
-    float radius = 0.0f; // 0.0 = auto: interpolate ratios across the horizontal gap range
-    float nearRadiusRatio = 0.5f;
-    float farRadiusRatio = 0.5f;
+    float radius = 0.0f; // 0.0 = auto: max traversal extent * radiusRatio
+    float radiusRatio = 0.5f;
     float lowMassRadiusScale = 1.0f;
     float highMassRadiusScale = 1.0f;
 
-    float effectiveRadius(float horizontalDistance, float maxHorizontalGap) const noexcept {
+    float effectiveRadius(float maxTraversalExtent) const noexcept {
         if (radius > 0.0f) {
             return radius;
         }
-        const float alpha = std::clamp(horizontalDistance / maxHorizontalGap, 0.0f, 1.0f);
-        const float ratio = nearRadiusRatio + (alpha * (farRadiusRatio - nearRadiusRatio));
-        return maxHorizontalGap * ratio;
+        return maxTraversalExtent * radiusRatio;
     }
 
     float massRadiusScaleFor(float massScore) const noexcept {
@@ -125,7 +104,6 @@ struct GlobalPruningTuning {
 struct SpannerPruningTuning {
     bool enabled = false;
     float pathRatio = 1.5f;
-    float verticalWeight = 1.0f;
 };
 
 struct DensityTuning {
