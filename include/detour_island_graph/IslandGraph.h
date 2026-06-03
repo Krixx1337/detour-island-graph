@@ -1,12 +1,9 @@
 #pragma once
 
-#include <detour_island_graph/Version.h>
-
 #include <DetourNavMesh.h>
 
 #include <cstdint>
 #include <optional>
-#include <limits>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -83,8 +80,14 @@ inline bool canTraverseFrom(const Edge& edge, IslandId island) noexcept {
     return false;
 }
 
-inline IslandId otherIsland(const Edge& edge, IslandId island) noexcept {
-    return edge.islandA == island ? edge.islandB : edge.islandA;
+inline std::optional<IslandId> otherIsland(const Edge& edge, IslandId island) noexcept {
+    if (edge.islandA == island) {
+        return edge.islandB;
+    }
+    if (edge.islandB == island) {
+        return edge.islandA;
+    }
+    return std::nullopt;
 }
 
 inline std::optional<Link> makeTraversalLink(const Edge& edge, IslandId fromIsland) {

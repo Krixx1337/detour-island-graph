@@ -8,10 +8,8 @@
 
 #include "../src/IslandGraphDiscoveryInternal.h"
 
-#include <DetourAlloc.h>
 #include <DetourNavMeshBuilder.h>
 
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <sstream>

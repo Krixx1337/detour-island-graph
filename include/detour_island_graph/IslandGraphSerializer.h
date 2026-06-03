@@ -2,7 +2,6 @@
 
 #include "IslandGraph.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <string>

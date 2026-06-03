@@ -3,8 +3,6 @@
 #include "VectorMath.h"
 
 #include <algorithm>
-#include <cmath>
-#include <cstddef>
 #include <limits>
 #include <queue>
 #include <vector>

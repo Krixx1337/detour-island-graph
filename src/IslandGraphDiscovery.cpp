@@ -1,8 +1,5 @@
 #include "IslandGraphDiscoveryInternal.h"
 
-#include <DetourAlloc.h>
-
-#include <cmath>
 #include <memory>
 
 namespace detour_island_graph {

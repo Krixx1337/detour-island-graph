@@ -3,6 +3,9 @@
 #include "VectorMath.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
