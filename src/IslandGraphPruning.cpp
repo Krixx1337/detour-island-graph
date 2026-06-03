@@ -369,7 +369,9 @@ BuildStatus pruneCandidates(
         }
     }
 
-    collapseAcceptedLocalDuplicates(acceptedOutgoing, localPruneRadius, stats);
+    if (config.density.localPruning.enabled) {
+        collapseAcceptedLocalDuplicates(acceptedOutgoing, localPruneRadius, stats);
+    }
     stats.candidates.acceptedLinkCount = 0;
     for (const auto& outgoing : acceptedOutgoing) {
         stats.candidates.acceptedLinkCount += outgoing.size();

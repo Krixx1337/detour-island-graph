@@ -1,5 +1,6 @@
 #include <detour_island_graph/IslandGraphSerializer.h>
 
+#include <cmath>
 #include <cstring>
 #include <istream>
 #include <limits>
