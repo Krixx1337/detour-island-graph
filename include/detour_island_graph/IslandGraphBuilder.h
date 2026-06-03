@@ -14,7 +14,9 @@ namespace detour_island_graph {
 struct MassAwareTuning {
     bool enabled = false;
     float normalizationPercentile = 0.99f;
-    float targetPreference = 0.0f; // 0.0 = auto: maxHorizontalGap * targetPreferenceRatio
+    // Zero keeps the autoscaled preference derived from maxHorizontalGap * targetPreferenceRatio.
+    // Set an explicit meter value only when a deployment has benchmarked map-specific tuning.
+    float targetPreference = 0.0f;
     float targetPreferenceRatio = 0.0f;
     float lowMassPruneRadiusScale = 1.0f;
     float highMassPruneRadiusScale = 1.0f;
@@ -37,7 +39,9 @@ struct MassAwareTuning {
 
 struct CandidateDeduplicationTuning {
     bool enabled = true;
-    float cellSize = 0.0f; // 0.0 = auto: max traversal extent * cellSizeRatio
+    // Zero keeps the autoscaled voxel size derived from maxTraversalExtent * cellSizeRatio.
+    // Set an explicit meter value only for benchmarked map-specific tuning.
+    float cellSize = 0.0f;
     float cellSizeRatio = 0.25f;
 
     float effectiveCellSize(float maxTraversalExtent) const noexcept {
@@ -50,7 +54,9 @@ struct CandidateDeduplicationTuning {
 
 struct PairScanSuppressionTuning {
     bool enabled = false;
-    float cellSize = 0.0f; // 0.0 = auto: max traversal extent * cellSizeRatio
+    // Zero keeps the autoscaled voxel size derived from maxTraversalExtent * cellSizeRatio.
+    // Set an explicit meter value only for benchmarked map-specific tuning.
+    float cellSize = 0.0f;
     float cellSizeRatio = 0.25f;
 
     float effectiveCellSize(float maxTraversalExtent) const noexcept {
@@ -60,7 +66,9 @@ struct PairScanSuppressionTuning {
 
 struct ShortGapRecoveryTuning {
     bool enabled = false;
-    float maxHorizontalGap = 0.0f; // 0.0 = auto: gapDiscovery.maxHorizontalGap * maxHorizontalGapRatio
+    // Zero keeps the autoscaled recovery gap derived from maxHorizontalGap * maxHorizontalGapRatio.
+    // The effective value is still clamped to the configured traversal capability.
+    float maxHorizontalGap = 0.0f;
     float maxHorizontalGapRatio = 0.2f;
 
     float effectiveMaxHorizontalGap(float configuredMaxHorizontalGap) const noexcept {
@@ -73,7 +81,9 @@ struct ShortGapRecoveryTuning {
 
 struct LocalPruningTuning {
     bool enabled = true;
-    float radius = 0.0f; // 0.0 = auto: max traversal extent * radiusRatio
+    // Zero keeps the autoscaled pruning radius derived from maxTraversalExtent * radiusRatio.
+    // Set an explicit meter value only for benchmarked map-specific tuning.
+    float radius = 0.0f;
     float radiusRatio = 0.25f;
 
     float effectiveRadius(float maxTraversalExtent) const noexcept {
@@ -83,7 +93,9 @@ struct LocalPruningTuning {
 
 struct GlobalPruningTuning {
     bool enabled = false;
-    float radius = 0.0f; // 0.0 = auto: max traversal extent * radiusRatio
+    // Zero keeps the autoscaled pruning radius derived from maxTraversalExtent * radiusRatio.
+    // Global pruning is intentionally optional because endpoint proximity is a coarse heuristic.
+    float radius = 0.0f;
     float radiusRatio = 0.5f;
     float lowMassRadiusScale = 1.0f;
     float highMassRadiusScale = 1.0f;
@@ -135,10 +147,12 @@ using BoundaryRepresentativeRanker =
 
 struct BoundaryTuning {
     bool deduplicationEnabled = true;
-    float deduplicationCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * deduplicationCellSizeRatio
+    // Zero keeps the autoscaled voxel size derived from maxHorizontalGap * deduplicationCellSizeRatio.
+    float deduplicationCellSize = 0.0f;
     float deduplicationCellSizeRatio = 0.125f;
     bool representativeReductionEnabled = false;
-    float representativeCellSize = 0.0f; // 0.0 = auto: maxHorizontalGap * representativeCellSizeRatio
+    // Zero keeps the autoscaled voxel size derived from maxHorizontalGap * representativeCellSizeRatio.
+    float representativeCellSize = 0.0f;
     float representativeCellSizeRatio = 0.25f;
     int representativeDirectionBuckets = 8;
     BoundaryRepresentativeRanker representativeRanker;
