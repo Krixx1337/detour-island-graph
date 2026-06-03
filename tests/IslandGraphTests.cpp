@@ -887,6 +887,27 @@ TEST_CASE("Symmetric spanner sees reverse traversal without duplicating stored e
     CHECK_FALSE(hasLink(graph, 0, 2));
 }
 
+TEST_CASE("Symmetric local pruning collapses opposite-direction corridor samples") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 1.0f;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 10.0f, 0.0f}, {5.0f, 12.0f, 0.0f}, 5.0f, 2.0f},
+        Link{1, 0, {5.0f, 12.1f, 0.0f}, {0.0f, 10.1f, 0.0f}, 5.0f, -2.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
+    CHECK(hasLink(graph, 0, 1));
+    CHECK(hasLink(graph, 1, 0));
+}
+
 TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {
     const auto navMesh = buildDisconnectedNavMesh();
     BuildConfig config(30.0f, 30.0f, 30.0f);
@@ -901,6 +922,24 @@ TEST_CASE("Builder stores one corridor and pathfinder traverses it both ways") {
     CHECK(hasLink(result.graph, 1, 2));
     CHECK(hasLink(result.graph, 2, 1));
     CHECK(result.graph.edges().size() == result.stats.candidates.acceptedLinkCount);
+}
+
+TEST_CASE("Graph health components follow traversal direction") {
+    const Link oneWay{0, 1, {}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    const Link twoWay{1, 2, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, 1.0f, 0.0f};
+    IslandGraph graph = makeGraph(
+        {makeIsland(0), makeIsland(1), makeIsland(2)},
+        {makeEdge(oneWay), makeEdge(twoWay, true)});
+    BuildStats stats;
+
+    const BuildStatus status =
+        detour_island_graph::detail::calculateGraphHealthStats(graph, BuildOptions{}, stats);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(stats.connectedComponentCount == 2);
+    CHECK(stats.largestConnectedComponentIslandCount == 2);
+    CHECK(stats.islandsWithOutgoingLinks == 3);
+    CHECK(stats.islandsWithIncomingLinks == 2);
 }
 
 TEST_CASE("Symmetric candidate dedup collapses reverse duplicates into one edge") {
@@ -979,7 +1018,18 @@ TEST_CASE("Serializer") {
         std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
         std::string bytes = serialized.str();
-        bytes[4] = 3;
+        bytes[4] = 4;
+        bytes[5] = 0;
+        bytes[6] = 0;
+        bytes[7] = 0;
+        std::stringstream unsupported(bytes, std::ios::in | std::ios::binary);
+        CHECK(IslandGraphSerializer::read(unsupported).status == SerializationStatus::UnsupportedVersion);
+    }
+    SUBCASE("Rejects previous directional-link cache version") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        std::string bytes = serialized.str();
+        bytes[4] = 2;
         bytes[5] = 0;
         bytes[6] = 0;
         bytes[7] = 0;

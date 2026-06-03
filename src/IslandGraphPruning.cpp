@@ -331,6 +331,12 @@ BuildStatus pruneCandidates(
             });
             if (!duplicate) {
                 accepted.push_back(candidate);
+                if (symmetricCapabilities && candidate.toIsland < islands.size()) {
+                    // Guardrail: symmetric traversal stores one bidirectional edge, so source-local
+                    // pruning must also reserve the reverse source bucket. Without this, opposite
+                    // scan directions can keep duplicate corridors that add branching but no reach.
+                    acceptedBySource[candidate.toIsland].push_back(reverseLink(candidate));
+                }
             } else {
                 ++stats.candidates.localPruningRejectCount;
             }

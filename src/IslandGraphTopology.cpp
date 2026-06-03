@@ -237,6 +237,7 @@ BuildStatus calculateGraphHealthStats(
     std::vector<std::size_t> outgoingDegrees(islandCount);
     std::vector<std::size_t> incomingDegrees(islandCount);
     std::vector<std::vector<IslandId>> neighbors(islandCount);
+    std::vector<std::vector<IslandId>> reverseNeighbors(islandCount);
     double totalLinkLength = 0.0;
     const std::size_t totalLinks = graph.edges().size();
 
@@ -258,14 +259,12 @@ BuildStatus calculateGraphHealthStats(
             }
             ++outgoingDegrees[island.id];
             ++incomingDegrees[traversal->toIsland];
+            neighbors[island.id].push_back(traversal->toIsland);
+            reverseNeighbors[traversal->toIsland].push_back(island.id);
         }
     }
 
     for (const Edge& edge : graph.edges()) {
-        if (edge.islandA < islandCount && edge.islandB < islandCount) {
-            neighbors[edge.islandA].push_back(edge.islandB);
-            neighbors[edge.islandB].push_back(edge.islandA);
-        }
         totalLinkLength += edge.horizontalDistance;
     }
 
@@ -296,8 +295,11 @@ BuildStatus calculateGraphHealthStats(
         ? totalLinkLength / static_cast<double>(totalLinks)
         : 0.0;
 
+    // Guardrail: these components are routeability diagnostics, so they must follow traversal
+    // direction. A one-way edge should not make two islands look mutually reachable.
     std::vector<bool> visited(islandCount);
-    std::queue<IslandId> pending;
+    std::vector<IslandId> finishOrder;
+    finishOrder.reserve(islandCount);
     for (IslandId island = 0; island < islandCount; ++island) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
@@ -305,24 +307,51 @@ BuildStatus calculateGraphHealthStats(
         if (visited[island]) {
             continue;
         }
-        ++stats.connectedComponentCount;
-        std::size_t componentSize = 0;
+        std::vector<std::pair<IslandId, std::size_t>> stack;
+        stack.push_back({island, 0});
         visited[island] = true;
-        pending.push(island);
-        while (!pending.empty()) {
+        while (!stack.empty()) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            const IslandId current = pending.front();
-            pending.pop();
-            ++componentSize;
-            for (IslandId neighbor : neighbors[current]) {
-                if (cancellationRequested(options)) {
-                    return BuildStatus::Cancelled;
-                }
+            const IslandId current = stack.back().first;
+            std::size_t& nextIndex = stack.back().second;
+            if (nextIndex < neighbors[current].size()) {
+                const IslandId neighbor = neighbors[current][nextIndex++];
                 if (!visited[neighbor]) {
                     visited[neighbor] = true;
-                    pending.push(neighbor);
+                    stack.push_back({neighbor, 0});
+                }
+                continue;
+            }
+            finishOrder.push_back(current);
+            stack.pop_back();
+        }
+    }
+
+    std::fill(visited.begin(), visited.end(), false);
+    for (auto orderIt = finishOrder.rbegin(); orderIt != finishOrder.rend(); ++orderIt) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (visited[*orderIt]) {
+            continue;
+        }
+        ++stats.connectedComponentCount;
+        std::size_t componentSize = 0;
+        std::vector<IslandId> stack{*orderIt};
+        visited[*orderIt] = true;
+        while (!stack.empty()) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            const IslandId current = stack.back();
+            stack.pop_back();
+            ++componentSize;
+            for (IslandId neighbor : reverseNeighbors[current]) {
+                if (!visited[neighbor]) {
+                    visited[neighbor] = true;
+                    stack.push_back(neighbor);
                 }
             }
         }
