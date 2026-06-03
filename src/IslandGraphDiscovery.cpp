@@ -78,6 +78,11 @@ bool validate(const BuildConfig& config, std::string& message) {
             std::isfinite(massAware.highMassPruneRadiusScale) && massAware.highMassPruneRadiusScale > 0.0f,
             "massAware.highMassPruneRadiusScale must be finite and greater than zero.")) return false;
     if (!require(
+            std::isfinite(density.verticalLayerCollapseRatio) &&
+                density.verticalLayerCollapseRatio > 0.0f &&
+                density.verticalLayerCollapseRatio <= 1.0f,
+            "density.verticalLayerCollapseRatio must be finite and in the range (0, 1].")) return false;
+    if (!require(
             !density.pairScanSuppression.enabled ||
                 (std::isfinite(density.pairScanSuppression.cellSize) &&
                  density.pairScanSuppression.cellSize >= 0.0f &&

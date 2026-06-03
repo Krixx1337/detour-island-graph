@@ -51,6 +51,7 @@ Start with a profile and customize only when the resulting graph or build cost r
 - Use the unpruned profile as a diagnostic reference, not as a typical production configuration.
 - Treat gap limits as movement capabilities. Use density and pruning controls to shape graph size.
 - Expect valid links to be mirrored automatically when the same corridor is traversable in reverse; symmetric climb and drop limits naturally produce bi-directional links.
+- Increase `density.verticalLayerCollapseRatio` to collapse nearby vertical sampling noise more aggressively while still scaling with the configured movement limits.
 - Prefer relative tuning ratios over fixed distances unless a value represents a real movement constraint.
 - Adjust one graph-shaping stage at a time. Compare connectivity, accepted-link density, link distribution, and build cost after each change.
 

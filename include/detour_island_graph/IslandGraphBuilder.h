@@ -121,6 +121,7 @@ struct SpannerPruningTuning {
 };
 
 struct DensityTuning {
+    float verticalLayerCollapseRatio = 0.25f;
     PairScanSuppressionTuning pairScanSuppression;
     ShortGapRecoveryTuning shortGapRecovery;
     CandidateDeduplicationTuning candidateDeduplication;

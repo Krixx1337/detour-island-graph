@@ -63,7 +63,7 @@ inline float effectiveVerticalCollapseWindow(const BuildConfig& config) {
     const float baseExtent = configuredVerticalExtent > 0.0f
         ? (std::min)(config.gapDiscovery.maxHorizontalGap, configuredVerticalExtent)
         : config.gapDiscovery.maxHorizontalGap;
-    return (std::max)(baseExtent * 0.25f, 0.5f);
+    return (std::max)(baseExtent * config.density.verticalLayerCollapseRatio, 0.5f);
 }
 
 inline bool hasSymmetricTraversalCapabilities(const BuildConfig& config) {

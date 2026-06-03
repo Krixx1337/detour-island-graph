@@ -632,6 +632,14 @@ TEST_CASE("Builder density tuning") {
         invalidDensityConfig.density.localPruning.maxRadiusScale = 0.99f;
         CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
     }
+    SUBCASE("Rejects invalid vertical layer collapse ratios") {
+        BuildConfig invalidDensityConfig(30.0f, 30.0f, 30.0f);
+        invalidDensityConfig.density.verticalLayerCollapseRatio = 0.0f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+
+        invalidDensityConfig.density.verticalLayerCollapseRatio = 1.01f;
+        CHECK(builder.build(*navMesh, invalidDensityConfig).status == BuildStatus::InvalidConfiguration);
+    }
     SUBCASE("Enabled global pruning does not increase accepted links") {
         BuildConfig globalPruningConfig = buildConfig;
         globalPruningConfig.density.globalPruning.enabled = true;
@@ -841,6 +849,26 @@ TEST_CASE("Local pruning preserves same-pair links on distinct vertical layers")
     REQUIRE(status == BuildStatus::Success);
     CHECK(graph.edges().size() == 2);
     CHECK(stats.candidates.localPruningRejectCount == 0);
+}
+
+TEST_CASE("Vertical layer collapse ratio controls near-layer same-pair sparsity") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.density.verticalLayerCollapseRatio = 0.4f;
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.baseRadius = 1.0f;
+    config.density.spannerPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 10.0f, 0.0f}, {5.0f, 12.0f, 0.0f}, 5.0f, 2.0f},
+        Link{0, 1, {20.0f, 18.0f, 0.0f}, {30.0f, 20.0f, 0.0f}, 10.0f, 2.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(graph.edges().size() == 1);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
 }
 
 TEST_CASE("Local pruning collapses same-pair links with matching vertical-distance bands") {
