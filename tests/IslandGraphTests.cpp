@@ -1101,14 +1101,18 @@ TEST_CASE("Serializer") {
         std::stringstream invalid(bytes, std::ios::in | std::ios::binary);
         CHECK(IslandGraphSerializer::read(invalid).status == SerializationStatus::InvalidMagic);
     }
-    SUBCASE("Rejects unsupported version") {
+    const auto overwriteSerializedFormatVersion = [](std::string& bytes, std::uint32_t version) {
+        bytes[4] = static_cast<char>(version & 0xffU);
+        bytes[5] = static_cast<char>((version >> 8U) & 0xffU);
+        bytes[6] = static_cast<char>((version >> 16U) & 0xffU);
+        bytes[7] = static_cast<char>((version >> 24U) & 0xffU);
+    };
+
+    SUBCASE("Rejects unsupported future format version") {
         std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
         std::string bytes = serialized.str();
-        bytes[4] = 4;
-        bytes[5] = 0;
-        bytes[6] = 0;
-        bytes[7] = 0;
+        overwriteSerializedFormatVersion(bytes, IslandGraphSerializer::FormatVersion + 1);
         std::stringstream unsupported(bytes, std::ios::in | std::ios::binary);
         CHECK(IslandGraphSerializer::read(unsupported).status == SerializationStatus::UnsupportedVersion);
     }
@@ -1116,10 +1120,7 @@ TEST_CASE("Serializer") {
         std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
         std::string bytes = serialized.str();
-        bytes[4] = 2;
-        bytes[5] = 0;
-        bytes[6] = 0;
-        bytes[7] = 0;
+        overwriteSerializedFormatVersion(bytes, 2);
         std::stringstream unsupported(bytes, std::ios::in | std::ios::binary);
         CHECK(IslandGraphSerializer::read(unsupported).status == SerializationStatus::UnsupportedVersion);
     }

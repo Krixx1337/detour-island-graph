@@ -135,7 +135,7 @@ SerializationResult malformed(const char* message) {
 
 SerializationStatus IslandGraphSerializer::write(std::ostream& stream, const IslandGraph& graph) {
     if (!writeUnsigned(stream, Magic) ||
-        !writeUnsigned(stream, Version) ||
+        !writeUnsigned(stream, FormatVersion) ||
         !writeCount(stream, graph.islands().size()) ||
         !writeCount(stream, graph.edges().size())) {
         return SerializationStatus::IoError;
@@ -188,7 +188,7 @@ SerializationResult IslandGraphSerializer::read(
         result.message = "Serialized graph magic does not match.";
         return result;
     }
-    if (version != Version) {
+    if (version != FormatVersion) {
         SerializationResult result;
         result.status = SerializationStatus::UnsupportedVersion;
         result.message = "Serialized graph version is not supported.";

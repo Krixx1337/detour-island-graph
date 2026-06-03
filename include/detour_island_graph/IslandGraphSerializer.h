@@ -36,7 +36,8 @@ struct DeserializationLimits {
 class IslandGraphSerializer {
 public:
     static constexpr std::uint32_t Magic = 0x31474944U; // "DIG1"
-    static constexpr std::uint32_t Version = 3;
+    // File format version. This is intentionally independent from the library version.
+    static constexpr std::uint32_t FormatVersion = 3;
 
     [[nodiscard]] static SerializationStatus write(std::ostream& stream, const IslandGraph& graph);
     [[nodiscard]] static SerializationResult read(
