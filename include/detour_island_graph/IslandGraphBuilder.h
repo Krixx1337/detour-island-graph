@@ -3,6 +3,7 @@
 #include "IslandGraph.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cmath>
 #include <functional>
@@ -270,6 +271,18 @@ struct CandidateStats {
     std::size_t localPruningRejectCount = 0;
 };
 
+struct MassBucketStats {
+    std::size_t islandCount = 0;
+    std::size_t outgoingLinkCount = 0;
+    std::size_t incomingLinkCount = 0;
+    std::size_t isolatedIslandCount = 0;
+    std::size_t maxOutgoingLinksOnIsland = 0;
+    std::size_t p95OutgoingLinksOnIsland = 0;
+    std::size_t maxIncomingLinksOnIsland = 0;
+    std::size_t p95IncomingLinksOnIsland = 0;
+    double totalMass = 0.0;
+};
+
 struct BuildStats {
     TimingStats timings;
     BoundaryStats boundaries;
@@ -291,6 +304,7 @@ struct BuildStats {
     std::size_t p95OutgoingLinksOnIsland = 0;
     std::size_t maxIncomingLinksOnIsland = 0;
     std::size_t p95IncomingLinksOnIsland = 0;
+    std::array<MassBucketStats, 3> massBuckets{};
     double averageLinkLength = 0.0;
 };
 

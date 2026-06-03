@@ -1041,6 +1041,16 @@ TEST_CASE("Graph health components follow traversal direction") {
     CHECK(stats.isolatedIslandPolygonCount == 2);
     CHECK(stats.isolatedIslandMass == doctest::Approx(0.05));
     CHECK(stats.totalIslandMass == doctest::Approx(1.85));
+    CHECK(stats.massBuckets[0].islandCount == 2);
+    CHECK(stats.massBuckets[0].isolatedIslandCount == 1);
+    CHECK(stats.massBuckets[0].outgoingLinkCount == 1);
+    CHECK(stats.massBuckets[0].incomingLinkCount == 0);
+    CHECK(stats.massBuckets[0].p95OutgoingLinksOnIsland == 0);
+    CHECK(stats.massBuckets[1].islandCount == 0);
+    CHECK(stats.massBuckets[2].islandCount == 2);
+    CHECK(stats.massBuckets[2].outgoingLinkCount == 2);
+    CHECK(stats.massBuckets[2].incomingLinkCount == 3);
+    CHECK(stats.massBuckets[2].p95OutgoingLinksOnIsland == 1);
     CHECK(stats.islandsWithOutgoingLinks == 3);
     CHECK(stats.islandsWithIncomingLinks == 2);
 }

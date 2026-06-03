@@ -5,6 +5,7 @@
 #include <DetourNavMeshQuery.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <queue>
@@ -71,6 +72,16 @@ std::size_t percentile95(std::vector<std::size_t> values) {
     }
     std::sort(values.begin(), values.end());
     return values[((values.size() - 1) * 95U) / 100U];
+}
+
+std::size_t massBucketIndex(float massScore) {
+    if (massScore < (1.0f / 3.0f)) {
+        return 0;
+    }
+    if (massScore < (2.0f / 3.0f)) {
+        return 1;
+    }
+    return 2;
 }
 
 } // namespace
@@ -236,6 +247,8 @@ BuildStatus calculateGraphHealthStats(
     const std::size_t islandCount = graph.islands().size();
     std::vector<std::size_t> outgoingDegrees(islandCount);
     std::vector<std::size_t> incomingDegrees(islandCount);
+    std::array<std::vector<std::size_t>, 3> bucketOutgoingDegrees;
+    std::array<std::vector<std::size_t>, 3> bucketIncomingDegrees;
     std::vector<std::vector<IslandId>> neighbors(islandCount);
     std::vector<std::vector<IslandId>> reverseNeighbors(islandCount);
     double totalLinkLength = 0.0;
@@ -280,10 +293,19 @@ BuildStatus calculateGraphHealthStats(
         }
         const Island& graphIsland = graph.islands()[island];
         stats.totalIslandMass += static_cast<double>(graphIsland.massScore);
+        const std::size_t bucket = massBucketIndex(graphIsland.massScore);
+        MassBucketStats& bucketStats = stats.massBuckets[bucket];
+        ++bucketStats.islandCount;
+        bucketStats.outgoingLinkCount += outgoingDegrees[island];
+        bucketStats.incomingLinkCount += incomingDegrees[island];
+        bucketStats.totalMass += static_cast<double>(graphIsland.massScore);
+        bucketOutgoingDegrees[bucket].push_back(outgoingDegrees[island]);
+        bucketIncomingDegrees[bucket].push_back(incomingDegrees[island]);
         if (outgoingDegrees[island] == 0 && incomingDegrees[island] == 0) {
             ++stats.isolatedIslandCount;
             stats.isolatedIslandPolygonCount += graphIsland.polygons.size();
             stats.isolatedIslandMass += static_cast<double>(graphIsland.massScore);
+            ++bucketStats.isolatedIslandCount;
         }
     }
 
@@ -295,6 +317,17 @@ BuildStatus calculateGraphHealthStats(
         ? 0
         : *(std::max_element)(incomingDegrees.begin(), incomingDegrees.end());
     stats.p95IncomingLinksOnIsland = percentile95(incomingDegrees);
+    for (std::size_t bucket = 0; bucket < stats.massBuckets.size(); ++bucket) {
+        MassBucketStats& bucketStats = stats.massBuckets[bucket];
+        bucketStats.maxOutgoingLinksOnIsland = bucketOutgoingDegrees[bucket].empty()
+            ? 0
+            : *(std::max_element)(bucketOutgoingDegrees[bucket].begin(), bucketOutgoingDegrees[bucket].end());
+        bucketStats.p95OutgoingLinksOnIsland = percentile95(bucketOutgoingDegrees[bucket]);
+        bucketStats.maxIncomingLinksOnIsland = bucketIncomingDegrees[bucket].empty()
+            ? 0
+            : *(std::max_element)(bucketIncomingDegrees[bucket].begin(), bucketIncomingDegrees[bucket].end());
+        bucketStats.p95IncomingLinksOnIsland = percentile95(bucketIncomingDegrees[bucket]);
+    }
     stats.averageLinkLength = totalLinks > 0
         ? totalLinkLength / static_cast<double>(totalLinks)
         : 0.0;
