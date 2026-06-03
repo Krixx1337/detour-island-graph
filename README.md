@@ -10,6 +10,7 @@ It identifies disconnected navmesh islands, discovers potential gap crossings be
 - **Continuous density tuning:** Graph-shaping defaults favor proportional scaling and gradual interpolation over hidden fixed thresholds. Hard limits remain explicit when they represent agent capabilities.
 - **Granular graph shaping:** Density and pruning stages can be toggled and tuned independently. Applications can retain conservative defaults, request a sparse graph, build an unpruned reference graph, or apply a custom policy.
 - **Layer-aware by default:** Discovery and pruning preserve clearly separated vertical routes while still collapsing nearby sampling noise, which keeps stacked 3D worlds connected without exploding graph density.
+- **Single physical corridor model:** The graph stores one edge for a discovered island-to-island corridor and records which traversal directions are valid. Symmetric climb/drop capabilities naturally produce one bi-directional edge; asymmetric capabilities can still represent one-way climb/drop routes without duplicating corridor geometry.
 - **Detour-native integration:** The library operates on `dtNavMesh`, uses Detour query filters, and does not impose an engine-specific vector type or threading model.
 - **Portable persistence:** Graphs can be serialized through standard C++ streams.
 
@@ -50,7 +51,7 @@ Start with a profile and customize only when the resulting graph or build cost r
 - Use the sparse profile when graph size or build cost matters. It retains a focused recovery pass for short gaps that could otherwise be hidden by coarse density reduction.
 - Use the unpruned profile as a diagnostic reference, not as a typical production configuration.
 - Treat gap limits as movement capabilities. Use density and pruning controls to shape graph size.
-- Expect valid links to be mirrored automatically when the same corridor is traversable in reverse; symmetric climb and drop limits naturally produce bi-directional links.
+- Expect symmetric climb/drop limits to produce bi-directional traversal on a single stored corridor edge. With asymmetric climb/drop limits, the same edge model records only the physically valid traversal direction(s).
 - Increase `density.verticalLayerCollapseRatio` to collapse nearby vertical sampling noise more aggressively while still scaling with the configured movement limits.
 - Prefer relative tuning ratios over fixed distances unless a value represents a real movement constraint.
 - Adjust one graph-shaping stage at a time. Compare connectivity, accepted-link density, link distribution, and build cost after each change.
