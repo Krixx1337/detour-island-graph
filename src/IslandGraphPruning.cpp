@@ -33,6 +33,20 @@ float linkDistance(const Link& link) {
     return distance(link.start, link.end);
 }
 
+std::int64_t quantizedMillimeters(float value) {
+    const double scaled = static_cast<double>(value) * 1000.0;
+    if (!std::isfinite(scaled)) {
+        return 0;
+    }
+    if (scaled <= static_cast<double>((std::numeric_limits<std::int64_t>::min)())) {
+        return (std::numeric_limits<std::int64_t>::min)();
+    }
+    if (scaled >= static_cast<double>((std::numeric_limits<std::int64_t>::max)())) {
+        return (std::numeric_limits<std::int64_t>::max)();
+    }
+    return static_cast<std::int64_t>(std::llround(scaled));
+}
+
 float rankScore(const Link& link, const IslandGraph& graph, const BuildConfig& config) {
     if (config.linkRanker) {
         const float customRank = config.linkRanker(link, graph);
@@ -169,10 +183,12 @@ bool isBetterLink(const Link& lhs, const Link& rhs, const IslandGraph& graph, co
     }
     const float lhsRank = rankScore(lhs, graph, config);
     const float rhsRank = rankScore(rhs, graph, config);
-    if (lhsRank != rhsRank) return lhsRank < rhsRank;
-    const float lhsDistance = linkDistance(lhs);
-    const float rhsDistance = linkDistance(rhs);
-    if (lhsDistance != rhsDistance) return lhsDistance < rhsDistance;
+    const std::int64_t lhsRankMm = quantizedMillimeters(lhsRank);
+    const std::int64_t rhsRankMm = quantizedMillimeters(rhsRank);
+    if (lhsRankMm != rhsRankMm) return lhsRankMm < rhsRankMm;
+    const std::int64_t lhsDistanceMm = quantizedMillimeters(linkDistance(lhs));
+    const std::int64_t rhsDistanceMm = quantizedMillimeters(linkDistance(rhs));
+    if (lhsDistanceMm != rhsDistanceMm) return lhsDistanceMm < rhsDistanceMm;
     if (lhs.fromIsland != rhs.fromIsland) return lhs.fromIsland < rhs.fromIsland;
     if (lhs.toIsland != rhs.toIsland) return lhs.toIsland < rhs.toIsland;
     if (lhs.start.x != rhs.start.x) return lhs.start.x < rhs.start.x;
