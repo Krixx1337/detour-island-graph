@@ -33,7 +33,15 @@ bool isEligiblePolygon(
     const dtPoly& polygon,
     const BuildConfig& config,
     const dtQueryFilter& filter) {
-    return filter.passFilter(reference, &tile, &polygon) &&
+    const bool passesDetourFilter =
+#ifdef DT_VIRTUAL_QUERYFILTER
+        filter.passFilter(reference, &tile, &polygon);
+#else
+        (polygon.flags & filter.getIncludeFlags()) != 0 &&
+        (polygon.flags & filter.getExcludeFlags()) == 0;
+#endif
+
+    return passesDetourFilter &&
         (config.polygonFilter
             ? config.polygonFilter(reference, tile, polygon)
             : polygon.getType() == DT_POLYTYPE_GROUND);
