@@ -81,12 +81,19 @@ PathResult IslandGraphPathfinder::findPath(
 
     std::vector<State> states(portalOffsets.back());
     std::priority_queue<OpenEntry> open;
+    bool budgetExceeded = false;
     const auto enqueue = [&](const Island& island, std::size_t edgeSlot, const EdgeTraversal& traversal, float gCost, float hCost) {
+        if (options.maxQueuedPortals > 0 && result.stats.queuedPortals + 1 > options.maxQueuedPortals) {
+            budgetExceeded = true;
+            return;
+        }
         const std::size_t portalIndex = portalOffsets[island.id] + edgeSlot;
         State& state = states[portalIndex];
         state.cost = gCost;
         state.traversal = traversal;
         open.push({portalIndex, traversal, gCost, gCost + hCost});
+        ++result.stats.queuedPortals;
+        result.stats.peakOpenSetSize = std::max(result.stats.peakOpenSetSize, open.size());
     };
     const Island& start = graph.islands()[startIsland];
     for (std::size_t edgeSlot = 0; edgeSlot < start.edgeIndices.size(); ++edgeSlot) {
@@ -111,11 +118,23 @@ PathResult IslandGraphPathfinder::findPath(
             continue;
         }
         enqueue(start, edgeSlot, traversal, gCost, hCost);
+        if (budgetExceeded) {
+            result.status = PathStatus::BudgetExceeded;
+            return result;
+        }
     }
 
     std::size_t bestGoalPortal = (std::numeric_limits<std::size_t>::max)();
     float bestGoalCost = (std::numeric_limits<float>::max)();
     while (!open.empty()) {
+        if (options.shouldCancel && options.shouldCancel()) {
+            result.status = PathStatus::Cancelled;
+            return result;
+        }
+        if (options.maxExpandedPortals > 0 && result.stats.expandedPortals >= options.maxExpandedPortals) {
+            result.status = PathStatus::BudgetExceeded;
+            return result;
+        }
         const OpenEntry currentEntry = open.top();
         open.pop();
         State& currentState = states[currentEntry.portal];
@@ -123,6 +142,7 @@ PathResult IslandGraphPathfinder::findPath(
             continue;
         }
         currentState.closed = true;
+        ++result.stats.expandedPortals;
 
         const Link& currentLink = currentEntry.traversal.link;
         if (currentLink.toIsland == endIsland) {
@@ -170,6 +190,12 @@ PathResult IslandGraphPathfinder::findPath(
             nextState.previousPortal = currentEntry.portal;
             nextState.traversal = nextTraversal;
             open.push({nextPortalIndex, nextTraversal, gCost, gCost + hCost});
+            ++result.stats.queuedPortals;
+            result.stats.peakOpenSetSize = std::max(result.stats.peakOpenSetSize, open.size());
+            if (options.maxQueuedPortals > 0 && result.stats.queuedPortals > options.maxQueuedPortals) {
+                result.status = PathStatus::BudgetExceeded;
+                return result;
+            }
         }
     }
 

@@ -312,6 +312,29 @@ TEST_CASE("Pathfinder routes, filters, and reports edge cases") {
         CHECK(pathfinder.findPath(routeGraph, 0, 0, {}, {}).status == PathStatus::SameIsland);
         CHECK(pathfinder.findPath(routeGraph, 0, 9, {}, {}).status == PathStatus::InvalidIsland);
     }
+    SUBCASE("Reports search stats") {
+        const PathResult path = pathfinder.findPath(
+            routeGraph, 0, 2, {0.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f});
+        REQUIRE(path.status == PathStatus::Success);
+        CHECK(path.stats.expandedPortals > 0);
+        CHECK(path.stats.queuedPortals > 0);
+        CHECK(path.stats.peakOpenSetSize > 0);
+    }
+    SUBCASE("Honors expansion budget") {
+        PathOptions options;
+        options.maxExpandedPortals = 1;
+        const PathResult path = pathfinder.findPath(
+            routeGraph, 0, 2, {0.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, std::move(options));
+        CHECK(path.status == PathStatus::BudgetExceeded);
+        CHECK(path.stats.expandedPortals == 1);
+    }
+    SUBCASE("Honors cancellation") {
+        PathOptions options;
+        options.shouldCancel = [] { return true; };
+        const PathResult path = pathfinder.findPath(
+            routeGraph, 0, 2, {0.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, std::move(options));
+        CHECK(path.status == PathStatus::Cancelled);
+    }
     SUBCASE("Ignores malformed links") {
         const Link wrongSource{7, 1, {}, {}, 1.0f, 0.0f};
         const Link invalidTarget{0, 9, {}, {}, 1.0f, 0.0f};

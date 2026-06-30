@@ -3,6 +3,8 @@
 #include "IslandGraph.h"
 
 #include <functional>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace detour_island_graph {
@@ -26,13 +28,24 @@ struct PathOptions {
     LinkCost linkCost;
     LinkFilter linkFilter;
     HeuristicCost heuristicCost;
+    std::size_t maxExpandedPortals = 0;
+    std::size_t maxQueuedPortals = 0;
+    std::function<bool()> shouldCancel;
 };
 
 enum class PathStatus {
     Success,
     SameIsland,
     NoPath,
-    InvalidIsland
+    InvalidIsland,
+    BudgetExceeded,
+    Cancelled
+};
+
+struct PathStats {
+    std::size_t expandedPortals = 0;
+    std::size_t queuedPortals = 0;
+    std::size_t peakOpenSetSize = 0;
 };
 
 struct PathResult {
@@ -40,6 +53,7 @@ struct PathResult {
     std::vector<Link> links;
     std::vector<std::uint32_t> edgeIndices;
     float totalCost = 0.0f;
+    PathStats stats;
 };
 
 class IslandGraphPathfinder {
