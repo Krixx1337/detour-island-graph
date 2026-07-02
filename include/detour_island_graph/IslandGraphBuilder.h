@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -156,6 +157,8 @@ struct BoundaryTuning {
     float representativeCellSize = 0.0f;
     float representativeCellSizeRatio = 0.25f;
     int representativeDirectionBuckets = 8;
+    // Zero keeps all reduced representatives. Consumers can set this to build intentionally sparse graphs.
+    std::uint32_t maxRepresentativesPerIsland = 0;
     BoundaryRepresentativeRanker representativeRanker;
 
     float effectiveDeduplicationCellSize(float maxHorizontalGap) const noexcept {

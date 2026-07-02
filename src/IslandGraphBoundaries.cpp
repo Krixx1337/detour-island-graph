@@ -3,6 +3,7 @@
 #include "VectorMath.h"
 
 #include <algorithm>
+#include <limits>
 #include <unordered_map>
 
 namespace detour_island_graph::detail::discovery {
@@ -267,12 +268,52 @@ BuildStatus selectBoundaryRepresentatives(
             bestByCell[key] = RankedBoundary{boundary, rank};
         }
     }
-    representatives.reserve(bestByCell.size());
+    std::vector<RankedBoundary> rankedBoundaries;
+    rankedBoundaries.reserve(bestByCell.size());
     for (const auto& entry : bestByCell) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
-        representatives.push_back(entry.second.boundary);
+        rankedBoundaries.push_back(entry.second);
+    }
+    if (config.boundaries.maxRepresentativesPerIsland > 0) {
+        std::sort(
+            rankedBoundaries.begin(),
+            rankedBoundaries.end(),
+            [](const RankedBoundary& lhs, const RankedBoundary& rhs) {
+                if (lhs.boundary.island != rhs.boundary.island) {
+                    return lhs.boundary.island < rhs.boundary.island;
+                }
+                if (lhs.rank != rhs.rank) {
+                    return lhs.rank > rhs.rank;
+                }
+                return boundaryLess(lhs.boundary, rhs.boundary);
+            });
+        representatives.reserve(rankedBoundaries.size());
+        IslandId currentIsland = (std::numeric_limits<IslandId>::max)();
+        std::uint32_t keptForIsland = 0;
+        for (const RankedBoundary& rankedBoundary : rankedBoundaries) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            if (rankedBoundary.boundary.island != currentIsland) {
+                currentIsland = rankedBoundary.boundary.island;
+                keptForIsland = 0;
+            }
+            if (keptForIsland >= config.boundaries.maxRepresentativesPerIsland) {
+                continue;
+            }
+            representatives.push_back(rankedBoundary.boundary);
+            ++keptForIsland;
+        }
+    } else {
+        representatives.reserve(rankedBoundaries.size());
+        for (const RankedBoundary& rankedBoundary : rankedBoundaries) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            representatives.push_back(rankedBoundary.boundary);
+        }
     }
     std::sort(representatives.begin(), representatives.end(), boundaryLess);
     stats.boundaries.representativeCount = representatives.size();

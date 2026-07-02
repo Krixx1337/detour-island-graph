@@ -848,6 +848,36 @@ TEST_CASE("Boundary representative reduction preserves clearly separated vertica
     CHECK(stats.boundaries.representativeTrimmedCount == 0);
 }
 
+TEST_CASE("Boundary representative reduction can cap scan samples per island") {
+    IslandGraph graph({makeIsland(0), makeIsland(1)});
+    std::vector<Boundary> boundaries{
+        Boundary{0, 1, {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+        Boundary{0, 2, {4.0f, 0.0f, 0.0f}, {8.0f, 0.0f, 0.0f}, {6.0f, 0.0f, 0.0f}},
+        Boundary{0, 3, {10.0f, 0.0f, 0.0f}, {16.0f, 0.0f, 0.0f}, {13.0f, 0.0f, 0.0f}},
+        Boundary{1, 4, {0.0f, 0.0f, 10.0f}, {2.0f, 0.0f, 10.0f}, {1.0f, 0.0f, 10.0f}}};
+    BuildConfig config(8.0f, 8.0f, 8.0f);
+    config.boundaries.representativeReductionEnabled = true;
+    config.boundaries.representativeCellSize = 1.0f;
+    config.boundaries.maxRepresentativesPerIsland = 2;
+    BuildStats stats;
+    std::vector<Boundary> representatives;
+
+    const BuildStatus status = selectBoundaryRepresentatives(
+        boundaries,
+        graph,
+        config,
+        BuildOptions{},
+        stats,
+        representatives);
+
+    REQUIRE(status == BuildStatus::Success);
+    REQUIRE(representatives.size() == 3);
+    CHECK(stats.boundaries.representativeTrimmedCount == 1);
+    CHECK(representatives[0].polygon == 2);
+    CHECK(representatives[1].polygon == 3);
+    CHECK(representatives[2].polygon == 4);
+}
+
 TEST_CASE("Local pruning collapses only nearby 3D corridors across fragmented targets") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(8.0f, 8.0f, 8.0f);

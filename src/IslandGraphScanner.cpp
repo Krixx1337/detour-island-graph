@@ -106,6 +106,7 @@ BuildStatus discoverCandidates(
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
     std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
+    std::unordered_set<IslandId> queryTargetIslands;
     std::vector<dtPolyRef> nearby;
     PolygonCollector collector(nearby);
     std::vector<bool> outboundIslands(graph.islands().size(), true);
@@ -185,6 +186,7 @@ BuildStatus discoverCandidates(
                 return BuildStatus::QueryFailed;
             }
             stats.queries.nearbyPolygonCount += nearby.size();
+            queryTargetIslands.clear();
             for (dtPolyRef candidatePolygon : nearby) {
                 if (cancellationRequested(options)) {
                     return BuildStatus::Cancelled;
@@ -197,6 +199,11 @@ BuildStatus discoverCandidates(
                     continue;
                 }
                 if (*target >= graph.islands().size() || graph.islands()[*target].suppressed) {
+                    continue;
+                }
+                if (!recovery && config.density.pairScanSuppression.enabled &&
+                    !queryTargetIslands.insert(*target).second) {
+                    ++stats.candidates.pairScanSuppressedCount;
                     continue;
                 }
                 ++stats.candidates.pairScanCandidateCount;
