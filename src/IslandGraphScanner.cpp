@@ -120,7 +120,13 @@ BuildStatus discoverCandidates(
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            outboundIslands[island.id] = config.outboundIslandFilter(island, graph);
+            outboundIslands[island.id] = !island.suppressed && config.outboundIslandFilter(island, graph);
+        }
+    } else {
+        for (const Island& island : graph.islands()) {
+            if (island.id < outboundIslands.size()) {
+                outboundIslands[island.id] = !island.suppressed;
+            }
         }
     }
 
@@ -188,6 +194,9 @@ BuildStatus discoverCandidates(
                 }
                 const auto target = graph.findIslandForPolygon(candidatePolygon);
                 if (!target || *target == boundary.island) {
+                    continue;
+                }
+                if (*target >= graph.islands().size() || graph.islands()[*target].suppressed) {
                     continue;
                 }
                 ++stats.candidates.pairScanCandidateCount;

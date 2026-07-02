@@ -12,7 +12,9 @@ namespace detour_island_graph {
 
 struct MassAwareTuning {
     bool enabled = false;
+    bool suppressSmallIslands = false;
     float normalizationPercentile = 0.99f;
+    float suppressedIslandPercent = 0.0f;
     // Zero keeps the autoscaled preference derived from maxHorizontalGap * targetPreferenceRatio.
     // Set an explicit meter value only when a deployment has benchmarked map-specific tuning.
     float targetPreference = 0.0f;
@@ -281,6 +283,7 @@ struct BuildStats {
     CandidateStats candidates;
     std::size_t islandCount = 0;
     std::size_t polygonCount = 0;
+    std::size_t smallIslandsSuppressed = 0;
     std::size_t islandsWithOutgoingLinks = 0;
     std::size_t islandsWithIncomingLinks = 0;
     std::size_t isolatedIslandCount = 0;

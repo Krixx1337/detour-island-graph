@@ -120,6 +120,7 @@ struct Island {
     Vec3 boundsMin;
     Vec3 boundsMax;
     float massScore = 0.0f;
+    bool suppressed = false;
 };
 
 class IslandGraph {

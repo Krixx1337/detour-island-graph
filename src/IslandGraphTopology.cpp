@@ -99,20 +99,46 @@ BuildStatus calculateMassScores(
     const BuildConfig& config,
     const BuildOptions& options) {
     auto& islands = IslandGraphAccess::islands(graph);
-    if (!config.massAware.enabled || islands.empty()) {
+    if ((!config.massAware.enabled && !config.massAware.suppressSmallIslands) || islands.empty()) {
         return cancellationRequested(options) ? BuildStatus::Cancelled : BuildStatus::Success;
     }
 
     std::vector<float> rawMasses;
     rawMasses.reserve(islands.size());
-    for (const Island& island : islands) {
+    for (Island& island : islands) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
+        island.suppressed = false;
         const float spanX = island.boundsMax.x - island.boundsMin.x;
         const float spanZ = island.boundsMax.z - island.boundsMin.z;
         const float dominantSpan = (std::max)(spanX, spanZ);
         rawMasses.push_back(static_cast<float>(island.polygons.size()) * dominantSpan);
+    }
+
+    if (config.massAware.suppressSmallIslands && islands.size() >= 20) {
+        const std::size_t suppressCount = static_cast<std::size_t>(
+            std::floor(static_cast<float>(islands.size()) * config.massAware.suppressedIslandPercent));
+        if (suppressCount > 0) {
+            std::vector<std::size_t> rankedIslands;
+            rankedIslands.reserve(islands.size());
+            for (std::size_t index = 0; index < islands.size(); ++index) {
+                rankedIslands.push_back(index);
+            }
+            std::sort(rankedIslands.begin(), rankedIslands.end(), [&](std::size_t lhs, std::size_t rhs) {
+                if (rawMasses[lhs] != rawMasses[rhs]) {
+                    return rawMasses[lhs] < rawMasses[rhs];
+                }
+                return islands[lhs].id < islands[rhs].id;
+            });
+            for (std::size_t rank = 0; rank < suppressCount; ++rank) {
+                islands[rankedIslands[rank]].suppressed = true;
+            }
+        }
+    }
+
+    if (!config.massAware.enabled) {
+        return BuildStatus::Success;
     }
 
     std::vector<float> sortedMasses;
@@ -300,6 +326,9 @@ BuildStatus calculateGraphHealthStats(
             ++stats.islandsWithIncomingLinks;
         }
         const Island& graphIsland = graph.islands()[island];
+        if (graphIsland.suppressed) {
+            ++stats.smallIslandsSuppressed;
+        }
         stats.totalIslandMass += static_cast<double>(graphIsland.massScore);
         const std::size_t bucket = massBucketIndex(graphIsland.massScore);
         MassBucketStats& bucketStats = stats.massBuckets[bucket];

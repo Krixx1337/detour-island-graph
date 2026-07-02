@@ -228,7 +228,13 @@ BuildStatus pruneCandidates(
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            outboundIslands[island.id] = config.outboundIslandFilter(island, graph);
+            outboundIslands[island.id] = !island.suppressed && config.outboundIslandFilter(island, graph);
+        }
+    } else {
+        for (const Island& island : islands) {
+            if (island.id < outboundIslands.size()) {
+                outboundIslands[island.id] = !island.suppressed;
+            }
         }
     }
     edges.clear();
@@ -303,6 +309,12 @@ BuildStatus pruneCandidates(
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
+        }
+        if (candidate.fromIsland >= islands.size() ||
+            candidate.toIsland >= islands.size() ||
+            !outboundIslands[candidate.fromIsland] ||
+            islands[candidate.toIsland].suppressed) {
+            continue;
         }
         bool duplicate = false;
         if (config.density.localPruning.enabled) {

@@ -63,6 +63,11 @@ bool validate(const BuildConfig& config, std::string& message) {
                 massAware.normalizationPercentile <= 1.0f,
             "massAware.normalizationPercentile must be finite and in the range (0, 1].")) return false;
     if (!require(
+            std::isfinite(massAware.suppressedIslandPercent) &&
+                massAware.suppressedIslandPercent >= 0.0f &&
+                massAware.suppressedIslandPercent < 1.0f,
+            "massAware.suppressedIslandPercent must be finite and in the range [0, 1).")) return false;
+    if (!require(
             std::isfinite(massAware.targetPreference) && massAware.targetPreference >= 0.0f,
             "massAware.targetPreference must be finite and non-negative.")) return false;
     if (!require(

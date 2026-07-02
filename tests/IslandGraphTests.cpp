@@ -217,6 +217,13 @@ detour_island_graph::Island makeIsland(
     return island;
 }
 
+detour_island_graph::Island makeMassIsland(std::uint32_t id, float span) {
+    detour_island_graph::Island island = makeIsland(id, {static_cast<dtPolyRef>(100 + id)});
+    island.boundsMin = {0.0f, 0.0f, 0.0f};
+    island.boundsMax = {span, 0.0f, 1.0f};
+    return island;
+}
+
 detour_island_graph::BuildConfig disconnectedBuildConfig() {
     detour_island_graph::BuildConfig config(3.0f, 2.0f, 4.0f);
     config.boundaries.deduplicationCellSize = 0.5f;
@@ -756,6 +763,64 @@ TEST_CASE("Builder mass-aware tuning") {
         invalidMassAwareConfig.massAware.normalizationPercentile = 0.0f;
         CHECK(builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration);
     }
+    SUBCASE("Rejects invalid small-island suppression percent") {
+        const auto navMesh = buildDisconnectedNavMesh();
+        BuildConfig invalidMassAwareConfig(30.0f, 30.0f, 30.0f);
+        invalidMassAwareConfig.massAware.suppressSmallIslands = true;
+        invalidMassAwareConfig.massAware.suppressedIslandPercent = 1.0f;
+        CHECK(builder.build(*navMesh, invalidMassAwareConfig).status == BuildStatus::InvalidConfiguration);
+    }
+}
+
+TEST_CASE("Small-island suppression removes the lowest mass percentile from topology") {
+    std::vector<Island> testIslands;
+    for (std::uint32_t id = 0; id < 20; ++id) {
+        testIslands.push_back(makeMassIsland(id, static_cast<float>(id + 1)));
+    }
+    IslandGraph graph(std::move(testIslands));
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.massAware.enabled = true;
+    config.massAware.suppressSmallIslands = true;
+    config.massAware.suppressedIslandPercent = 0.05f;
+    config.density.localPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    config.density.spannerPruning.enabled = false;
+
+    REQUIRE(detour_island_graph::detail::calculateMassScores(graph, config, BuildOptions{}) == BuildStatus::Success);
+    REQUIRE(graph.islands().size() == 20);
+    CHECK(graph.islands()[0].suppressed);
+    CHECK_FALSE(graph.islands()[1].suppressed);
+    CHECK(graph.findIslandForPolygon(100).has_value());
+
+    BuildStats pruneStats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f},
+        Link{1, 0, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 1.0f, 0.0f},
+        Link{1, 2, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, 1.0f, 0.0f}};
+    REQUIRE(pruneCandidates(graph, config, BuildOptions{}, pruneStats, candidates) == BuildStatus::Success);
+    CHECK_FALSE(hasLink(graph, 0, 1));
+    CHECK_FALSE(hasLink(graph, 1, 0));
+    CHECK(hasLink(graph, 1, 2));
+
+    BuildStats healthStats;
+    REQUIRE(detour_island_graph::detail::calculateGraphHealthStats(graph, BuildOptions{}, healthStats) == BuildStatus::Success);
+    CHECK(healthStats.smallIslandsSuppressed == 1);
+}
+
+TEST_CASE("Small-island suppression is disabled on tiny graphs") {
+    std::vector<Island> testIslands;
+    for (std::uint32_t id = 0; id < 19; ++id) {
+        testIslands.push_back(makeMassIsland(id, static_cast<float>(id + 1)));
+    }
+    IslandGraph graph(std::move(testIslands));
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.massAware.suppressSmallIslands = true;
+    config.massAware.suppressedIslandPercent = 0.05f;
+
+    REQUIRE(detour_island_graph::detail::calculateMassScores(graph, config, BuildOptions{}) == BuildStatus::Success);
+    for (const Island& island : graph.islands()) {
+        CHECK_FALSE(island.suppressed);
+    }
 }
 
 TEST_CASE("Boundary representative reduction preserves clearly separated vertical layers") {
@@ -1105,6 +1170,16 @@ TEST_CASE("Serializer") {
         const SerializationResult massRoundTrip = IslandGraphSerializer::read(massSerialized);
         REQUIRE(static_cast<bool>(massRoundTrip));
         CHECK(massRoundTrip.graph.islands()[0].massScore == massAwareBuild.graph.islands()[0].massScore);
+    }
+    SUBCASE("Round trip preserves suppressed island flags") {
+        detour_island_graph::detail::IslandGraphAccess::islands(routeGraph)[1].suppressed = true;
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        serialized.seekg(0);
+        const SerializationResult roundTrip = IslandGraphSerializer::read(serialized);
+        REQUIRE(static_cast<bool>(roundTrip));
+        CHECK_FALSE(roundTrip.graph.islands()[0].suppressed);
+        CHECK(roundTrip.graph.islands()[1].suppressed);
     }
     SUBCASE("Rejects truncated stream") {
         std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);

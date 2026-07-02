@@ -128,6 +128,9 @@ BuildStatus extractBoundaries(
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
+        if (island.suppressed) {
+            continue;
+        }
         for (dtPolyRef reference : island.polygons) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
@@ -198,7 +201,13 @@ BuildStatus selectBoundaryRepresentatives(
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            outboundIslands[island.id] = config.outboundIslandFilter(island, graph);
+            outboundIslands[island.id] = !island.suppressed && config.outboundIslandFilter(island, graph);
+        }
+    } else {
+        for (const Island& island : graph.islands()) {
+            if (island.id < outboundIslands.size()) {
+                outboundIslands[island.id] = !island.suppressed;
+            }
         }
     }
     std::vector<Boundary> outboundBoundaries;

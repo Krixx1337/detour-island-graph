@@ -153,6 +153,7 @@ SerializationStatus IslandGraphSerializer::write(std::ostream& stream, const Isl
             !writeVec3(stream, island.boundsMin) ||
             !writeVec3(stream, island.boundsMax) ||
             !writeFloat(stream, island.massScore) ||
+            !writeUnsigned(stream, static_cast<std::uint8_t>(island.suppressed ? 1 : 0)) ||
             !writeCount(stream, island.polygons.size())) {
             return SerializationStatus::IoError;
         }
@@ -223,6 +224,7 @@ SerializationResult IslandGraphSerializer::read(
         std::unordered_map<dtPolyRef, IslandId> polygonOwners;
         for (std::uint32_t islandIndex = 0; islandIndex < islandCount; ++islandIndex) {
             Island& island = islands[islandIndex];
+            std::uint8_t suppressed = 0;
             if (!readUnsigned(stream, island.id) ||
                 island.id != islandIndex ||
                 !readVec3(stream, island.center) ||
@@ -234,9 +236,12 @@ SerializationResult IslandGraphSerializer::read(
                 !readFloat(stream, island.massScore) ||
                 !std::isfinite(island.massScore) ||
                 island.massScore < 0.0f ||
-                island.massScore > 1.0f) {
+                island.massScore > 1.0f ||
+                !readUnsigned(stream, suppressed) ||
+                suppressed > 1) {
                 return malformed("Serialized island data is invalid.");
             }
+            island.suppressed = suppressed != 0;
 
             std::uint32_t polygonCount = 0;
             constexpr std::size_t polygonAllocationEstimate =
