@@ -133,6 +133,13 @@ bool validate(const BuildConfig& config, std::string& message) {
                 (std::isfinite(density.spannerPruning.pathRatio) &&
                  density.spannerPruning.pathRatio >= 1.0f),
             "Enabled spanner pruning requires a finite path ratio of at least one.")) return false;
+    if (!require(
+            !density.distinctTargetReserve.enabled ||
+                (density.distinctTargetReserve.minTargetsPerIsland <=
+                     density.distinctTargetReserve.maxTargetsPerIsland &&
+                 std::isfinite(density.distinctTargetReserve.massPower) &&
+                 density.distinctTargetReserve.massPower > 0.0f),
+            "Enabled distinct target reserve requires min targets no greater than max targets and a positive finite mass power.")) return false;
     return true;
 }
 

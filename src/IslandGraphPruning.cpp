@@ -174,6 +174,45 @@ void collapseAcceptedLocalDuplicates(
     }
 }
 
+std::vector<std::uint32_t> makeDistinctTargetReserveBudgets(
+    const IslandGraph& graph,
+    const BuildConfig& config) {
+    std::vector<std::uint32_t> budgets(graph.islands().size(), 0);
+    if (!config.density.distinctTargetReserve.enabled) {
+        return budgets;
+    }
+    for (const Island& island : graph.islands()) {
+        if (island.id >= budgets.size()) {
+            continue;
+        }
+        budgets[island.id] = config.density.distinctTargetReserve.targetCountFor(
+            island.massScore,
+            config.massAware.enabled);
+    }
+    return budgets;
+}
+
+bool needsDistinctTargetReserve(
+    IslandId sourceIsland,
+    IslandId targetIsland,
+    const std::vector<std::uint32_t>& budgets,
+    const std::vector<std::unordered_set<IslandId>>& reservedTargets) {
+    return sourceIsland < budgets.size() &&
+        sourceIsland < reservedTargets.size() &&
+        reservedTargets[sourceIsland].size() < budgets[sourceIsland] &&
+        reservedTargets[sourceIsland].find(targetIsland) == reservedTargets[sourceIsland].end();
+}
+
+void reserveDistinctTarget(
+    IslandId sourceIsland,
+    IslandId targetIsland,
+    const std::vector<std::uint32_t>& budgets,
+    std::vector<std::unordered_set<IslandId>>& reservedTargets) {
+    if (needsDistinctTargetReserve(sourceIsland, targetIsland, budgets, reservedTargets)) {
+        reservedTargets[sourceIsland].insert(targetIsland);
+    }
+}
+
 } // namespace
 
 bool isBetterLink(const Link& lhs, const Link& rhs, const IslandGraph& graph, const BuildConfig& config) {
@@ -306,6 +345,10 @@ BuildStatus pruneCandidates(
     locallyAccepted.reserve(candidates.size());
     std::vector<std::vector<Link>> acceptedOutgoing(islands.size());
     std::vector<std::vector<Link>> spannerOutgoing(islands.size());
+    const std::vector<std::uint32_t> distinctTargetReserveBudgets =
+        makeDistinctTargetReserveBudgets(graph, config);
+    std::vector<std::unordered_set<IslandId>> localReservedTargets(islands.size());
+    std::vector<std::unordered_set<IslandId>> spannerReservedTargets(islands.size());
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
@@ -326,15 +369,38 @@ BuildStatus pruneCandidates(
                 // pair is not enough to collapse links; both endpoints must occupy nearby space.
                 return withinLocalPruningWindow(candidate, existing, radiusSquared);
             });
+            if (duplicate &&
+                needsDistinctTargetReserve(
+                    candidate.fromIsland,
+                    candidate.toIsland,
+                    distinctTargetReserveBudgets,
+                    localReservedTargets)) {
+                // Guardrail: huge mainland islands must retain several distinct neighboring
+                // islands before local cleanup can collapse exits. This is a target reserve, not
+                // a link quota, so duplicate links to already-kept targets still get removed.
+                duplicate = false;
+                ++stats.candidates.distinctTargetReserveCount;
+            }
             if (!duplicate) {
                 accepted.push_back(candidate);
+                reserveDistinctTarget(
+                    candidate.fromIsland,
+                    candidate.toIsland,
+                    distinctTargetReserveBudgets,
+                    localReservedTargets);
                 if (symmetricCapabilities &&
                     candidate.toIsland < islands.size() &&
                     outboundIslands[candidate.toIsland]) {
                     // Guardrail: symmetric traversal stores one bidirectional edge, so source-local
                     // pruning must also reserve the reverse source bucket. Without this, opposite
                     // scan directions can keep duplicate corridors that add branching but no reach.
-                    acceptedBySource[candidate.toIsland].push_back(reverseLink(candidate));
+                    const Link reverse = reverseLink(candidate);
+                    acceptedBySource[candidate.toIsland].push_back(reverse);
+                    reserveDistinctTarget(
+                        reverse.fromIsland,
+                        reverse.toIsland,
+                        distinctTargetReserveBudgets,
+                        localReservedTargets);
                 }
             } else {
                 ++stats.candidates.localPruningRejectCount;
@@ -359,6 +425,17 @@ BuildStatus pruneCandidates(
             }
         }
         if (config.density.spannerPruning.enabled &&
+            needsDistinctTargetReserve(
+                candidate.fromIsland,
+                candidate.toIsland,
+                distinctTargetReserveBudgets,
+                spannerReservedTargets) &&
+            hasAcceptableIndirectRoute(
+                candidate,
+                spannerOutgoing,
+                config.density.spannerPruning.pathRatio)) {
+            ++stats.candidates.distinctTargetReserveCount;
+        } else if (config.density.spannerPruning.enabled &&
             hasAcceptableIndirectRoute(
                 candidate,
                 spannerOutgoing,
@@ -369,10 +446,21 @@ BuildStatus pruneCandidates(
 
         acceptedOutgoing[candidate.fromIsland].push_back(candidate);
         spannerOutgoing[candidate.fromIsland].push_back(candidate);
+        reserveDistinctTarget(
+            candidate.fromIsland,
+            candidate.toIsland,
+            distinctTargetReserveBudgets,
+            spannerReservedTargets);
         if (symmetricCapabilities &&
             candidate.toIsland < spannerOutgoing.size() &&
             outboundIslands[candidate.toIsland]) {
-            spannerOutgoing[candidate.toIsland].push_back(reverseLink(candidate));
+            const Link reverse = reverseLink(candidate);
+            spannerOutgoing[candidate.toIsland].push_back(reverse);
+            reserveDistinctTarget(
+                reverse.fromIsland,
+                reverse.toIsland,
+                distinctTargetReserveBudgets,
+                spannerReservedTargets);
         }
         ++stats.candidates.acceptedLinkCount;
         if (config.density.globalPruning.enabled) {

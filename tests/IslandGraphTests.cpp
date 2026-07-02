@@ -874,7 +874,7 @@ TEST_CASE("Boundary representative reduction can cap scan samples per island") {
     REQUIRE(status == BuildStatus::Success);
     REQUIRE(representatives.size() == 3);
     CHECK(stats.boundaries.representativeTrimmedCount == 1);
-    CHECK(representatives[0].polygon == 2);
+    CHECK(representatives[0].polygon == 1);
     CHECK(representatives[1].polygon == 3);
     CHECK(representatives[2].polygon == 4);
 }
@@ -975,6 +975,39 @@ TEST_CASE("Local pruning collapses only nearby 3D corridors across fragmented ta
     REQUIRE(firstTraversal.has_value());
     CHECK(firstTraversal->toIsland == 1);
     CHECK(hasLink(graph, 0, 2));
+}
+
+TEST_CASE("Distinct target reserve protects large-island targets from local pruning") {
+    IslandGraph graph({makeIsland(0), makeIsland(1), makeIsland(2)});
+    auto& islands = detour_island_graph::detail::IslandGraphAccess::islands(graph);
+    islands[0].massScore = 1.0f;
+    islands[1].massScore = 0.8f;
+    islands[2].massScore = 0.8f;
+
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.massAware.enabled = true;
+    config.density.localPruning.enabled = true;
+    config.density.localPruning.radius = 10.0f;
+    config.density.globalPruning.enabled = false;
+    config.density.spannerPruning.enabled = false;
+    config.density.distinctTargetReserve.enabled = true;
+    config.density.distinctTargetReserve.maxTargetsPerIsland = 2;
+    config.density.distinctTargetReserve.massPower = 1.0f;
+
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 0.0f, 0.0f}, {5.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 2, {0.2f, 0.0f, 0.0f}, {5.2f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 2, {0.3f, 0.0f, 0.0f}, {5.3f, 0.0f, 0.0f}, 5.0f, 0.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(hasLink(graph, 0, 1));
+    CHECK(hasLink(graph, 0, 2));
+    CHECK(graph.findIsland(0)->edgeIndices.size() == 2);
+    CHECK(stats.candidates.distinctTargetReserveCount == 1);
+    CHECK(stats.candidates.localPruningRejectCount == 1);
 }
 
 TEST_CASE("Local pruning preserves distant same-pair corridors") {
@@ -1078,6 +1111,39 @@ TEST_CASE("Symmetric spanner sees reverse traversal without duplicating stored e
     CHECK(hasLink(graph, 1, 2));
     CHECK(hasLink(graph, 2, 1));
     CHECK_FALSE(hasLink(graph, 0, 2));
+}
+
+TEST_CASE("Distinct target reserve protects large-island targets from spanner pruning") {
+    IslandGraph graph({makeIsland(0), makeIsland(1), makeIsland(2)});
+    auto& islands = detour_island_graph::detail::IslandGraphAccess::islands(graph);
+    islands[0].massScore = 1.0f;
+    islands[1].massScore = 1.0f;
+    islands[2].massScore = 1.0f;
+
+    BuildConfig config(30.0f, 30.0f, 30.0f);
+    config.massAware.enabled = true;
+    config.density.localPruning.enabled = false;
+    config.density.globalPruning.enabled = false;
+    config.density.spannerPruning.enabled = true;
+    config.density.spannerPruning.pathRatio = 2.0f;
+    config.density.distinctTargetReserve.enabled = true;
+    config.density.distinctTargetReserve.maxTargetsPerIsland = 2;
+    config.density.distinctTargetReserve.massPower = 1.0f;
+
+    BuildStats stats;
+    std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 0.0f, 0.0f}, {5.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{1, 2, {5.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, 5.0f, 0.0f},
+        Link{0, 2, {0.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, 10.0f, 0.0f}};
+
+    const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
+
+    REQUIRE(status == BuildStatus::Success);
+    CHECK(stats.candidates.spannerPruningRejectCount == 0);
+    CHECK(stats.candidates.distinctTargetReserveCount == 1);
+    CHECK(hasLink(graph, 0, 1));
+    CHECK(hasLink(graph, 0, 2));
+    CHECK(hasLink(graph, 1, 2));
 }
 
 TEST_CASE("Symmetric local pruning collapses opposite-direction corridor samples") {

@@ -120,6 +120,35 @@ struct SpannerPruningTuning {
     float pathRatio = 1.5f;
 };
 
+struct DistinctTargetReserveTuning {
+    bool enabled = false;
+    std::uint32_t minTargetsPerIsland = 0;
+    std::uint32_t maxTargetsPerIsland = 0;
+    float massPower = 1.0f;
+
+    std::uint32_t targetCountFor(float massScore, bool massAware) const noexcept {
+        if (!enabled || maxTargetsPerIsland == 0) {
+            return 0;
+        }
+        if (!massAware) {
+            return maxTargetsPerIsland;
+        }
+        const float mass = std::clamp(massScore, 0.0f, 1.0f);
+        const float weightedMass = std::pow(mass, massPower);
+        float targetCount = static_cast<float>(minTargetsPerIsland);
+        if (minTargetsPerIsland < maxTargetsPerIsland) {
+            targetCount +=
+                static_cast<float>(maxTargetsPerIsland - minTargetsPerIsland) *
+                weightedMass;
+        } else {
+            targetCount = static_cast<float>(maxTargetsPerIsland);
+        }
+        return (std::min)(
+            static_cast<std::uint32_t>((std::max)(0.0f, std::floor(targetCount))),
+            maxTargetsPerIsland);
+    }
+};
+
 struct DensityTuning {
     float verticalLayerCollapseRatio = 0.25f;
     PairScanSuppressionTuning pairScanSuppression;
@@ -128,6 +157,7 @@ struct DensityTuning {
     LocalPruningTuning localPruning;
     GlobalPruningTuning globalPruning;
     SpannerPruningTuning spannerPruning;
+    DistinctTargetReserveTuning distinctTargetReserve;
 };
 
 struct GapDiscoveryTuning {
@@ -296,6 +326,7 @@ struct CandidateStats {
     std::size_t closestPointFailureCount = 0;
     std::size_t projectedCount = 0;
     std::size_t deduplicatedCount = 0;
+    std::size_t distinctTargetReserveCount = 0;
     std::size_t acceptedLinkCount = 0;
     std::size_t globalPruningRejectCount = 0;
     std::size_t spannerPruningRejectCount = 0;

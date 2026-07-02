@@ -112,6 +112,14 @@ bool boundaryLess(const Boundary& lhs, const Boundary& rhs) {
     return lhs.midpoint.z < rhs.midpoint.z;
 }
 
+bool boundarySpatialLess(const Boundary& lhs, const Boundary& rhs) {
+    if (lhs.midpoint.x != rhs.midpoint.x) return lhs.midpoint.x < rhs.midpoint.x;
+    if (lhs.midpoint.z != rhs.midpoint.z) return lhs.midpoint.z < rhs.midpoint.z;
+    if (lhs.midpoint.y != rhs.midpoint.y) return lhs.midpoint.y < rhs.midpoint.y;
+    if (lhs.polygon != rhs.polygon) return lhs.polygon < rhs.polygon;
+    return lhs.island < rhs.island;
+}
+
 } // namespace
 
 BuildStatus extractBoundaries(
@@ -286,41 +294,65 @@ BuildStatus selectBoundaryRepresentatives(
                 if (lhs.boundary.island != rhs.boundary.island) {
                     return lhs.boundary.island < rhs.boundary.island;
                 }
-                if (lhs.rank != rhs.rank) {
-                    return lhs.rank > rhs.rank;
-                }
-                return boundaryLess(lhs.boundary, rhs.boundary);
+                return boundarySpatialLess(lhs.boundary, rhs.boundary);
             });
         representatives.reserve(rankedBoundaries.size());
-        IslandId currentIsland = (std::numeric_limits<IslandId>::max)();
-        std::uint32_t keptForIsland = 0;
-        std::uint32_t budgetForIsland = 0;
-        for (std::size_t rankedIndex = 0; rankedIndex < rankedBoundaries.size(); ++rankedIndex) {
+        for (std::size_t islandBegin = 0; islandBegin < rankedBoundaries.size();) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
-            const RankedBoundary& rankedBoundary = rankedBoundaries[rankedIndex];
-            if (rankedBoundary.boundary.island != currentIsland) {
-                currentIsland = rankedBoundary.boundary.island;
-                keptForIsland = 0;
-                std::size_t islandEnd = rankedIndex;
-                while (islandEnd < rankedBoundaries.size() &&
-                    rankedBoundaries[islandEnd].boundary.island == currentIsland) {
-                    ++islandEnd;
-                }
-                const float massScore = currentIsland < graph.islands().size()
-                    ? graph.islands()[currentIsland].massScore
-                    : 0.0f;
-                budgetForIsland = config.boundaries.representativeBudgetFor(
-                    massScore,
-                    config.massAware.enabled,
-                    islandEnd - rankedIndex);
+            const IslandId currentIsland = rankedBoundaries[islandBegin].boundary.island;
+            std::size_t islandEnd = islandBegin;
+            while (islandEnd < rankedBoundaries.size() &&
+                rankedBoundaries[islandEnd].boundary.island == currentIsland) {
+                ++islandEnd;
             }
-            if (keptForIsland >= budgetForIsland) {
+
+            const std::size_t islandCandidateCount = islandEnd - islandBegin;
+            const float massScore = currentIsland < graph.islands().size()
+                ? graph.islands()[currentIsland].massScore
+                : 0.0f;
+            const std::uint32_t budgetForIsland = config.boundaries.representativeBudgetFor(
+                massScore,
+                config.massAware.enabled,
+                islandCandidateCount);
+            if (budgetForIsland == 0) {
+                islandBegin = islandEnd;
                 continue;
             }
-            representatives.push_back(rankedBoundary.boundary);
-            ++keptForIsland;
+            if (budgetForIsland >= islandCandidateCount) {
+                for (std::size_t index = islandBegin; index < islandEnd; ++index) {
+                    if (cancellationRequested(options)) {
+                        return BuildStatus::Cancelled;
+                    }
+                    representatives.push_back(rankedBoundaries[index].boundary);
+                }
+                islandBegin = islandEnd;
+                continue;
+            }
+
+            // Guardrail: large islands must spend sparse scan budget around their boundary,
+            // not only on the longest local edges. Each spatial segment keeps its best-ranked
+            // representative so mainland-style islands retain geographically distributed exits.
+            for (std::uint32_t slot = 0; slot < budgetForIsland; ++slot) {
+                if (cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
+                const std::size_t segmentBegin =
+                    islandBegin + ((static_cast<std::size_t>(slot) * islandCandidateCount) / budgetForIsland);
+                const std::size_t segmentEnd =
+                    islandBegin + (((static_cast<std::size_t>(slot) + 1U) * islandCandidateCount) / budgetForIsland);
+                std::size_t bestIndex = segmentBegin;
+                for (std::size_t index = segmentBegin + 1U; index < segmentEnd; ++index) {
+                    if (rankedBoundaries[index].rank > rankedBoundaries[bestIndex].rank ||
+                        (rankedBoundaries[index].rank == rankedBoundaries[bestIndex].rank &&
+                            boundaryLess(rankedBoundaries[index].boundary, rankedBoundaries[bestIndex].boundary))) {
+                        bestIndex = index;
+                    }
+                }
+                representatives.push_back(rankedBoundaries[bestIndex].boundary);
+            }
+            islandBegin = islandEnd;
         }
     } else {
         representatives.reserve(rankedBoundaries.size());
