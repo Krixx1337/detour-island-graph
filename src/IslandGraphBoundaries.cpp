@@ -3,6 +3,7 @@
 #include "VectorMath.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <unordered_map>
 
@@ -276,7 +277,8 @@ BuildStatus selectBoundaryRepresentatives(
         }
         rankedBoundaries.push_back(entry.second);
     }
-    if (config.boundaries.maxRepresentativesPerIsland > 0) {
+    if (config.boundaries.maxRepresentativesPerIsland > 0 ||
+        config.boundaries.representativeBudgetScale > 0.0f) {
         std::sort(
             rankedBoundaries.begin(),
             rankedBoundaries.end(),
@@ -292,15 +294,29 @@ BuildStatus selectBoundaryRepresentatives(
         representatives.reserve(rankedBoundaries.size());
         IslandId currentIsland = (std::numeric_limits<IslandId>::max)();
         std::uint32_t keptForIsland = 0;
-        for (const RankedBoundary& rankedBoundary : rankedBoundaries) {
+        std::uint32_t budgetForIsland = 0;
+        for (std::size_t rankedIndex = 0; rankedIndex < rankedBoundaries.size(); ++rankedIndex) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
             }
+            const RankedBoundary& rankedBoundary = rankedBoundaries[rankedIndex];
             if (rankedBoundary.boundary.island != currentIsland) {
                 currentIsland = rankedBoundary.boundary.island;
                 keptForIsland = 0;
+                std::size_t islandEnd = rankedIndex;
+                while (islandEnd < rankedBoundaries.size() &&
+                    rankedBoundaries[islandEnd].boundary.island == currentIsland) {
+                    ++islandEnd;
+                }
+                const float massScore = currentIsland < graph.islands().size()
+                    ? graph.islands()[currentIsland].massScore
+                    : 0.0f;
+                budgetForIsland = config.boundaries.representativeBudgetFor(
+                    massScore,
+                    config.massAware.enabled,
+                    islandEnd - rankedIndex);
             }
-            if (keptForIsland >= config.boundaries.maxRepresentativesPerIsland) {
+            if (keptForIsland >= budgetForIsland) {
                 continue;
             }
             representatives.push_back(rankedBoundary.boundary);

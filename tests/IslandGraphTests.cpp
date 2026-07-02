@@ -10,6 +10,7 @@
 
 #include <DetourNavMeshBuilder.h>
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -876,6 +877,70 @@ TEST_CASE("Boundary representative reduction can cap scan samples per island") {
     CHECK(representatives[0].polygon == 2);
     CHECK(representatives[1].polygon == 3);
     CHECK(representatives[2].polygon == 4);
+}
+
+TEST_CASE("Boundary representative reduction scales scan budget smoothly by mass") {
+    IslandGraph graph({makeIsland(0), makeIsland(1), makeIsland(2)});
+    auto& islands = detour_island_graph::detail::IslandGraphAccess::islands(graph);
+    islands[0].massScore = 0.0f;
+    islands[1].massScore = 0.5f;
+    islands[2].massScore = 1.0f;
+
+    std::vector<Boundary> boundaries;
+    for (IslandId island = 0; island < 3; ++island) {
+        for (std::uint32_t index = 0; index < 4; ++index) {
+            const float x = static_cast<float>(index * 4);
+            const float length = static_cast<float>(index + 1);
+            boundaries.push_back(Boundary{
+                island,
+                static_cast<dtPolyRef>((island * 10U) + index + 1U),
+                {x, 0.0f, static_cast<float>(island * 10)},
+                {x + length, 0.0f, static_cast<float>(island * 10)},
+                {x + (length * 0.5f), 0.0f, static_cast<float>(island * 10)}});
+        }
+    }
+    BuildConfig config(8.0f, 8.0f, 8.0f);
+    config.massAware.enabled = true;
+    config.boundaries.representativeReductionEnabled = true;
+    config.boundaries.representativeCellSize = 1.0f;
+    config.boundaries.minRepresentativesPerIsland = 1;
+    config.boundaries.maxRepresentativesPerIsland = 4;
+    BuildStats stats;
+    std::vector<Boundary> representatives;
+
+    const BuildStatus status = selectBoundaryRepresentatives(
+        boundaries,
+        graph,
+        config,
+        BuildOptions{},
+        stats,
+        representatives);
+
+    REQUIRE(status == BuildStatus::Success);
+    REQUIRE(representatives.size() == 7);
+    CHECK(std::count_if(representatives.begin(), representatives.end(), [](const Boundary& boundary) {
+        return boundary.island == 0;
+    }) == 1);
+    CHECK(std::count_if(representatives.begin(), representatives.end(), [](const Boundary& boundary) {
+        return boundary.island == 1;
+    }) == 2);
+    CHECK(std::count_if(representatives.begin(), representatives.end(), [](const Boundary& boundary) {
+        return boundary.island == 2;
+    }) == 4);
+
+    config.boundaries.minRepresentativesPerIsland = 0;
+    config.boundaries.maxRepresentativesPerIsland = 8;
+    config.boundaries.representativeMassPower = 2.0f;
+    CHECK(config.boundaries.representativeBudgetFor(0.25f, true) == 0);
+    CHECK(config.boundaries.representativeBudgetFor(0.5f, true) == 2);
+    CHECK(config.boundaries.representativeBudgetFor(0.75f, true) == 4);
+    CHECK(config.boundaries.representativeBudgetFor(1.0f, true) == 8);
+
+    config.boundaries.maxRepresentativesPerIsland = 0;
+    config.boundaries.representativeBudgetScale = 2.0f;
+    CHECK(config.boundaries.representativeBudgetFor(0.25f, true, 100) == 1);
+    CHECK(config.boundaries.representativeBudgetFor(0.5f, true, 100) == 5);
+    CHECK(config.boundaries.representativeBudgetFor(1.0f, true, 100) == 20);
 }
 
 TEST_CASE("Local pruning collapses only nearby 3D corridors across fragmented targets") {

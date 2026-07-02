@@ -157,8 +157,13 @@ struct BoundaryTuning {
     float representativeCellSize = 0.0f;
     float representativeCellSizeRatio = 0.25f;
     int representativeDirectionBuckets = 8;
-    // Zero keeps all reduced representatives. Consumers can set this to build intentionally sparse graphs.
+    // Zero max keeps all reduced representatives. When mass-aware tuning is enabled, min/max
+    // define a smooth per-island representative budget from low mass to high mass.
+    std::uint32_t minRepresentativesPerIsland = 0;
     std::uint32_t maxRepresentativesPerIsland = 0;
+    float representativeMassPower = 1.0f;
+    // Zero disables complexity scaling. When enabled, budget grows with sqrt(reduced reps on island).
+    float representativeBudgetScale = 0.0f;
     BoundaryRepresentativeRanker representativeRanker;
 
     float effectiveDeduplicationCellSize(float maxHorizontalGap) const noexcept {
@@ -181,6 +186,36 @@ struct BoundaryTuning {
         return static_cast<int>(
             std::floor(normalizedAngle * static_cast<float>(bucketCount) / tau)) %
             bucketCount;
+    }
+
+    std::uint32_t representativeBudgetFor(
+        float massScore,
+        bool massAware,
+        std::size_t availableRepresentatives = 0) const noexcept {
+        if (maxRepresentativesPerIsland == 0 && representativeBudgetScale <= 0.0f) {
+            return 0;
+        }
+        if (!massAware) {
+            return maxRepresentativesPerIsland;
+        }
+        const float mass = std::clamp(massScore, 0.0f, 1.0f);
+        const float weightedMass = std::pow(mass, representativeMassPower);
+        float budget = static_cast<float>(minRepresentativesPerIsland);
+        if (representativeBudgetScale > 0.0f) {
+            budget += representativeBudgetScale *
+                std::sqrt(static_cast<float>(availableRepresentatives)) *
+                weightedMass;
+        } else if (minRepresentativesPerIsland < maxRepresentativesPerIsland) {
+            budget +=
+                static_cast<float>(maxRepresentativesPerIsland - minRepresentativesPerIsland) *
+                weightedMass;
+        } else {
+            budget = static_cast<float>(maxRepresentativesPerIsland);
+        }
+        const std::uint32_t roundedBudget = static_cast<std::uint32_t>((std::max)(0.0f, std::floor(budget)));
+        return maxRepresentativesPerIsland > 0
+            ? (std::min)(roundedBudget, maxRepresentativesPerIsland)
+            : roundedBudget;
     }
 };
 

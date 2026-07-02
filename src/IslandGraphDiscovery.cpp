@@ -52,8 +52,12 @@ bool validate(const BuildConfig& config, std::string& message) {
                  config.boundaries.representativeCellSize >= 0.0f &&
                  std::isfinite(config.boundaries.representativeCellSizeRatio) &&
                  config.boundaries.representativeCellSizeRatio > 0.0f &&
-                 config.boundaries.representativeDirectionBuckets > 0),
-            "Enabled boundary representative reduction requires a non-negative finite cell size, a positive finite cell-size ratio, and at least one direction bucket.")) return false;
+                 config.boundaries.representativeDirectionBuckets > 0 &&
+                 std::isfinite(config.boundaries.representativeMassPower) &&
+                 config.boundaries.representativeMassPower > 0.0f &&
+                 std::isfinite(config.boundaries.representativeBudgetScale) &&
+                 config.boundaries.representativeBudgetScale >= 0.0f),
+            "Enabled boundary representative reduction requires a non-negative finite cell size, a positive finite cell-size ratio, at least one direction bucket, a positive finite mass power, and a non-negative finite budget scale.")) return false;
     if (!require(
             config.query.maxNodes > 0 && config.query.maxNodes <= 65535,
             "query.maxNodes must be in the range [1, 65535].")) return false;
