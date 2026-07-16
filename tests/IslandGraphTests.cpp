@@ -19,6 +19,7 @@
 
 namespace {
 using detour_island_graph::detail::discovery::Boundary;
+using detour_island_graph::detail::discovery::discoverCandidates;
 using detour_island_graph::detail::discovery::pruneCandidates;
 using detour_island_graph::detail::discovery::selectBoundaryRepresentatives;
 
@@ -216,6 +217,92 @@ detour_island_graph::Island makeIsland(
     island.id = id;
     island.polygons = std::move(polygons);
     return island;
+}
+
+std::unique_ptr<dtNavMesh, NavMeshDeleter> buildPairScanOrderNavMesh(bool invalidTargetFirst) {
+    constexpr unsigned short nullIndex = 0xffff;
+    const unsigned short vertices[] = {
+        0, 0, 0,  1, 0, 0,  1, 0, 1,  0, 0, 1,
+        3, 0, 0,  4, 0, 0,  4, 0, 1,  3, 0, 1,
+        4, 0, 4,  5, 0, 4,  5, 0, 5,  4, 0, 5};
+    const unsigned short validVertices[] = {4, 5, 6, 7};
+    const unsigned short invalidVertices[] = {8, 9, 10, 11};
+    std::vector<unsigned short> polygons{
+        0, 1, 2, 3, nullIndex, nullIndex, nullIndex, nullIndex};
+    const unsigned short* firstTarget = invalidTargetFirst ? invalidVertices : validVertices;
+    const unsigned short* secondTarget = invalidTargetFirst ? validVertices : invalidVertices;
+    polygons.insert(polygons.end(), firstTarget, firstTarget + 4);
+    polygons.insert(polygons.end(), {3, nullIndex, nullIndex, nullIndex});
+    polygons.insert(polygons.end(), secondTarget, secondTarget + 4);
+    polygons.insert(polygons.end(), {2, nullIndex, nullIndex, nullIndex});
+    const unsigned short flags[] = {1, 1, 1};
+    const unsigned char areas[] = {0, 0, 0};
+
+    dtNavMeshCreateParams params;
+    std::memset(&params, 0, sizeof(params));
+    params.verts = vertices;
+    params.vertCount = 12;
+    params.polys = polygons.data();
+    params.polyFlags = flags;
+    params.polyAreas = areas;
+    params.polyCount = 3;
+    params.nvp = 4;
+    params.bmax[0] = 5.0f;
+    params.bmax[1] = 1.0f;
+    params.bmax[2] = 5.0f;
+    params.walkableHeight = 2.0f;
+    params.walkableRadius = 0.5f;
+    params.walkableClimb = 0.5f;
+    params.cs = 1.0f;
+    params.ch = 1.0f;
+    params.buildBvTree = true;
+
+    unsigned char* data = nullptr;
+    int dataSize = 0;
+    REQUIRE(dtCreateNavMeshData(&params, &data, &dataSize));
+    std::unique_ptr<dtNavMesh, NavMeshDeleter> navMesh(dtAllocNavMesh());
+    REQUIRE(navMesh != nullptr);
+    REQUIRE(dtStatusSucceed(navMesh->init(data, dataSize, DT_TILE_FREE_DATA)));
+    return navMesh;
+}
+
+std::vector<detour_island_graph::Link> discoverPairScanCandidates(bool invalidTargetFirst) {
+    const auto navMesh = buildPairScanOrderNavMesh(invalidTargetFirst);
+    detour_island_graph::BuildConfig config(4.0f, 1.0f, 1.0f);
+    config.density.pairScanSuppression.enabled = true;
+    config.density.candidateDeduplication.enabled = false;
+
+    dtNavMeshQuery* query = dtAllocNavMeshQuery();
+    REQUIRE(query != nullptr);
+    REQUIRE(dtStatusSucceed(query->init(navMesh.get(), config.query.maxNodes)));
+    const dtMeshTile* tile = static_cast<const dtNavMesh&>(*navMesh).getTile(0);
+    REQUIRE(tile != nullptr);
+    const dtPolyRef polygonBase = navMesh->getPolyRefBase(tile);
+    const dtPolyRef sourcePolygon = polygonBase;
+    detour_island_graph::Island sourceIsland;
+    sourceIsland.id = 0;
+    sourceIsland.polygons = {sourcePolygon};
+    detour_island_graph::Island targetIsland;
+    targetIsland.id = 1;
+    targetIsland.polygons = {polygonBase | 1, polygonBase | 2};
+    detour_island_graph::IslandGraph graph({std::move(sourceIsland), std::move(targetIsland)});
+    const Boundary boundary{0, sourcePolygon, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.5f}};
+    detour_island_graph::BuildStats stats;
+    std::vector<detour_island_graph::Link> candidates;
+    std::string message;
+    const detour_island_graph::BuildStatus status = discoverCandidates(
+        *query,
+        graph,
+        config,
+        {},
+        {boundary},
+        {boundary},
+        stats,
+        candidates,
+        message);
+    dtFreeNavMeshQuery(query);
+    REQUIRE(status == detour_island_graph::BuildStatus::Success);
+    return candidates;
 }
 
 detour_island_graph::Island makeMassIsland(std::uint32_t id, float span) {
@@ -510,6 +597,22 @@ TEST_CASE("Builder rejects non-finite navmesh boundary coordinates") {
         IslandGraphBuilder{}.build(*navMesh, disconnectedBuildConfig());
     CHECK(result.status == BuildStatus::InvalidNavMesh);
     CHECK(result.message == "Navmesh boundary contains non-finite coordinates.");
+    CHECK(result.graph.empty());
+}
+
+TEST_CASE("Pair scan suppression evaluates all target polygons before committing") {
+    const std::vector<Link> invalidFirst = discoverPairScanCandidates(true);
+    const std::vector<Link> validFirst = discoverPairScanCandidates(false);
+
+    REQUIRE(invalidFirst.size() == 1);
+    REQUIRE(validFirst.size() == 1);
+    CHECK(invalidFirst[0].fromIsland == validFirst[0].fromIsland);
+    CHECK(invalidFirst[0].toIsland == validFirst[0].toIsland);
+    CHECK(invalidFirst[0].start.x == validFirst[0].start.x);
+    CHECK(invalidFirst[0].start.z == validFirst[0].start.z);
+    CHECK(invalidFirst[0].end.x == validFirst[0].end.x);
+    CHECK(invalidFirst[0].end.z == validFirst[0].end.z);
+    CHECK(invalidFirst[0].horizontalDistance <= 4.0f);
 }
 
 TEST_CASE("Builder density tuning") {
@@ -1167,6 +1270,41 @@ TEST_CASE("Symmetric local pruning collapses opposite-direction corridor samples
     CHECK(hasLink(graph, 1, 0));
 }
 
+TEST_CASE("Vertical symmetry is independent from horizontal traversal range") {
+    const std::vector<Link> candidates{
+        Link{0, 1, {0.0f, 0.0f, 0.0f}, {5.0f, 2.0f, 0.0f}, 5.0f, 2.0f}};
+
+    SUBCASE("Equal climb and drop synthesize reverse traversal") {
+        IslandGraph graph({makeIsland(0), makeIsland(1)});
+        BuildConfig config(30.0f, 4.0f, 4.0f);
+        config.density.localPruning.enabled = false;
+        config.density.globalPruning.enabled = false;
+        config.density.spannerPruning.enabled = false;
+        BuildStats stats;
+        std::vector<Link> working = candidates;
+
+        REQUIRE(pruneCandidates(graph, config, {}, stats, working) == BuildStatus::Success);
+        REQUIRE(graph.edges().size() == 1);
+        CHECK(hasLink(graph, 0, 1));
+        CHECK(hasLink(graph, 1, 0));
+    }
+
+    SUBCASE("Unequal climb and drop preserve direction") {
+        IslandGraph graph({makeIsland(0), makeIsland(1)});
+        BuildConfig config(30.0f, 4.0f, 15.0f);
+        config.density.localPruning.enabled = false;
+        config.density.globalPruning.enabled = false;
+        config.density.spannerPruning.enabled = false;
+        BuildStats stats;
+        std::vector<Link> working = candidates;
+
+        REQUIRE(pruneCandidates(graph, config, {}, stats, working) == BuildStatus::Success);
+        REQUIRE(graph.edges().size() == 1);
+        CHECK(hasLink(graph, 0, 1));
+        CHECK_FALSE(hasLink(graph, 1, 0));
+    }
+}
+
 TEST_CASE("Global pruning runs after local pruning") {
     IslandGraph graph({makeIsland(0), makeIsland(1)});
     BuildConfig config(30.0f, 30.0f, 30.0f);
@@ -1415,6 +1553,75 @@ TEST_CASE("Serializer") {
                 serialized,
                 makeGraph({makeIsland(0), makeIsland(1)}, {makeEdge(invalidLink)})) ==
             SerializationStatus::Success);
+        serialized.seekg(0);
+        CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects inconsistent edge geometry") {
+        Edge invalidEdge = makeEdge(firstHop);
+        invalidEdge.horizontalDistance = -1.0f;
+        invalidEdge.verticalDeltaAB = 10.0f;
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(
+                serialized,
+                IslandGraph({makeIsland(0), makeIsland(1)}, {invalidEdge})) ==
+            SerializationStatus::Success);
+        serialized.seekg(0);
+        CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects self edges and edges without traversal") {
+        Edge selfEdge = makeEdge(Link{0, 0, {}, {1.0f, 0.0f, 0.0f}, 1.0f, 0.0f});
+        std::stringstream selfSerialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(selfSerialized, IslandGraph({makeIsland(0)}, {selfEdge})) ==
+            SerializationStatus::Success);
+        selfSerialized.seekg(0);
+        CHECK(IslandGraphSerializer::read(selfSerialized).status == SerializationStatus::MalformedData);
+
+        Edge blockedEdge = makeEdge(firstHop);
+        blockedEdge.traversableAB = false;
+        blockedEdge.traversableBA = false;
+        std::stringstream blockedSerialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(
+                blockedSerialized,
+                IslandGraph({makeIsland(0), makeIsland(1)}, {blockedEdge})) ==
+            SerializationStatus::Success);
+        blockedSerialized.seekg(0);
+        CHECK(IslandGraphSerializer::read(blockedSerialized).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects invalid traversal flag bytes") {
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, routeGraph) == SerializationStatus::Success);
+        std::string bytes = serialized.str();
+        REQUIRE(bytes.size() > 56);
+        bytes[56] = 2;
+        std::stringstream invalid(bytes, std::ios::in | std::ios::binary);
+        CHECK(IslandGraphSerializer::read(invalid).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects zero polygon references and inverted bounds") {
+        std::stringstream zeroPolygon(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(zeroPolygon, IslandGraph({makeIsland(0, {0})})) ==
+            SerializationStatus::Success);
+        zeroPolygon.seekg(0);
+        CHECK(IslandGraphSerializer::read(zeroPolygon).status == SerializationStatus::MalformedData);
+
+        Island invertedBounds = makeIsland(0);
+        invertedBounds.boundsMin = {2.0f, 0.0f, 0.0f};
+        invertedBounds.boundsMax = {1.0f, 0.0f, 0.0f};
+        std::stringstream inverted(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(
+            IslandGraphSerializer::write(inverted, IslandGraph({invertedBounds})) ==
+            SerializationStatus::Success);
+        inverted.seekg(0);
+        CHECK(IslandGraphSerializer::read(inverted).status == SerializationStatus::MalformedData);
+    }
+    SUBCASE("Rejects adjacency that disagrees with edges") {
+        IslandGraph invalidAdjacency = routeGraph;
+        detour_island_graph::detail::IslandGraphAccess::islands(invalidAdjacency)[0].edgeIndices.clear();
+        std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(IslandGraphSerializer::write(serialized, invalidAdjacency) == SerializationStatus::Success);
         serialized.seekg(0);
         CHECK(IslandGraphSerializer::read(serialized).status == SerializationStatus::MalformedData);
     }

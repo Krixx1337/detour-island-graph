@@ -40,8 +40,10 @@ BuildResult IslandGraphBuilder::build(
     BuildResult result;
     const detail::Clock::time_point totalStart = detail::Clock::now();
     const auto finish = [&]() {
-        if (result.status == BuildStatus::Cancelled) {
+        if (result.status != BuildStatus::Success) {
             result.graph = {};
+        }
+        if (result.status == BuildStatus::Cancelled) {
             result.message = "Build cancelled.";
         }
         result.stats.timings.totalMs = detail::elapsedMilliseconds(totalStart);

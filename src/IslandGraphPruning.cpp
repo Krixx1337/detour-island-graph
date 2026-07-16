@@ -260,7 +260,7 @@ BuildStatus pruneCandidates(
 
     auto& islands = IslandGraphAccess::islands(graph);
     auto& edges = IslandGraphAccess::edges(graph);
-    const bool symmetricCapabilities = hasSymmetricTraversalCapabilities(config);
+    const bool symmetricCapabilities = hasSymmetricVerticalCapabilities(config);
     std::vector<bool> outboundIslands(islands.size(), true);
     if (config.outboundIslandFilter) {
         for (const Island& island : islands) {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace detour_island_graph::detail::discovery {
 namespace {
@@ -106,11 +107,12 @@ BuildStatus discoverCandidates(
     const Clock::time_point discoveryStart = Clock::now();
     std::unordered_map<LinkKey, Link, LinkKeyHash> deduplicated;
     std::unordered_set<PairScanKey, PairScanKeyHash> scannedPairCells;
-    std::unordered_set<IslandId> queryTargetIslands;
     std::vector<dtPolyRef> nearby;
+    std::vector<std::pair<IslandId, dtPolyRef>> targetPolygons;
     PolygonCollector collector(nearby);
     std::vector<bool> outboundIslands(graph.islands().size(), true);
-    const bool symmetricCapabilities = hasSymmetricTraversalCapabilities(config);
+    const bool symmetricCapabilities = hasSymmetricVerticalCapabilities(config);
+    const bool sphericalTraversalEnvelope = usesSphericalTraversalEnvelope(config);
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         maxTraversalExtent(config));
     dtQueryFilter filter;
@@ -186,7 +188,46 @@ BuildStatus discoverCandidates(
                 return BuildStatus::QueryFailed;
             }
             stats.queries.nearbyPolygonCount += nearby.size();
-            queryTargetIslands.clear();
+            const auto evaluateCandidate = [&](
+                                               dtPolyRef candidatePolygon,
+                                               IslandId target,
+                                               Link& link,
+                                               bool& accepted) {
+                accepted = false;
+                float projected[3];
+                bool overPolygon = false;
+                ++stats.candidates.closestPointQueryCount;
+                if (dtStatusFailed(query.closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
+                    ++stats.candidates.closestPointFailureCount;
+                    return BuildStatus::Success;
+                }
+                ++stats.candidates.projectedCount;
+                (void)overPolygon;
+                link.fromIsland = boundary.island;
+                link.toIsland = target;
+                link.start = boundary.midpoint;
+                link.end = fromDetour(projected);
+                if (!isFinite(link.end)) {
+                    message = "Navmesh query returned non-finite coordinates.";
+                    return BuildStatus::InvalidNavMesh;
+                }
+                link.horizontalDistance = horizontalDistance(link.start, link.end);
+                link.verticalDistance = link.end.y - link.start.y;
+                if (sphericalTraversalEnvelope && distance(link.start, link.end) > maxTraversalExtent(config)) {
+                    return BuildStatus::Success;
+                }
+                if (!sphericalTraversalEnvelope &&
+                    (link.horizontalDistance > maxHorizontalGap ||
+                     link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
+                     link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown)) {
+                    return BuildStatus::Success;
+                }
+                accepted = true;
+                return BuildStatus::Success;
+            };
+
+            targetPolygons.clear();
+            targetPolygons.reserve(nearby.size());
             for (dtPolyRef candidatePolygon : nearby) {
                 if (cancellationRequested(options)) {
                     return BuildStatus::Cancelled;
@@ -201,54 +242,73 @@ BuildStatus discoverCandidates(
                 if (*target >= graph.islands().size() || graph.islands()[*target].suppressed) {
                     continue;
                 }
-                if (!recovery && config.density.pairScanSuppression.enabled &&
-                    !queryTargetIslands.insert(*target).second) {
-                    ++stats.candidates.pairScanSuppressedCount;
+                if (!recovery && config.density.pairScanSuppression.enabled) {
+                    targetPolygons.push_back({*target, candidatePolygon});
                     continue;
                 }
+                Link link;
+                bool accepted = false;
                 ++stats.candidates.pairScanCandidateCount;
-                if (!recovery && config.density.pairScanSuppression.enabled) {
-                    const bool normalizePair = symmetricCapabilities && *target < boundary.island;
-                    const PairScanKey pairScanKey{
-                        normalizePair ? *target : boundary.island,
-                        normalizePair ? boundary.island : *target,
-                        quantize(boundary.midpoint.x, pairScanCellSize),
-                        quantize(boundary.midpoint.y, pairScanCellSize),
-                        quantize(boundary.midpoint.z, pairScanCellSize)};
-                    if (!scannedPairCells.insert(pairScanKey).second) {
-                        ++stats.candidates.pairScanSuppressedCount;
-                        continue;
+                const BuildStatus evaluationStatus =
+                    evaluateCandidate(candidatePolygon, *target, link, accepted);
+                if (evaluationStatus != BuildStatus::Success) {
+                    return evaluationStatus;
+                }
+                if (accepted) {
+                    recordCandidate(link, recovery);
+                }
+            }
+
+            std::sort(targetPolygons.begin(), targetPolygons.end());
+            for (std::size_t targetBegin = 0; targetBegin < targetPolygons.size();) {
+                if (cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
+                const IslandId target = targetPolygons[targetBegin].first;
+                std::size_t targetEnd = targetBegin + 1;
+                while (targetEnd < targetPolygons.size() &&
+                    targetPolygons[targetEnd].first == target) {
+                    ++targetEnd;
+                }
+                const bool normalizePair = symmetricCapabilities && target < boundary.island;
+                const PairScanKey pairScanKey{
+                    normalizePair ? target : boundary.island,
+                    normalizePair ? boundary.island : target,
+                    quantize(boundary.midpoint.x, pairScanCellSize),
+                    quantize(boundary.midpoint.y, pairScanCellSize),
+                    quantize(boundary.midpoint.z, pairScanCellSize)};
+                const auto committed = scannedPairCells.find(pairScanKey);
+                if (committed != scannedPairCells.end()) {
+                    ++stats.candidates.pairScanSuppressedCount;
+                    targetBegin = targetEnd;
+                    continue;
+                }
+
+                ++stats.candidates.pairScanCandidateCount;
+                std::optional<Link> bestLink;
+                for (std::size_t targetIndex = targetBegin; targetIndex < targetEnd; ++targetIndex) {
+                    if (cancellationRequested(options)) {
+                        return BuildStatus::Cancelled;
+                    }
+                    const dtPolyRef candidatePolygon = targetPolygons[targetIndex].second;
+                    Link link;
+                    bool accepted = false;
+                    const BuildStatus evaluationStatus =
+                        evaluateCandidate(candidatePolygon, target, link, accepted);
+                    if (evaluationStatus != BuildStatus::Success) {
+                        return evaluationStatus;
+                    }
+                    if (accepted &&
+                        (!bestLink.has_value() || isBetterLink(link, *bestLink, graph, config))) {
+                        bestLink = link;
                     }
                 }
-                float projected[3];
-                bool overPolygon = false;
-                ++stats.candidates.closestPointQueryCount;
-                if (dtStatusFailed(query.closestPointOnPoly(candidatePolygon, center, projected, &overPolygon))) {
-                    ++stats.candidates.closestPointFailureCount;
-                    continue;
+                if (bestLink.has_value()) {
+                    // Suppression is a committed-work record: failed projections never consume it.
+                    scannedPairCells.insert(pairScanKey);
+                    recordCandidate(*bestLink, false);
                 }
-                ++stats.candidates.projectedCount;
-                (void)overPolygon;
-                Link link;
-                link.fromIsland = boundary.island;
-                link.toIsland = *target;
-                link.start = boundary.midpoint;
-                link.end = fromDetour(projected);
-                if (!isFinite(link.end)) {
-                    message = "Navmesh query returned non-finite coordinates.";
-                    return BuildStatus::InvalidNavMesh;
-                }
-                link.horizontalDistance = horizontalDistance(link.start, link.end);
-                link.verticalDistance = link.end.y - link.start.y;
-                if (symmetricCapabilities && distance(link.start, link.end) > maxTraversalExtent(config)) {
-                    continue;
-                }
-                if (!symmetricCapabilities && (link.horizontalDistance > maxHorizontalGap ||
-                    link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
-                    link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown)) {
-                    continue;
-                }
-                recordCandidate(link, recovery);
+                targetBegin = targetEnd;
             }
         }
         return BuildStatus::Success;

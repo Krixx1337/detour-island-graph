@@ -1,5 +1,6 @@
 #include <detour_island_graph/IslandGraphSerializer.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <istream>
@@ -86,6 +87,29 @@ bool isFinite(const Edge& edge) {
         std::isfinite(edge.verticalDeltaAB);
 }
 
+bool nearlyEqual(float lhs, float rhs) {
+    const float scale = (std::max)({1.0f, std::abs(lhs), std::abs(rhs)});
+    return std::abs(lhs - rhs) <= 0.0001f * scale;
+}
+
+bool hasOrderedBounds(const Island& island) {
+    return island.boundsMin.x <= island.boundsMax.x &&
+        island.boundsMin.y <= island.boundsMax.y &&
+        island.boundsMin.z <= island.boundsMax.z;
+}
+
+bool hasConsistentGeometry(const Edge& edge) {
+    const float deltaX = edge.pointB.x - edge.pointA.x;
+    const float deltaZ = edge.pointB.z - edge.pointA.z;
+    const float expectedHorizontalDistance = std::sqrt((deltaX * deltaX) + (deltaZ * deltaZ));
+    const float expectedVerticalDelta = edge.pointB.y - edge.pointA.y;
+    return edge.horizontalDistance >= 0.0f &&
+        std::isfinite(expectedHorizontalDistance) &&
+        std::isfinite(expectedVerticalDelta) &&
+        nearlyEqual(edge.horizontalDistance, expectedHorizontalDistance) &&
+        nearlyEqual(edge.verticalDeltaAB, expectedVerticalDelta);
+}
+
 bool writeEdge(std::ostream& stream, const Edge& edge) {
     return writeUnsigned(stream, edge.islandA) &&
         writeUnsigned(stream, edge.islandB) &&
@@ -110,8 +134,11 @@ bool readEdge(std::istream& stream, Edge& edge) {
         !readUnsigned(stream, traversableBA)) {
         return false;
     }
-    edge.traversableAB = traversableAB != 0;
-    edge.traversableBA = traversableBA != 0;
+    if (traversableAB > 1 || traversableBA > 1) {
+        return false;
+    }
+    edge.traversableAB = traversableAB == 1;
+    edge.traversableBA = traversableBA == 1;
     return true;
 }
 
@@ -215,9 +242,18 @@ SerializationResult IslandGraphSerializer::read(
             if (!readEdge(stream, edge) ||
                 edge.islandA >= islandCount ||
                 edge.islandB >= islandCount ||
-                !isFinite(edge)) {
+                edge.islandA == edge.islandB ||
+                (!edge.traversableAB && !edge.traversableBA) ||
+                !isFinite(edge) ||
+                !hasConsistentGeometry(edge)) {
                 return malformed("Serialized edge data is invalid.");
             }
+        }
+        std::vector<std::vector<std::uint32_t>> expectedAdjacency(islandCount);
+        for (std::size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex) {
+            const Edge& edge = edges[edgeIndex];
+            expectedAdjacency[edge.islandA].push_back(static_cast<std::uint32_t>(edgeIndex));
+            expectedAdjacency[edge.islandB].push_back(static_cast<std::uint32_t>(edgeIndex));
         }
 
         std::vector<Island> islands(islandCount);
@@ -233,6 +269,7 @@ SerializationResult IslandGraphSerializer::read(
                 !isFinite(island.center) ||
                 !isFinite(island.boundsMin) ||
                 !isFinite(island.boundsMax) ||
+                !hasOrderedBounds(island) ||
                 !readFloat(stream, island.massScore) ||
                 !std::isfinite(island.massScore) ||
                 island.massScore < 0.0f ||
@@ -254,6 +291,7 @@ SerializationResult IslandGraphSerializer::read(
             for (dtPolyRef& polygon : island.polygons) {
                 std::uint64_t serializedPolygon = 0;
                 if (!readUnsigned(stream, serializedPolygon) ||
+                    serializedPolygon == 0 ||
                     serializedPolygon > static_cast<std::uint64_t>((std::numeric_limits<dtPolyRef>::max)())) {
                     return malformed("Serialized polygon reference is invalid.");
                 }
@@ -268,15 +306,18 @@ SerializationResult IslandGraphSerializer::read(
                 !consumeAllocationBudget(remainingAllocationBytes, edgeIndexCount, sizeof(std::uint32_t))) {
                 return malformed("Serialized adjacency count exceeds the allocation budget.");
             }
-            island.edgeIndices.resize(edgeIndexCount);
-            for (std::uint32_t& edgeIndex : island.edgeIndices) {
+            if (edgeIndexCount != expectedAdjacency[islandIndex].size()) {
+                return malformed("Serialized island adjacency does not match graph edges.");
+            }
+            for (std::size_t adjacencyIndex = 0; adjacencyIndex < edgeIndexCount; ++adjacencyIndex) {
+                std::uint32_t edgeIndex = 0;
                 if (!readUnsigned(stream, edgeIndex) ||
-                    edgeIndex >= edgeCount ||
-                    !connectsIsland(edges[edgeIndex], island.id)) {
+                    edgeIndex != expectedAdjacency[islandIndex][adjacencyIndex]) {
                     return malformed("Serialized island adjacency is invalid.");
                 }
             }
         }
+        expectedAdjacency.clear();
 
         SerializationResult result;
         result.graph = IslandGraph(std::move(islands), std::move(edges));
