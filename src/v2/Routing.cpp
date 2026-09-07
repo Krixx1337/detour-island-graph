@@ -39,6 +39,10 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
     Point startPosition, Point endPosition, const RouteOptions& options, RouteScratch* scratch) {
     RouteResult result;
     try {
+        checkpoint(options.canceled);
+        result.stats.estimatedTransferCost = !options.transferCost || options.transferCostEstimated;
+        result.stats.estimatedCrossingCost = !options.crossingCost || options.crossingCostEstimated;
+        result.stats.estimatedCost = result.stats.estimatedTransferCost || result.stats.estimatedCrossingCost;
         const std::size_t islandCount =
             graph.offsets().empty() ? 0 : graph.offsets().size() - 1;
         if (!finite(startPosition) || !finite(endPosition)) {
@@ -59,7 +63,7 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
         }
         const RouteCostContext context{graph, startIsland, endIsland};
         const bool useAStar = !options.transferCost && !options.crossingCost;
-        result.stats.estimatedCost = useAStar;
+        result.stats.usedAStar = useAStar;
 
         RouteScratch local;
         RouteScratch* work = scratch ? scratch : &local;
@@ -70,12 +74,14 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
                                   float& cost) {
             cost = options.transferCost ? options.transferCost(island, from, to)
                                         : euclidean(from.position, to.position);
+            checkpoint(options.canceled);
             return usable(cost);
         };
         const auto gap = [&](const CompiledCrossing& crossing, bool reverse, float& cost) {
             cost = options.crossingCost ? options.crossingCost(crossing, reverse, context)
                                         : euclidean(crossing.crossing.a.position,
                                               crossing.crossing.b.position);
+            checkpoint(options.canceled);
             return usable(cost);
         };
         const auto heuristic = [&](const Anchor& from) {
@@ -87,6 +93,7 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
                 throw Abort{RouteStatus::BudgetExceeded};
             auto& state = work->states[portal];
             state.cost = gCost;
+            state.closed = false;
             state.leg = std::move(leg);
             work->heap.push_back({gCost + hCost, gCost, portal});
             std::push_heap(work->heap.begin(), work->heap.end(),
@@ -130,11 +137,6 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
         const Anchor endAnchor{endIsland, 0, endPosition};
         while (!work->heap.empty()) {
             checkpoint(options.canceled);
-            if (options.maxExpandedPortals > 0 &&
-                result.stats.expandedPortals >= options.maxExpandedPortals) {
-                result.status = RouteStatus::BudgetExceeded;
-                return result;
-            }
             std::pop_heap(work->heap.begin(), work->heap.end(),
                 [](const RouteScratch::HeapEntry& a, const RouteScratch::HeapEntry& b) {
                     return a.bound > b.bound;
@@ -147,10 +149,15 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
             }
             auto& state = work->states[entry.portal];
             if (state.closed || entry.cost != state.cost) continue;
+            // Stale entries consume no expansion budget. A proven result at
+            // exactly the cap succeeds without expanding irrelevant portals.
+            if (bestPortal != kNoPortal && entry.bound >= bestCost) break;
+            if (options.maxExpandedPortals > 0 &&
+                result.stats.expandedPortals >= options.maxExpandedPortals)
+                throw Abort{RouteStatus::BudgetExceeded};
             state.closed = true;
             ++result.stats.expandedPortals;
 
-            const Traversal& arrival = graph.traversals()[entry.portal];
             const Anchor& arrivedAt = state.leg.to;
             if (arrivedAt.island == endIsland) {
                 float finish = 0;
@@ -160,7 +167,7 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
                     bestPortal = entry.portal;
                 }
             }
-            if (state.cost >= bestCost) continue;
+            if (entry.bound >= bestCost) continue;
 
             const IslandId island = arrivedAt.island;
             if (island >= islandCount) {
@@ -192,6 +199,8 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
                 if (!usable(gCost)) continue;
                 auto& target = work->states[next];
                 if (gCost >= target.cost) continue;
+                const float bound = gCost + heuristic(to);
+                if (bestPortal != kNoPortal && bound >= bestCost) continue;
                 target.cost = gCost;
                 target.previous = entry.portal;
                 push(next, {traversal.crossing, traversal.reverse, from, to}, gCost,
@@ -199,6 +208,7 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
             }
         }
 
+        checkpoint(options.canceled);
         if (bestPortal == kNoPortal) {
             result.status = RouteStatus::NoPath;
             return result;

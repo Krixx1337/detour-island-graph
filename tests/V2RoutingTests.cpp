@@ -127,7 +127,7 @@ TEST_CASE("V2 routing reports same island invalid and blocked queries") {
     CHECK(findRoute(*graph, 0, 1, {0, 0, 0}, {6, 0, 0}, invalid).status == RouteStatus::NoPath);
 }
 
-TEST_CASE("V2 routing custom costs use Dijkstra and drop the estimated label") {
+TEST_CASE("V2 routing custom costs use Dijkstra without hiding estimated components") {
     auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
     auto graph = buildPair(mesh);
     RouteOptions scaled;
@@ -137,7 +137,8 @@ TEST_CASE("V2 routing custom costs use Dijkstra and drop the estimated label") {
     const auto result = findRoute(*graph, 0, 1, {0, 0, 0}, {6, 0, 2}, scaled);
     CHECK(result.status == RouteStatus::Success);
     REQUIRE(result.value);
-    CHECK_FALSE(result.stats.estimatedCost);
+    CHECK(result.stats.estimatedCost);
+    CHECK_FALSE(result.stats.usedAStar);
     const auto& leg = result.value->legs.front();
     const float expected = 2 * distance({0, 0, 0}, leg.from.position) +
         distance(leg.from.position, leg.to.position) + 2 * distance(leg.to.position, {6, 0, 2});
@@ -162,7 +163,7 @@ TEST_CASE("V2 routing prefers cheap multi-hop over an expensive direct crossing"
     const auto result = findRoute(*graph, 0, 3, {0, 0, 0}, {6, 0, 6}, priced);
     CHECK(result.status == RouteStatus::Success);
     REQUIRE(result.value);
-    CHECK_FALSE(result.stats.estimatedCost);
+    CHECK(result.stats.estimatedCost);
     REQUIRE(result.value->legs.size() == 2);
     for (const auto& leg : result.value->legs) {
         const bool direct = (leg.from.island == 0 && leg.to.island == 3) ||
@@ -195,4 +196,115 @@ TEST_CASE("V2 routing budgets cancellation input and callback failures") {
     };
     CHECK(findRoute(*graph, 0, 1, {0, 0, 0}, {6, 0, 0}, throwing).status ==
         RouteStatus::CallbackFailed);
+}
+
+TEST_CASE("V2 routing stops at the proven bound before exhausting expansion budget") {
+    TopologyArtifact topology;
+    topology.islandCount = 3;
+    topology.polygons = {{1, 0}, {2, 1}, {3, 2}};
+    const auto validated = validateCrossings(topology, {1, 20, 0, 0}, {
+        {{0, 1, {}}, {1, 2, {1, 0, 0}}},
+        {{0, 1, {}}, {2, 3, {10, 0, 0}}}});
+    REQUIRE(validated.value);
+    const auto compiled = compileGraph(*validated.value);
+    REQUIRE(compiled.value);
+    RouteOptions options;
+    options.maxExpandedPortals = 1;
+    SUBCASE("geometric A star") {}
+    SUBCASE("custom Dijkstra") {
+        options.transferCost = [](IslandId, const Anchor& a, const Anchor& b) {
+            return distance(a.position, b.position);
+        };
+    }
+    const auto result = findRoute(**compiled.value, 0, 1, {}, {1, 0, 0}, options);
+    REQUIRE(result.value);
+    CHECK(result.stats.expandedPortals == 1);
+    CHECK(result.value->totalCost == 1);
+}
+
+TEST_CASE("V2 routing waits for competing arrival when native finish cost is expensive") {
+    TopologyArtifact topology;
+    topology.islandCount = 2;
+    topology.polygons = {{1, 0}, {2, 1}};
+    const auto validated = validateCrossings(topology, {1, 20, 0, 0}, {
+        {{0, 1, {}}, {1, 2, {1, 0, 0}}},
+        {{0, 1, {}}, {1, 2, {2, 0, 0}}}});
+    REQUIRE(validated.value);
+    const auto compiled = compileGraph(*validated.value);
+    REQUIRE(compiled.value);
+    RouteOptions options;
+    options.transferCost = [](IslandId island, const Anchor& from, const Anchor&) {
+        return island == 1 && from.position.x == 1 ? 100.0f : 0.0f;
+    };
+    const auto result = findRoute(**compiled.value, 0, 1, {}, {3, 0, 0}, options);
+    REQUIRE(result.value);
+    CHECK(result.value->totalCost == 2);
+    CHECK(result.value->legs.back().to.position.x == 2);
+    options.maxExpandedPortals = 1;
+    const auto limited = findRoute(**compiled.value, 0, 1, {}, {3, 0, 0}, options);
+    CHECK(limited.status == RouteStatus::BudgetExceeded);
+    CHECK_FALSE(limited.value);
+}
+
+TEST_CASE("V2 routing tracks transfer and crossing accuracy independently") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    auto graph = buildPair(mesh);
+    RouteOptions options;
+    options.transferCost = [](IslandId, const Anchor& a, const Anchor& b) { return distance(a.position, b.position); };
+    options.crossingCost = [](const CompiledCrossing&, bool, const RouteCostContext&) { return 1.0f; };
+    bool estimated = true;
+    SUBCASE("custom defaults remain estimates") {}
+    SUBCASE("measured transfers only") { options.transferCostEstimated = false; }
+    SUBCASE("both explicitly measured") {
+        options.transferCostEstimated = options.crossingCostEstimated = false;
+        estimated = false;
+    }
+    SUBCASE("missing callback cannot mark Euclidean measured") {
+        options.transferCost = {};
+        options.transferCostEstimated = options.crossingCostEstimated = false;
+    }
+    const auto result = findRoute(*graph, 0, 1, {}, {6, 0, 0}, options);
+    REQUIRE(result.value);
+    CHECK(result.stats.estimatedCost == estimated);
+    CHECK(result.stats.estimatedTransferCost == (!options.transferCost || options.transferCostEstimated));
+    CHECK(result.stats.estimatedCrossingCost == options.crossingCostEstimated);
+    CHECK_FALSE(result.stats.usedAStar);
+}
+
+TEST_CASE("V2 routing drains stale entries without charging expansion budget") {
+    TopologyArtifact topology;
+    topology.islandCount = 4;
+    topology.polygons = {{1, 0}, {2, 1}, {3, 2}, {4, 3}};
+    const auto validated = validateCrossings(topology, {1, 20, 0, 0}, {
+        {{0, 1, {}}, {1, 2, {1, 0, 0}}},
+        {{0, 1, {}}, {1, 2, {2, 0, 0}}},
+        {{1, 2, {3, 0, 0}}, {2, 3, {4, 0, 0}}}});
+    REQUIRE(validated.value);
+    const auto compiled = compileGraph(*validated.value);
+    REQUIRE(compiled.value);
+    RouteOptions options;
+    options.maxExpandedPortals = 3;
+    options.crossingFilter = [](const CompiledCrossing&, bool reverse, const RouteCostContext&) { return !reverse; };
+    options.transferCost = [](IslandId island, const Anchor& from, const Anchor&) {
+        return island == 1 && from.position.x == 1 ? 10.0f : 0.0f;
+    };
+    const auto result = findRoute(**compiled.value, 0, 3, {}, {}, options);
+    CHECK(result.status == RouteStatus::NoPath);
+    CHECK(result.stats.expandedPortals == 3);
+    CHECK(result.stats.queuedPortals == 4);
+}
+
+TEST_CASE("V2 routing observes cancellation triggered by final transfer") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    auto graph = buildPair(mesh);
+    bool canceled = false;
+    RouteOptions options;
+    options.canceled = [&] { return canceled; };
+    options.transferCost = [&](IslandId island, const Anchor& a, const Anchor& b) {
+        if (island == 1 && b.polygon == 0) canceled = true;
+        return distance(a.position, b.position);
+    };
+    const auto result = findRoute(*graph, 0, 1, {}, {6, 0, 0}, options);
+    CHECK(result.status == RouteStatus::Canceled);
+    CHECK_FALSE(result.value);
 }

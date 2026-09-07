@@ -8,7 +8,7 @@ follow-up chat was consolidated into the plan and removed.
 
 Pending additions: fully bounded production processing,
 one working host validator, mass-policy migration, lazy native Detour transfers,
-and routing correctness fixes. Existing host remains on V1.
+and native transfer integration. Existing host remains on V1.
 
 ## Library continuation, 2026-09-07
 
@@ -24,7 +24,7 @@ Benchmarking is deferred by request. Current work is library-only.
   pipeline uses it. Extraction can now be reused without rerunning polygon filters.
 - Verified selection, inactive-target discovery, wrapper equivalence, metrics on
   slopes, polygon exclusions, caps, cancellation, and callback failures.
-- MSVC Debug library/test build and all 88 tests pass. Benchmarking and host checks
+- MSVC Debug library/test build and all 93 tests pass. Benchmarking and host checks
   were not run.
 
 - Added `BuildInput::islandPolicy`, called once per native island with metrics.
@@ -231,12 +231,19 @@ Implemented in `src/v2/Routing.cpp`, declared in
   custom heuristic callback exists. Non-finite or negative costs block that
   candidate rather than poisoning the search; callback exceptions fail the
   query without partial output.
-- Search skips expansion when accumulated cost cannot improve the best completed
-  route, but does not implement the planned best-remaining-bound early exit.
+- Search discards stale entries, then checks the best remaining bound before
+  charging expansion budget. A proven route at exactly the cap succeeds.
+  Non-improving successors are not queued. Improved states can reopen.
   Same-island queries return `SameIsland` with no search.
-- Current `estimatedCost` follows default-cost/A* selection. A custom crossing
-  cost clears it even when transfers remain Euclidean. Separate cost provenance
-  remains required.
+- Transfer and crossing estimate flags are independent of A*/Dijkstra selection.
+  Custom providers default to estimated; callers may explicitly declare each
+  component non-estimated. Missing providers always retain the Euclidean estimate
+  flag. `estimatedCost` is true when either component is estimated, and
+  `usedAStar` reports search ordering separately.
+- Cancellation is checked on entry, after cost evaluation, and before publishing
+  query output. Regression tests cover exact expansion caps, stale entries,
+  competing arrivals with expensive final transfers, mixed cost provenance, and
+  cancellation from the final transfer callback.
 - No native Detour transfer integration or transfer cache is implemented. Lazy
   host transfers and a bounded per-query cache are now MVP requirements;
   cross-query caching remains deferred.
@@ -298,7 +305,7 @@ heightfield data remain caller-supplied validator concerns.
 3. Integrate host validation when host work resumes. Current exhaustive
    `PipelineResult` retains all artifacts and nearby-polygon collection has no
    separate temporary-memory cap; both need production changes.
-4. Add mass policy and lazy native transfers, fix routing gaps above, and extend
+4. Add mass policy and lazy native transfers, and extend
    persistence as remaining contracts change.
 5. Pass revised acceptance gates before host/settings/report migration and
    package version 2.0.0. Measure memory and query latency before deciding whether

@@ -46,6 +46,10 @@ struct RouteOptions {
     std::size_t maxExpandedPortals = 0; // Zero means uncapped.
     std::size_t maxQueuedPortals = 0;
     Cancel canceled;
+    // Applies only when the corresponding callback is supplied. A custom cost
+    // is estimated unless the caller explicitly declares measured/model costs.
+    bool transferCostEstimated = true;
+    bool crossingCostEstimated = true;
 };
 
 enum class RouteStatus : std::uint8_t {
@@ -65,10 +69,12 @@ struct RouteStats {
     std::size_t expandedPortals = 0;
     std::size_t queuedPortals = 0;
     std::size_t peakOpenSetSize = 0;
-    // True only when every cost came from the built-in Euclidean model.
-    // Any custom cost provider makes reported totals non-estimated and
-    // switches the search to Dijkstra ordering.
+    // Cost provenance is independent of search ordering. Built-in Euclidean
+    // components remain estimated even when another component is custom.
     bool estimatedCost = true;
+    bool estimatedTransferCost = true;
+    bool estimatedCrossingCost = true;
+    bool usedAStar = false;
 };
 
 struct Route {
