@@ -1,6 +1,12 @@
 # DetourIslandGraph — Comparative Audit vs Unity Auto Off-Mesh Links and Unreal Automatic Nav-Link Generation
 
 Date: 2026-09-07
+
+Historical comparison, not the implementation plan. See
+[EVOLUTION_RECOMMENDATIONS.md](EVOLUTION_RECOMMENDATIONS.md) for corrections to
+flight-validation, pruning, and bake-time claims below, and
+[V2_MVP_PLAN.md](V2_MVP_PLAN.md) for current scope and acceptance requirements.
+
 Scope: `DetourIslandGraph` link discovery, validation, filtering, tuning, performance, and robustness —
 compared against Unity automatic Off-Mesh Links and Unreal Engine automatic Navigation Link generation
 (docs + `E:\Projects\UnrealEngine-release` source). Implementation-focused. Proven techniques are separated

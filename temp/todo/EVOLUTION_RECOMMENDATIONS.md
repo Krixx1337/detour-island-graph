@@ -2,6 +2,11 @@
 
 Date: 2026-09-07. Analysis only; no implementation changes.
 
+Scope update: [V2_MVP_PLAN.md](V2_MVP_PLAN.md) controls the revised MVP. It adds
+reasoned domain selection, seeded validation-driven exploration, bounded
+processing, host validation, mass preference, and native transfer costs. This
+analysis remains background; its staged priorities do not override that plan.
+
 ## Decision
 
 Evolve toward a dedicated, geometry-aware traversal build stage followed by a separate global graph compiler. Run that stage immediately after navmesh construction when possible, while collision and bake metadata remain available. Keep final-navmesh post-processing as a supported input path, not the only architecture.

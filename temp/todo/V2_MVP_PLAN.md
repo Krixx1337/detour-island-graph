@@ -1,176 +1,261 @@
-# DetourIslandGraph v2 MVP
+# DetourIslandGraph V2 MVP
 
-## Summary
+Revised 2026-09-07 after dirty-map and routing reassessment. This document controls
+MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records delivered code and gaps.
+Requirements below are not claims of implementation.
 
-Implementation status: see [V2_PROGRESS.md](../../V2_PROGRESS.md). Foundation
-contracts, directional validation, and graph compilation are implemented;
-mesh extraction/discovery, routing, persistence, and host migration remain pending.
+## Direction
 
-Rebuild v2 around explicit boundary sampling, independently validated traversal directions, and separate graph compilation.
+Keep V2's directional crossing model and immutable graph compiler. Expand MVP to
+separate native topology, playable-domain selection, traversal validation, and
+route preference. Dirty collision-derived navmeshes are a primary workload.
 
-Keep generation as post-processing after Recast baking. Keep symmetric-first storage and existing host working through a full API/cache migration.
+An island is a native connectivity group. Size does not prove playability, safety,
+clearance, or short travel between portals. Final navmesh alone cannot reliably
+distinguish legitimate caves from unwanted hollow interiors.
 
-Prioritize coverage over build speed. Never silently discard samples to satisfy island quotas.
+Keep portable final-navmesh input. Allow frozen collision access or retained bake
+data through the host. Generate traversals adjacent to baking when useful without
+requiring Recast internals or retaining all heightfields. Remain C++17 with no new
+third-party dependencies. Movement execution stays in the host.
 
-## 1. New build pipeline and public contracts
+## 1. Topology and domain contracts
 
-Separate build into three callable stages, plus one convenience wrapper:
+Split `extractAndSample` into topology extraction and independently scheduled
+boundary sampling. Retain a convenience wrapper. Proposed flow:
 
 ```text
-Extract topology and sample boundaries
-                  ↓
-Discover and validate crossing candidates
-                  ↓
-Compile immutable graph
+Frozen mesh and host evidence
+    -> native topology and metrics
+    -> domain policy and seed resolution
+    -> selected-island sampling, discovery, directional validation
+    -> frontier expansion when seeded mode is selected
+    -> immutable graph with domain coverage and provenance
+    -> routing with host costs and native transfers
 ```
 
-- `BuildInput` contains frozen navmesh, build identity, polygon filter, and cancellation callback.
-- `DiscoveryConfig` contains explicit boundary spacing, horizontal/up/down limits, outbound policy, and resource limits.
-- `CrossingArtifact` contains island topology, endpoint polygon anchors, canonical crossing geometry, direction results, and build provenance.
-- `CompileOptions` selects geometric-only or validated-only traversal.
-- Compiled graph contains compact crossing storage, adjacency, polygon lookup, and precomputed portal offsets.
-- Keep all coordinates in navmesh units. Host converts settings at its existing adapter boundary.
-- Remain C++17. No new third-party dependencies or Recast-baker dependency.
+- Flood-fill eligible reciprocal native ground connectivity only. Generated
+  crossings and off-mesh actions never merge islands.
+- Record surface area, bounds, polygon count, and host-supplied trusted evidence.
+  Define area calculation and units. Preserve raw metrics in compiled output;
+  normalized mass is a versioned route policy, not topology truth.
+- Distinguish explicit exclusion, unexplored geometry, and unreachability under
+  the declared movement profile and completed search. Preserve reasons.
+- Apply polygon exclusions consistently to topology, discovery, seed resolution,
+  host transfers, and ordinary host Detour paths. Exclusions that split native
+  connectivity require recomputation before publication.
+- Whole-island policy may skip sampling without destroying raw ownership and
+  diagnostic evidence. Define raw-to-compiled ID mapping if output is compacted.
+- Keep anchors tied to a frozen mesh revision. IDs are snapshot-specific.
+- Use navmesh units internally; host converts world-unit settings at its adapter.
 
-Artifacts reusable in memory for graph compilation. MVP persists compiled graphs only; separate on-disk artifact caching deferred.
+Hard exclusions require explicit host policy or sufficiently strong evidence.
+Tiny-area cutoffs may be optional heuristics with reasons and overrides. No default
+polygon-count cutoff, percentage suppression, bounding-volume cutoff, sky-exposure
+rule, or automatic sink deletion. Small platforms, caves, and one-way destinations
+must remain representable. No garbage-removal percentage without measurements.
 
-## 2. Discovery and validation
+## 2. Exhaustive and seeded build modes
 
-### Boundary sampling
+Keep exhaustive mode as the exact-only reference and for unseeded workloads.
+Add explicit seeded mode for contaminated maps:
 
-- Flood-fill only eligible native ground connectivity. Generated crossings never merge islands.
-- Extract exposed edge intervals. For external portals, subtract union of linked intervals leading to eligible neighboring polygons.
-- Treat supplied navmesh snapshot as complete. Streaming/unloaded-neighbor semantics deferred.
-- Sample each interval at both endpoints and evenly spaced interior positions. Maximum spacing must not exceed configured value.
-- Require positive, explicit `sampleSpacing`. Host starts at its existing 4-metre boundary setting, converted into navmesh units.
-- Deduplicate identical sample positions within the same island, preserving deterministic ownership.
-- Query nearby eligible polygons with existing Detour spatial queries; project candidate endpoints and apply independent horizontal/up/down limits.
-- Discover crossings between different islands only.
+1. Resolve verified player-ground anchors or checked landmarks onto eligible
+   polygons. Check vertical layer and projection tolerance. A POI coordinate alone
+   is not trusted ground. Reject ambiguous or unresolved required seeds.
+2. Activate seed islands and sample their boundaries at configured spacing.
+3. Discover nearby destinations, including inactive eligible islands.
+4. Validate each eligible direction. Activate a destination only through a Valid,
+   policy-allowed outgoing traversal from an active island.
+5. Process newly active islands until frontier exhaustion. Reverse-only acceptance
+   does not expand forward reach. Preserve AB and BA results independently.
 
-Remove v1 mass quotas, small-island suppression, representative reduction, pair-scan suppression, short-gap recovery, approximate candidate voxel merging, and local/global/spanner pruning.
+Seeded expansion requires a supplied host validator. Unknown directions do not
+activate islands. Geometric-only experiments remain explicit exhaustive builds;
+they do not establish a trusted seeded domain.
 
-Retain mass scores solely for existing host route preferences and diagnostics. They must not suppress geometry.
+Unseeded components remain outside the declared build domain, not confirmed junk.
+Distinguish out-of-domain query endpoints from no route inside the domain. Persist
+seed identity, mode, exclusion policy, coverage, and completion state. Completion
+means frontier exhausted under configured sampling, producer, and movement model,
+not continuous-space or whole-map completeness.
 
-MVP merges exact duplicate endpoint pairs only. No approximate pruning or span merging.
+This reduces disconnected garbage-to-garbage work only with reliable seeds and
+validation. Initial topology extraction and nearby-target queries still cost work.
+Huge active islands remain expensive. Erroneous native links or extraction holes
+can admit junk; those need upstream exclusions or geometry repair. Missing seeds
+or movement types can omit legitimate areas. These limitations must be visible.
 
-### Directional validation
+## 3. Sampling, discovery, and resources
 
-Each canonical crossing stores geometry once, with separate AB and BA records:
+- Treat supplied mesh snapshot as complete; unloaded-neighbor semantics deferred.
+- Extract exposed edge intervals. Subtract the union of eligible linked external
+  portal intervals, preserving partial boundaries and endpoint provenance.
+- Sample endpoints and evenly spaced interiors with positive explicit
+  `sampleSpacing`. Preserve spacing on every processed island. Existing 4-metre
+  host setting is a comparison starting point, not a recall guarantee.
+- Keep spacing independent of mass, deduplication, and movement reach.
+- Deduplicate exact coincident samples within the same island deterministically.
+  Preserve distinct anchored approaches in crossing artifacts.
+- Query nearby polygons without silent fixed-buffer truncation. Apply independent
+  horizontal/climb/drop limits; keep pairs eligible in either direction.
+- Discover inter-island crossings only. Same-island actions remain deferred.
+- Remove V1 mass quotas, representative reduction, pair suppression, recovery
+  scans, approximate voxel merging, and local/global/spanner pruning.
+- Merge exact duplicate crossing anchors only. Keep exact-only reference mode.
 
-- Geometric eligibility and outbound-policy permission.
-- `Valid`, `Invalid`, or `Unknown` validation result.
-- Validator reason code.
+Production pipeline processes candidates in bounded batches and does not retain
+every intermediate artifact by default. Full artifacts remain opt-in for analysis
+and reuse. Exact deduplication must span batches without merging distinct anchors
+or evidence. Preserve deterministic results across batch sizes.
 
-One movement profile per build. Profile and validator semantic IDs belong in build identity; multiple action variants deferred.
+Specify sample, candidate, temporary-query, and memory/work budgets. Sample and
+candidate caps alone do not bound topology or nearby-polygon allocations. Exactly
+the cap is allowed; exceeding it returns `BudgetExceeded`, counters, and no
+publishable graph. Never thin samples silently or publish an interrupted frontier
+as complete. Cancellation and callback failures abort publication through all
+stages. Failed rebuilds preserve the previous compatible immutable graph.
 
-Validator receives ordered endpoints, polygon anchors, and movement-profile context. Caller supplies frozen collision/environment access through its implementation.
+## 4. Host traversal validation
 
-- Invoke validator independently for every geometrically eligible, policy-allowed direction.
-- No validator means `Unknown`.
-- Never infer reverse validity from equal climb/drop limits.
-- Validate before any non-exact candidate elimination.
-- Geometric-only compilation permits eligible `Valid` and `Unknown` directions, never `Invalid`.
-- Validated-only compilation permits only `Valid`. Missing validator is configuration error.
-- Omit crossings with no usable compiled directions.
-- Callback failure or cancellation aborts build; never publish partial graph.
+Ship one working host validator matching actual gap execution. A callback contract
+alone is insufficient. Inventory available collision and landing data before
+choosing implementation; missing evidence stays Unknown, not Valid.
 
-Host explicitly selects geometric-only mode for current gap behavior. No built-in parabola, collision backend, or movement execution in MVP.
+Each canonical crossing stores geometry once with independent AB/BA records for
+geometric eligibility, outbound permission, Valid/Invalid/Unknown, and reason.
+Validate every eligible permitted direction independently. Equal limits never
+prove reverse validity. Keep one movement profile per build.
 
-### Resource behavior
+- Physical jumps require supported endpoints, agent-volume clearance, and feasible
+  trajectory under the controller's model. Straight endpoint rays or Detour surface
+  raycasts cannot certify airborne traversal.
+- Teleport-style gaps require actual host destination and execution rules.
+  Ballistic feasibility is not their definition. Playable-domain policy remains
+  separate from mechanical ability to reach an interior.
+- Retain landing adjustment only with compatible validation: validate adjusted
+  anchors or a documented admissible region, and recheck execution changes.
+- Record movement profile, validator semantics, environment revision, and units.
+  Policy recompilation does not revalidate another agent or environment.
+- Validated-only compilation accepts Valid directions and requires a validator.
+  Explicit geometric-only compilation accepts eligible Valid/Unknown directions,
+  never Invalid, and makes no collision-clear or playable-world claim.
+- Validate before any future approximate elimination. Omit crossings without
+  usable compiled directions. Execution and runtime rechecks remain host-owned.
 
-- Explicit optional sample and candidate caps; zero means uncapped.
-- Reaching a cap returns `BudgetExceeded` with counters and no publishable graph.
-- Cancellation checked through sampling, queries, validation, compilation, and diagnostics.
-- Do not shrink sampling density automatically.
+Unreal reference: separate ground sampling and solid-heightfield trajectory checks
+in `DetourNavLinkBuilder.cpp`, especially `sampleGroundSegment`,
+`isTrajectoryClear`, and `checkHeightfieldCollision`. Borrow the separation, not
+its complete implementation or assumed movement semantics. Recast small-region
+filtering is supporting cleanup, not interior classification; inspected Unreal
+`RecastRegion.cpp` also preserves border-connected regions.
 
-## 3. Routing, persistence, and host migration
+## 5. Mass preference and route quality
 
-### Routing
+Keep portal routing and integrate actual native transfers in the host. Existing
+host already applies intermediate-island road bias and human-effort cost through
+`DetourIslandGraphAdapter.cpp`; preserve intentional semantics during migration.
 
-Keep portal-based routing between islands.
+- Prefer soft nonnegative penalties for entering small intermediate islands.
+  Keep strict minimum-intermediate-mass policy explicitly selectable; it may
+  intentionally return no path. Preserve intended destination exemptions.
+- Prefer area over polygon count. Use stable world-unit thresholds or versioned
+  normalization. Unrelated junk must not silently redefine preference.
+- Keep penalties and movement costs in the same units. Mass is a preference proxy,
+  not proof of local width, clearance, or safety.
+- Evaluate lazy host Detour transfers during search with a bounded per-query
+  cache. Constrain transfers to matching native island and polygon policy; exclude
+  generated-action shortcuts and reject partial/truncated path results.
+- Resolve query start/end polygon anchors explicitly. Current polygon-zero query
+  endpoints need checked host resolution before native transfer evaluation.
+- Refining only the winning Euclidean route does not establish correct ranking.
+  Native costs improve ranking but do not prove continuous-space optimality.
+- Default library Euclidean transfers remain available and labeled estimated.
+  Track transfer/crossing cost provenance independently of search algorithm;
+  a custom mass callback must not make Euclidean transfers appear measured.
+- Built-in Euclidean costs use geometric A*. Custom costs use Dijkstra in MVP.
+  Accept finite nonnegative costs; represent blocked transfers explicitly.
+- Implement best-remaining-bound early termination, accounting for stale queue
+  entries, and verify default and custom costs.
+- Reuse immutable adjacency, precomputed offsets, and caller-owned scratch.
+  Same-island queries retain `SameIsland`; host handles native path with matching
+  domain policy. No same-island shortcut search or cross-query transfer cache.
 
-- Add transfer-cost callback receiving island and anchored endpoints.
-- Default transfer cost remains Euclidean and is explicitly reported as estimated.
-- Preserve custom crossing cost/filter callbacks.
-- Use geometric A* only with built-in Euclidean costs. Any custom cost provider uses Dijkstra in MVP; remove custom heuristic callback.
-- Accept finite, nonnegative costs; represent blocked traversal separately from numeric cost.
-- Stop search when best remaining search bound cannot improve completed route.
-- Reuse precomputed portal offsets and caller-owned scratch storage. No mutable search state inside shared graph.
-- Same-island queries retain `SameIsland` result; no same-island shortcut search.
-- No actual Detour transfer-cost integration or cross-query transfer cache in MVP.
+## 6. Persistence and host migration
 
-### Cache and API break
+- Extend existing V2 serializer for metrics, domain coverage, reasons, and policy
+  provenance. Bump native format and host cache versions; reject older blobs.
+- Identity covers mesh, units, polygon/exclusion policy, seeds/build mode,
+  discovery settings, movement profile, validator/environment, and compile policy.
+  Cost-only route preference changes should not force geometry rebuilds.
+- Unversioned custom build semantics disable persistent reuse. Validate decoded
+  counts, geometry, refs, mappings, direction states, and coverage consistency.
+- Preserve protected-cache wrapping, atomic replacement, revision checks, and
+  immutable publication. Persist compiled graphs only in MVP.
+- Migrate adapter, settings, callbacks, reports, UI, and cache together. Remove
+  retired heuristic controls; expose soft versus strict policy and seeded-domain
+  coverage. Keep existing maintenance lane and host movement ownership.
+- Set package version to 2.0.0 at replacement. No V1 compatibility wrappers or old
+  configuration-key migration required. Host stays on V1 until acceptance passes.
 
-- Set public package version to `2.0.0`.
-- Replace old public configuration and graph contracts rather than retaining compatibility wrappers.
-- Introduce new native serialization version and host cache version. Reject older graphs and rebuild.
-- Cache identity covers navmesh fingerprint, coordinate scale, polygon policy, discovery settings, movement profile, validator identity, and compilation policy.
-- Custom semantic callbacks without stable caller-provided identity disable persistent reuse.
-- Validate decoded counts, references, finite geometry, directional states, and adjacency before accepting graph.
-- Preserve host protected-cache wrapping, atomic replacement, cancellation, and immutable publication.
+## 7. Diagnostics and acceptance
 
-### Host integration
+Report raw/eligible/excluded/active/unexplored islands and polygons, exclusion
+reasons, seed resolution, frontier completion, spacing, queries/projections, exact
+duplicates, directional outcomes, graph size, stage timing, and peak memory.
+Separate exclusion from validated unreachability and build failure. Expensive
+nearest-representative diagnostics remain opt-in.
 
-Update adapter, build settings, route callbacks, cache handling, reports, and UI controls together.
+Fixtures and focused checks must cover:
 
-- Remove controls and counters for deleted heuristics.
-- Preserve current route preferences and movement ownership.
-- Keep builds on existing maintenance lane; no new scheduler or background service.
-- Retain existing landing adjustment and execution rules. Validation results must not claim those execution paths are physical jumps.
-- Old configuration keys have no migration requirement.
+- Valid tiny platforms, large sealed interiors, legitimate caves, stacked layers,
+  ambiguous seeds, one-way destinations, and erroneous native connectivity.
+- Seed chains through small islands, reverse-only links, Unknown during expansion,
+  missing seeds, out-of-domain queries, and exclusion-induced topology splits.
+- Clear/blocked host actions, thin obstacles, endpoint support, adjusted landings,
+  asymmetric validity, and changed validation identity.
+- Long-edge opportunities, partial portals, spacing on large islands, exact
+  deduplication across batches, and alternative anchored approaches.
+- Soft preference retaining necessary stepping stones, explicit strict rejection,
+  long native detours changing ranking, partial/blocked transfers, cost provenance,
+  search termination, and consistent cost units.
+- Budgets/cancellation without publication, corrupt/old caches, changed domain
+  identity, and deterministic batch/tile ordering.
+- Scale, translation, and equivalent retessellation using geometric tolerances,
+  not identical sample IDs or polygon-count-based semantics.
 
-## 4. Diagnostics and acceptance tests
+Benchmark Queensdale and an interior-heavy stacked map or extracted fixture before
+full host migration. Hold capabilities fixed; compare exhaustive reference with
+seeded production builds. Measure false links, lost valid exits, labeled-domain
+coverage, actual route cost/execution outcomes, build time, memory, and query
+latency distributions. Dense sampling is a reference, not continuous-space ground
+truth. High connectivity alone is not acceptance.
 
-Basic build report includes effective spacing/capabilities, sample count, projection count, exact duplicates, directional validation outcomes, graph size, reachability, disconnected components, and per-stage timing.
+Choose performance thresholds from host requirements and measured baselines. No
+arbitrary one-second target or 100% connectivity requirement. Run relevant library
+tests, host dependency/targeted compilation checks, then real routes, rebuild and
+cancellation, and stale-cache checks. Record unavailable in-game/full application
+checks explicitly; do not mark them passed.
 
-Keep nearest-representative coverage diagnostics opt-in. Basic reporting must not trigger quadratic nearest-neighbor analysis.
+## 8. Remaining implementation order and exclusions
 
-Add focused tests for:
+1. Capture dirty-map fixtures and baseline; document collision access, trusted
+   anchors, host execution semantics, and route cost units.
+2. Separate topology/sampling; add metrics, domain decisions, exclusion propagation,
+   coverage contracts, and semantic identity.
+3. Integrate host validator, seeded frontier mode, and bounded candidate processing.
+4. Integrate mass policy and lazy native transfers; fix cost provenance and search
+   termination. Extend serialization for settled contracts.
+5. Benchmark both workloads, resolve measured blockers, then complete host migration,
+   diagnostics/UI, cache replacement, and package version change.
 
-- Long-edge opportunities near endpoints.
-- Partial external portals and multiple linked intervals.
-- Large islands receiving configured spacing without quota thinning.
-- Unequal climb/drop limits and validator rejecting only one direction.
-- Unknown validation under geometric-only versus validated-only compilation.
-- Exact duplicates preserving canonical geometry and directional results.
-- Small islands remaining discoverable.
-- Budget exhaustion and cancellation producing no publishable graph.
-- Routing callback costs, blocked transfers, Dijkstra ordering, and estimated-cost labeling.
-- New serialization round-trip, corrupt input rejection, identity mismatch, and old-cache rejection.
-- Scale-adjusted configurations, translation, tile order, and equivalent retessellation using geometric tolerances rather than identical sample IDs.
+Deferred: universal collision engine or physical jump solver, automatic interior
+classifier or sink pruning, multiple movement profiles per artifact, spans and
+approximate pruning, regional routing and same-island shortcuts, incremental tile
+builds, artifact disk caches, cross-query transfer caches, worker parallelization,
+and new dependencies.
 
-Verification sequence:
-
-1. Build library test target and run focused tests.
-2. Run host dependency checks and available targeted compilation checks.
-3. Run Queensdale comparison with unchanged traversal capabilities. Record sample coverage, graph size, build time, peak memory, recovered exits, and disconnected components.
-4. Exercise real host routes, cancellation, graph rebuild, and stale-cache rejection.
-
-No fixed one-second build target. Coverage-first choice permits slower builds, but measurements must expose cost. Passing requires no silent sampling loss and no structural/directional violations; 100% map connectivity is not a requirement.
-
-Full application build and in-game checks remain explicit handoff checks when unavailable or not authorized.
-
-## 5. Implementation order and exclusions
-
-Deliver in this order:
-
-1. New data contracts and focused contract tests.
-2. Exposed-interval extraction and explicit sampling.
-3. Directional validator integration and exact graph compilation.
-   Before full host migration, benchmark the dense exact-only pipeline on
-   Queensdale for graph size, build time, and peak memory. Revisit simplification
-   only if measurements justify changing MVP scope. Measure query latency once
-   the V2 router is available.
-4. Routing contract and serialization replacement.
-5. Host migration, diagnostics, and Queensdale validation.
-
-Out of v2 MVP:
-
-- Built-in physical jump solver or collision engine.
-- Multiple movement profiles per artifact.
-- Crossing spans and approximate simplification.
-- Same-island shortcuts and regional routing.
-- Incremental tile rebuilds or artifact disk caching.
-- Worker parallelization and new library dependencies.
-
-These exclusions keep MVP focused: predictable discovery, honest validity, simpler configuration, and working host integration.
+Reconsider spans if measured candidate volume defeats bounded exact-only processing.
+Reconsider regional routing if portal expansion/native transfers miss latency
+requirements. Preserve endpoint provenance now; require measured benefit and
+explicit loss/validity guarantees before either redesign enters scope.

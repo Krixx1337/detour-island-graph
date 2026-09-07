@@ -1,5 +1,17 @@
 # V2 MVP implementation status
 
+## Revised MVP scope, 2026-09-07
+
+The revised [MVP plan](temp/todo/V2_MVP_PLAN.md) controls scope. Delivered sections
+below describe the existing baseline, not completion of the expanded MVP. The
+follow-up chat was consolidated into the plan and removed.
+
+Pending additions: topology/sampling separation, island metrics, reasoned domain
+selection, seeded validated frontier expansion, bounded production processing,
+one working host validator, mass-policy migration, lazy native Detour transfers,
+and domain-aware persistence and query results. This documentation revision does
+not implement these features. Existing host remains on V1.
+
 ## Foundation delivered
 
 Read all three inputs in `temp/todo`: `V2_MVP_PLAN.md`,
@@ -21,13 +33,13 @@ Implemented in `include/detour_island_graph/v2/Build.h` and `src/v2/Build.cpp`:
   policy without running validation again. Invalid directions never traverse.
   Validated-only requires a supplied validator and excludes Unknown results.
 - Immutable graph publication, contiguous outgoing adjacency, precomputed
-  adjacency offsets, and polygon-to-island lookup. Routing portal-state layout
-  is still pending.
+  adjacency offsets, and polygon-to-island lookup. Routing was delivered later
+  in this baseline; see its section below.
 - Input checks for finite geometry/settings, topology ownership, canonical order,
   directional consistency, and conflicting duplicate results.
 - Cancellation and callback failure return no output, even after partial work.
   Candidate cap applies to raw input before exact deduplication. Exactly the cap
-  is allowed; exceeding it fails the stage. Sample caps await sampling.
+  is allowed; exceeding it fails the stage. Sampling below adds sample caps.
 - Persistent-reuse eligibility requires versioned mesh/profile and any custom
   policies/validator/environment. This is an eligibility flag, not a cache-key
   implementation or serializer.
@@ -79,7 +91,7 @@ Directly supplied topology and candidates remain trusted producer inputs, not
 serialized or hostile input. The compiler checks consistency against the
 supplied polygon ownership table. `extractAndSample` now establishes topology,
 polygon references, and boundary sample positions from the frozen Detour mesh;
-future candidate projection must establish landing anchor ownership.
+candidate discovery below establishes projected landing ownership.
 
 Callbacks must be deterministic and capture frozen state. Artifacts must not be
 mutated concurrently with compilation. Validation results and their provenance
@@ -156,9 +168,15 @@ Implemented in `src/v2/Routing.cpp`, declared in
   custom heuristic callback exists. Non-finite or negative costs block that
   candidate rather than poisoning the search; callback exceptions fail the
   query without partial output.
-- Search stops expanding once the remaining bound cannot beat the best
-  completed route. Same-island queries return `SameIsland` with no search.
-  No Detour transfer integration or cross-query cache in MVP.
+- Search skips expansion when accumulated cost cannot improve the best completed
+  route, but does not implement the planned best-remaining-bound early exit.
+  Same-island queries return `SameIsland` with no search.
+- Current `estimatedCost` follows default-cost/A* selection. A custom crossing
+  cost clears it even when transfers remain Euclidean. Separate cost provenance
+  remains required.
+- No native Detour transfer integration or transfer cache is implemented. Lazy
+  host transfers and a bounded per-query cache are now MVP requirements;
+  cross-query caching remains deferred.
 - Statuses cover success, same-island, no-path, invalid islands/input,
   budgets, cancellation, callback failure, and out-of-memory, with
   expanded/queued/peak-open telemetry.
@@ -190,6 +208,9 @@ Implemented in `src/v2/Serialization.cpp`, declared in
 
 ## Verification
 
+Previously recorded implementation results below were not rerun during the plan
+revision and do not establish completion of the expanded MVP.
+
 - Targeted Windows/MSVC Debug library test build passed.
 - All 78 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
   topology/sampling tests, 5 V2 discovery tests, 4 V2 pipeline tests,
@@ -208,13 +229,15 @@ heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Benchmark the dense, exact-only pipeline on Queensdale before full host
-   migration. Record sample/candidate/crossing counts, stage timings and peak
-   memory. The current ordered-map implementation is a correctness baseline;
-   profile its allocation and duplicate-key cost before optimizing it.
-2. Implement new serialization/cache identity,
-   then host/settings/report migration and package version 2.0.0. Benchmark query
-   latency when the router is available.
-
-Mass diagnostics,
-and host migration remain unfinished.
+1. Capture fixtures and baseline on Queensdale plus an interior-heavy stacked
+   workload. Inventory collision access, trusted seeds, movement rules, and costs.
+2. Split topology from sampling; add metrics, domain reasons, seed coverage,
+   exclusion propagation, and semantic identity.
+3. Integrate host validation, seeded expansion, and bounded processing. Current
+   `PipelineResult` retains all artifacts and nearby-polygon collection has no
+   separate temporary-memory cap; both need production changes.
+4. Add mass policy and lazy native transfers, fix routing gaps above, and extend
+   the existing serializer for domain and metric contracts with a format bump.
+5. Pass revised acceptance gates before host/settings/report migration and
+   package version 2.0.0. Measure memory and query latency before deciding whether
+   spans or regional routing must enter scope.
