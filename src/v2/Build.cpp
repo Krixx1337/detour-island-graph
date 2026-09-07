@@ -197,6 +197,9 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
         graph->identity_ = artifact.topology.identity;
         graph->discovery_ = artifact.discovery;
         graph->policy_ = options.policy;
+        graph->customPolygonPolicy_ = artifact.topology.customPolygonPolicy;
+        graph->validatorSupplied_ = artifact.validatorSupplied;
+        graph->customOutboundPolicy_ = artifact.customOutboundPolicy;
         const auto& id = graph->identity_;
         graph->persistentReuseEligible_ = id.mesh && id.movementProfile &&
             (!artifact.topology.customPolygonPolicy || id.polygonPolicy) &&

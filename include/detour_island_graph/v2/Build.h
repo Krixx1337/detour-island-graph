@@ -194,6 +194,9 @@ public:
     const std::vector<std::size_t>& offsets() const noexcept { return offsets_; }
     const std::unordered_map<dtPolyRef, IslandId>& polygonIslands() const noexcept { return polygonIslands_; }
     bool persistentReuseEligible() const noexcept { return persistentReuseEligible_; }
+    bool customPolygonPolicy() const noexcept { return customPolygonPolicy_; }
+    bool validatorSupplied() const noexcept { return validatorSupplied_; }
+    bool customOutboundPolicy() const noexcept { return customOutboundPolicy_; }
 
 private:
     friend CompileResult compileGraph(const CrossingArtifact&, const CompileOptions&);
@@ -201,6 +204,9 @@ private:
     DiscoveryConfig discovery_;
     CompilePolicy policy_ = CompilePolicy::GeometricOnly;
     bool persistentReuseEligible_ = false;
+    bool customPolygonPolicy_ = false;
+    bool validatorSupplied_ = false;
+    bool customOutboundPolicy_ = false;
     std::vector<CompiledCrossing> crossings_;
     std::vector<Traversal> traversals_;
     std::vector<std::size_t> offsets_;

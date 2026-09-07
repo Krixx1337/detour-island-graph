@@ -36,6 +36,7 @@ add_library(detour_island_graph
     src/v2/Discovery.cpp
     src/v2/Pipeline.cpp
     src/v2/Routing.cpp
+    src/v2/Serialization.cpp
 )
 add_library(detour_island_graph::detour_island_graph ALIAS detour_island_graph)
 
@@ -140,6 +141,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
         tests/V2DiscoveryTests.cpp
         tests/V2PipelineTests.cpp
         tests/V2RoutingTests.cpp
+        tests/V2SerializationTests.cpp
     )
     target_link_libraries(detour_island_graph_tests
         PRIVATE

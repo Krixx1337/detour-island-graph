@@ -163,12 +163,37 @@ Implemented in `src/v2/Routing.cpp`, declared in
   budgets, cancellation, callback failure, and out-of-memory, with
   expanded/queued/peak-open telemetry.
 
+## Serialization delivered
+
+Implemented in `src/v2/Serialization.cpp`, declared in
+`include/detour_island_graph/v2/Serialization.h` as `GraphSerializer`
+(magic `"DIG2"`, format version 1, little-endian IEEE-754 bytes like V1):
+
+- Stores island/polygon/crossing counts, full build identity, policy flags,
+  discovery settings, compilation policy, sorted polygon ownership, and every
+  compiled crossing with anchored endpoints plus per-direction eligibility,
+  policy, and validation records. Polygon order is sorted for deterministic
+  bytes; adjacency is never stored.
+- Decode revalidates through `compileGraph` itself: counts against safety
+  limits and an allocation budget, references, finite geometry, directional
+  states, and canonical order are all rechecked, adjacency is rebuilt, and
+  the blob is accepted only when every stored crossing survives compilation
+  under the stored policy. V1 blobs fail on magic; wrong versions, truncated
+  or out-of-range data, and budget or limit breaches fail without a graph.
+- Identity, discovery settings, and policy round-trip exactly so hosts can
+  compare cache identity before reuse. Unversioned custom semantics stay
+  visible via the preserved `persistentReuseEligible` inputs.
+- `CompiledGraph` now retains its provenance flags (`customPolygonPolicy`,
+  `validatorSupplied`, `customOutboundPolicy`) as read-only accessors.
+- Package version and V1 contracts are untouched until host migration; this
+  format is V2-only.
+
 ## Verification
 
 - Targeted Windows/MSVC Debug library test build passed.
-- All 75 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
-  topology/sampling tests, 5 V2 discovery tests, 4 V2 pipeline tests, and
-  5 V2 routing tests.
+- All 78 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
+  topology/sampling tests, 5 V2 discovery tests, 4 V2 pipeline tests,
+  5 V2 routing tests, and 3 V2 serialization tests.
 - Whitespace checks passed (no tabs or trailing whitespace in touched files).
 
 No host switch, full application build, Queensdale performance measurement, or
@@ -191,5 +216,5 @@ heightfield data remain caller-supplied validator concerns.
    then host/settings/report migration and package version 2.0.0. Benchmark query
    latency when the router is available.
 
-Mass diagnostics, serialization,
+Mass diagnostics,
 and host migration remain unfinished.
