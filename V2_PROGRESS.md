@@ -89,12 +89,41 @@ Teleport consumers can select geometric-only compilation. Unknown means no
 confirmed traversal validation, not a collision-clear or ballistic jump claim.
 Movement execution remains outside this library.
 
+## Candidate discovery delivered
+
+Implemented in `src/v2/Discovery.cpp`, declared in
+`include/detour_island_graph/v2/Build.h` as
+`discoverCandidates(const SamplingArtifact&, const dtNavMesh&,
+const DiscoveryConfig&, const Cancel&)`:
+
+- Uses only the collector `queryPolygons` overload with a default accept-all
+  filter; the fixed-size overload is never used, so dense stacked geometry
+  cannot truncate silently. Targets are resolved through the sampling topology
+  index, so filtered, unknown, off-mesh, and same-island polygons never emit.
+- Landing anchors carry the projected polygon, its island, and the closest-point
+  position with finite checks and `-0` normalization. A pair is kept when at
+  least one direction passes independent horizontal/climb/drop limits, so
+  reverse-valid asymmetric pairs survive even though the reverse sample need
+  not reproduce identical geometry.
+- Raw output with no exact deduplication; `validateCrossings` remains the
+  canonical exact-duplicate stage. Nearby refs are sorted and uniqued per
+  sample for deterministic order and to avoid redundant projections.
+- `maxCandidates` is enforced while generating; exceeding it returns
+  `BudgetExceeded` with no output. Exactly the cap is allowed. Cancellation is
+  checked per sample, per nearby polygon, and around queries; query-init OOM
+  maps to `OutOfMemory`, `queryPolygons` failure and malformed anchors to
+  `InvalidInput`, single `closestPointOnPoly` failures to a
+  `projectionFailures` counter with skip, and callback exceptions to
+  `CallbackFailed`.
+- Stage counters add `discoveryQueries`, `nearbyPolygons`, `projections`,
+  `projectionFailures`, and `candidatesVisited` (emitted raw candidates).
+
 ## Verification
 
 - Targeted Windows/MSVC Debug library test build passed.
-- All 61 tests passed: 35 existing V1 tests, 11 V2 contract tests, and 15 V2
-  topology/sampling tests.
-- Root architecture boundary checker and whitespace checks passed.
+- All 66 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
+  topology/sampling tests, and 5 V2 discovery tests.
+- Whitespace checks passed (no tabs or trailing whitespace in touched files).
 
 No host switch, full application build, Queensdale performance measurement, or
 in-game execution check is part of this slice.
@@ -108,20 +137,16 @@ heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Discover projected anchored candidates with cancellable Detour queries and
-   feed the validation/compiler stages. Enforce candidate cap while generating,
-   not merely after allocating the candidate list. Avoid Detour's fixed-size
-   polygon result overload so dense stacked geometry cannot truncate silently.
-2. Add one end-to-end convenience build entry point once candidate discovery is
-   complete. Preserve stage artifacts for testing, timing, and future reuse.
-3. Benchmark the dense, exact-only pipeline on Queensdale before full host
+1. Add one end-to-end convenience build entry point over the completed
+   extract/discover/validate/compile stages. Preserve stage artifacts for
+   testing, timing, and future reuse.
+2. Benchmark the dense, exact-only pipeline on Queensdale before full host
    migration. Record sample/candidate/crossing counts, stage timings and peak
    memory. The current ordered-map implementation is a correctness baseline;
    profile its allocation and duplicate-key cost before optimizing it.
-4. Implement V2 routing and caller scratch, new serialization/cache identity,
+3. Implement V2 routing and caller scratch, new serialization/cache identity,
    then host/settings/report migration and package version 2.0.0. Benchmark query
    latency when the router is available.
 
-Candidate discovery, end-to-end build, mass diagnostics, routing, serialization,
-and host migration remain unfinished. V2 still cannot build a usable graph
-directly from a navmesh without caller-supplied candidates.
+End-to-end build, mass diagnostics, routing, serialization,
+and host migration remain unfinished.

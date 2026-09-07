@@ -149,6 +149,10 @@ struct StageStats {
     std::size_t sampleAttempts = 0;
     std::size_t sampleDuplicates = 0;
     std::size_t samples = 0;
+    std::size_t discoveryQueries = 0;
+    std::size_t nearbyPolygons = 0;
+    std::size_t projections = 0;
+    std::size_t projectionFailures = 0;
     std::size_t candidatesVisited = 0;
     std::size_t exactDuplicates = 0;
     std::size_t validatorCalls = 0;
@@ -213,6 +217,17 @@ private:
 // independent of tile allocation order. Polygon refs remain snapshot-specific.
 StageResult<SamplingArtifact> extractAndSample(
     const BuildInput& input, const DiscoveryConfig& config);
+
+// Candidate discovery from boundary samples. Uses the collector queryPolygons
+// overload so dense stacked geometry cannot truncate silently; the fixed-size
+// overload is never used. Only emits different-island pairs within independent
+// horizontal/climb/drop limits. Raw output with no exact deduplication;
+// validateCrossings merges exact duplicates. Enforces maxCandidates while
+// generating; exceeding it returns BudgetExceeded with no output.
+// Cancellation is checked per sample and per nearby polygon.
+StageResult<std::vector<CrossingCandidate>> discoverCandidates(
+    const SamplingArtifact& sampling, const dtNavMesh& navMesh,
+    const DiscoveryConfig& config, const Cancel& canceled = {});
 
 // Entry point for already-discovered anchored candidates.
 // Exact duplicates require identical anchors, including polygon refs. Distinct approaches survive.
