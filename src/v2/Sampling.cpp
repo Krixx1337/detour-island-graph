@@ -120,15 +120,12 @@ void sampleInterval(const BoundaryInterval& interval, const DiscoveryConfig& con
 
 } // namespace
 
-StageResult<SamplingArtifact> extractAndSample(const BuildInput& input, const DiscoveryConfig& config) {
-    StageResult<SamplingArtifact> result;
+StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input) {
+    StageResult<TopologyExtractionArtifact> result;
     try {
         checkpoint(input.canceled);
         require(input.navMesh != nullptr);
         require(std::isfinite(input.identity.unitsPerMeter) && input.identity.unitsPerMeter > 0);
-        require(std::isfinite(config.sampleSpacing) && config.sampleSpacing > 0);
-        for (float limit : {config.maxHorizontalGap, config.maxClimb, config.maxDrop})
-            require(std::isfinite(limit) && limit >= 0);
         const auto& mesh = *input.navMesh;
         std::vector<const dtMeshTile*> tiles;
         for (int i = 0; i < mesh.getMaxTiles(); ++i) {
@@ -185,10 +182,9 @@ StageResult<SamplingArtifact> extractAndSample(const BuildInput& input, const Di
             }
         }
 
-        SamplingArtifact artifact;
+        TopologyExtractionArtifact artifact;
         artifact.topology.identity = input.identity;
         artifact.topology.customPolygonPolicy = bool(input.polygonFilter);
-        artifact.sampleSpacing = config.sampleSpacing;
         std::vector<IslandId> owners(polygons.size(), (std::numeric_limits<IslandId>::max)());
         std::vector<std::size_t> queue;
         for (std::size_t i = 0; i < polygons.size(); ++i) {
@@ -210,12 +206,36 @@ StageResult<SamplingArtifact> extractAndSample(const BuildInput& input, const Di
                 }
             }
         }
+        artifact.topology.metrics.resize(artifact.topology.islandCount);
         for (std::size_t i = 0; i < polygons.size(); ++i) {
             checkpoint(input.canceled);
             artifact.topology.polygons.push_back({polygons[i].ref, owners[i]});
+            auto& metrics = artifact.topology.metrics[owners[i]];
+            const auto& polygon = polygons[i];
+            const auto origin = vertex(*polygon.tile, *polygon.poly, 0);
+            if (metrics.polygonCount++ == 0) metrics.boundsMin = metrics.boundsMax = origin;
+            for (unsigned char v = 0; v < polygon.poly->vertCount; ++v) {
+                const auto p = vertex(*polygon.tile, *polygon.poly, v);
+                metrics.boundsMin.x = (std::min)(metrics.boundsMin.x, p.x);
+                metrics.boundsMin.y = (std::min)(metrics.boundsMin.y, p.y);
+                metrics.boundsMin.z = (std::min)(metrics.boundsMin.z, p.z);
+                metrics.boundsMax.x = (std::max)(metrics.boundsMax.x, p.x);
+                metrics.boundsMax.y = (std::max)(metrics.boundsMax.y, p.y);
+                metrics.boundsMax.z = (std::max)(metrics.boundsMax.z, p.z);
+                if (v < 2) continue;
+                const auto previous = vertex(*polygon.tile, *polygon.poly, v - 1);
+                const double ax = double(previous.x) - origin.x;
+                const double ay = double(previous.y) - origin.y;
+                const double az = double(previous.z) - origin.z;
+                const double bx = double(p.x) - origin.x;
+                const double by = double(p.y) - origin.y;
+                const double bz = double(p.z) - origin.z;
+                metrics.surfaceArea += 0.5 * std::hypot(ay * bz - az * by,
+                    az * bx - ax * bz, ax * by - ay * bx);
+                require(std::isfinite(metrics.surfaceArea));
+            }
         }
 
-        std::set<SampleKey> unique;
         for (std::size_t i = 0; i < polygons.size(); ++i) {
             const auto& polygon = polygons[i];
             for (unsigned char edge = 0; edge < polygon.poly->vertCount; ++edge) {
@@ -233,7 +253,6 @@ StageResult<SamplingArtifact> extractAndSample(const BuildInput& input, const Di
                         interpolate(a, b, begin / 255.0), interpolate(a, b, end / 255.0)};
                     artifact.intervals.push_back(interval);
                     ++result.stats.boundaryIntervals;
-                    sampleInterval(interval, config, input.canceled, artifact, unique, result.stats);
                 };
                 int cursor = 0;
                 for (const auto& span : covered) {
@@ -244,12 +263,103 @@ StageResult<SamplingArtifact> extractAndSample(const BuildInput& input, const Di
                 emit(cursor, 255);
             }
         }
+        artifact.topology.customDomainPolicy = bool(input.islandPolicy);
+        artifact.topology.domain.resize(artifact.topology.islandCount);
+        for (std::size_t i = 0; i < artifact.topology.islandCount; ++i) {
+            checkpoint(input.canceled);
+            if (input.islandPolicy) {
+                auto& decision = artifact.topology.domain[i];
+                decision = input.islandPolicy(static_cast<IslandId>(i), artifact.topology.metrics[i]);
+                require(decision.state == DomainState::Included || decision.state == DomainState::Excluded ||
+                    decision.state == DomainState::Unexplored);
+            }
+            switch (artifact.topology.domain[i].state) {
+            case DomainState::Included: ++result.stats.includedIslands; break;
+            case DomainState::Excluded: ++result.stats.excludedIslands; break;
+            case DomainState::Unexplored: ++result.stats.unexploredIslands; break;
+            }
+        }
         checkpoint(input.canceled);
         result.value.emplace(std::move(artifact));
         result.status = StageStatus::Success;
     } catch (const Abort& error) { result.status = error.status; }
     catch (const std::bad_alloc&) { result.status = StageStatus::OutOfMemory; }
     catch (...) { result.status = StageStatus::CallbackFailed; }
+    return result;
+}
+
+StageResult<SamplingArtifact> sampleBoundaries(const TopologyExtractionArtifact& extraction,
+    const DiscoveryConfig& config, const SamplingOptions& options) {
+    StageResult<SamplingArtifact> result;
+    try {
+        checkpoint(options.canceled);
+        require(std::isfinite(config.sampleSpacing) && config.sampleSpacing > 0);
+        for (float limit : {config.maxHorizontalGap, config.maxClimb, config.maxDrop})
+            require(std::isfinite(limit) && limit >= 0);
+        std::vector<bool> selected(extraction.topology.islandCount, !options.islands);
+        require(extraction.topology.domain.empty() ||
+            extraction.topology.domain.size() == extraction.topology.islandCount);
+        for (const auto& decision : extraction.topology.domain) {
+            checkpoint(options.canceled);
+            require(decision.state == DomainState::Included || decision.state == DomainState::Excluded ||
+                decision.state == DomainState::Unexplored);
+            if (!extraction.topology.customDomainPolicy)
+                require((decision.state == DomainState::Included ||
+                    (extraction.topology.coverage.seeded && decision.state == DomainState::Unexplored)) &&
+                    decision.reason == 0);
+        }
+        if (options.islands) for (auto island : *options.islands) {
+            checkpoint(options.canceled);
+            require(island < selected.size());
+            selected[island] = true;
+        }
+        SamplingArtifact artifact;
+        artifact.topology = extraction.topology;
+        artifact.sampleSpacing = config.sampleSpacing;
+        std::set<SampleKey> unique;
+        for (const auto& interval : extraction.intervals) {
+            checkpoint(options.canceled);
+            require(interval.island < selected.size());
+            if (!selected[interval.island]) continue;
+            if (!extraction.topology.domain.empty()) {
+                const auto state = extraction.topology.domain[interval.island].state;
+                if (state != DomainState::Included) continue;
+            }
+            artifact.intervals.push_back(interval);
+            ++result.stats.boundaryIntervals;
+            sampleInterval(interval, config, options.canceled, artifact, unique, result.stats);
+        }
+        checkpoint(options.canceled);
+        result.value.emplace(std::move(artifact));
+        result.status = StageStatus::Success;
+    } catch (const Abort& error) { result.status = error.status; }
+    catch (const std::bad_alloc&) { result.status = StageStatus::OutOfMemory; }
+    catch (...) { result.status = StageStatus::CallbackFailed; }
+    return result;
+}
+
+StageResult<SamplingArtifact> extractAndSample(const BuildInput& input, const DiscoveryConfig& config) {
+    // Reject bad discovery settings before mesh traversal or polygon callbacks.
+    if (!std::isfinite(config.sampleSpacing) || config.sampleSpacing <= 0 ||
+        !std::isfinite(config.maxHorizontalGap) || config.maxHorizontalGap < 0 ||
+        !std::isfinite(config.maxClimb) || config.maxClimb < 0 ||
+        !std::isfinite(config.maxDrop) || config.maxDrop < 0) return {};
+    auto extraction = extractTopology(input);
+    if (!extraction.value) {
+        StageResult<SamplingArtifact> result;
+        result.status = extraction.status;
+        result.stats = extraction.stats;
+        return result;
+    }
+    SamplingOptions options;
+    options.canceled = input.canceled;
+    auto result = sampleBoundaries(*extraction.value, config, options);
+    result.stats.groundPolygonsVisited = extraction.stats.groundPolygonsVisited;
+    result.stats.eligiblePolygons = extraction.stats.eligiblePolygons;
+    result.stats.islands = extraction.stats.islands;
+    result.stats.includedIslands = extraction.stats.includedIslands;
+    result.stats.excludedIslands = extraction.stats.excludedIslands;
+    result.stats.unexploredIslands = extraction.stats.unexploredIslands;
     return result;
 }
 

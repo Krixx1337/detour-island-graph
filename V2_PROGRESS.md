@@ -6,11 +6,74 @@ The revised [MVP plan](temp/todo/V2_MVP_PLAN.md) controls scope. Delivered secti
 below describe the existing baseline, not completion of the expanded MVP. The
 follow-up chat was consolidated into the plan and removed.
 
-Pending additions: topology/sampling separation, island metrics, reasoned domain
-selection, seeded validated frontier expansion, bounded production processing,
+Pending additions: fully bounded production processing,
 one working host validator, mass-policy migration, lazy native Detour transfers,
-and domain-aware persistence and query results. This documentation revision does
-not implement these features. Existing host remains on V1.
+and routing correctness fixes. Existing host remains on V1.
+
+## Library continuation, 2026-09-07
+
+Benchmarking is deferred by request. Current work is library-only.
+
+- Added `extractTopology`, returning native ownership, exposed intervals, and
+  per-island polygon count, bounds, and coarse 3D triangle-fan surface area in
+  squared navmesh units. Metrics do not classify playability or use detail relief.
+- Added `sampleBoundaries` with optional explicit island selection. Unset selects
+  all Included islands; empty selects none. Order and duplicates do not affect samples.
+  Full eligible target ownership remains available to candidate discovery.
+- Retained `extractAndSample` as the exhaustive convenience wrapper. Existing
+  pipeline uses it. Extraction can now be reused without rerunning polygon filters.
+- Verified selection, inactive-target discovery, wrapper equivalence, metrics on
+  slopes, polygon exclusions, caps, cancellation, and callback failures.
+- MSVC Debug library/test build and all 88 tests pass. Benchmarking and host checks
+  were not run.
+
+- Added `BuildInput::islandPolicy`, called once per native island with metrics.
+  Decisions retain Included, Excluded, or Unexplored state and host reason. No
+  default size cutoff exists. Polygon exclusions still require `polygonFilter`
+  before native connectivity extraction. Whole-island decisions retain raw IDs.
+- Sampling processes Included islands only. Discovery skips Excluded targets but
+  retains Unexplored targets for future frontier validation. External excluded
+  candidates never call the validator. Compilation keeps crossings only between
+  Included islands and preserves full ownership, metrics, and domain records.
+- Routing returns `OutOfDomain` before `SameIsland` for uncovered endpoints.
+  Extraction and compilation count Included, Excluded, and Unexplored islands.
+- Native format 3 persists metrics, domain states/reasons, domain-policy identity,
+  and seed coverage. Formats 1 and 2 are rejected. Unversioned custom domain policy disables
+  persistent reuse. Decode validates metric counts/geometry, domain flags/states,
+  and compiled crossing coverage; new metadata allocations consume decode budget.
+- Added end-to-end domain/persistence checks and malformed producer, corrupt
+  metadata, callback failure, and cancellation cases.
+
+## Seeded library pipeline delivered
+
+- `buildSeededGraph` requires explicit polygon-anchored seeds and a validator.
+  Every required seed must match eligible native ownership, project over its
+  stated polygon, and stay within explicit 3D projection tolerance. The library
+  does not guess nearest layers or establish host trust in a landmark.
+- Non-excluded islands start Unexplored. Checked seed islands become Included.
+  Only geometrically eligible, policy-allowed Valid outgoing crossings activate
+  new islands. Reverse-only and Unknown results do not expand forward reach.
+- Sampling/discovery run per active island. Exact canonical crossing keys span
+  batches, avoiding repeated validation of duplicate anchors. Sample/candidate
+  budgets apply cumulatively; each batch receives the remaining allowance.
+  Exhaustion, callback failure, and cancellation return no graph.
+- Complete frontier exhaustion publishes only ValidatedOnly output. Compiler
+  checks canonical seeds, completed coverage, and reachability of every Included
+  island from those seeds through compiled validated directions.
+- Coverage stores seeded mode, completion, projected seeds, and host seed identity.
+  Unversioned seed semantics disable persistent reuse. Host seed identity must
+  version trust/projection semantics, including tolerance. Format 3 round-trips
+  coverage and rejects incomplete or inconsistent data.
+- Tests cover forward/reverse chains, Unknown, bad ownership/layers, excluded
+  seeds, outbound policy, duplicate seeds, exact cumulative caps, callbacks,
+  cancellation, and persisted coverage.
+
+Unexplored never means unreachable. Completion is relative to configured sampling
+and validator, not continuous-space completeness. Boundary extraction still visits
+the full eligible mesh; each selected sampling pass scans intervals and copies
+ownership. Nearby-query allocation, topology memory, and retained exact evidence
+still need explicit production bounds. Host native paths must enforce the same
+domain policy during migration.
 
 ## Foundation delivered
 
@@ -229,15 +292,14 @@ heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Capture fixtures and baseline on Queensdale plus an interior-heavy stacked
-   workload. Inventory collision access, trusted seeds, movement rules, and costs.
-2. Split topology from sampling; add metrics, domain reasons, seed coverage,
-   exclusion propagation, and semantic identity.
-3. Integrate host validation, seeded expansion, and bounded processing. Current
+1. Continue library contracts while benchmarking and host integration are deferred.
+2. Bound topology, nearby-query memory, and retained crossing evidence; reduce
+   repeated ownership copies and full interval scans in the seeded pipeline.
+3. Integrate host validation when host work resumes. Current exhaustive
    `PipelineResult` retains all artifacts and nearby-polygon collection has no
    separate temporary-memory cap; both need production changes.
 4. Add mass policy and lazy native transfers, fix routing gaps above, and extend
-   the existing serializer for domain and metric contracts with a format bump.
+   persistence as remaining contracts change.
 5. Pass revised acceptance gates before host/settings/report migration and
    package version 2.0.0. Measure memory and query latency before deciding whether
    spans or regional routing must enter scope.

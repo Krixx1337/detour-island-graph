@@ -48,15 +48,36 @@ std::unordered_map<dtPolyRef, IslandId> indexTopology(const TopologyArtifact& to
     require(topology.islandCount <= (std::numeric_limits<IslandId>::max)());
     std::unordered_map<dtPolyRef, IslandId> index;
     std::vector<bool> seen(topology.islandCount, false);
+    std::vector<std::size_t> counts(topology.islandCount, 0);
     for (const auto& entry : topology.polygons) {
         checkpoint(cancel);
         require(entry.polygon != 0 && entry.island < topology.islandCount);
         require(index.emplace(entry.polygon, entry.island).second);
         seen[entry.island] = true;
+        ++counts[entry.island];
     }
     for (bool present : seen) {
         checkpoint(cancel);
         require(present);
+    }
+    require(topology.metrics.empty() || topology.metrics.size() == topology.islandCount);
+    for (std::size_t i = 0; i < topology.metrics.size(); ++i) {
+        checkpoint(cancel);
+        const auto& metric = topology.metrics[i];
+        require(metric.polygonCount == counts[i]);
+        require(std::isfinite(metric.surfaceArea) && metric.surfaceArea >= 0);
+        require(finite(metric.boundsMin) && finite(metric.boundsMax));
+        require(metric.boundsMin.x <= metric.boundsMax.x && metric.boundsMin.y <= metric.boundsMax.y &&
+            metric.boundsMin.z <= metric.boundsMax.z);
+    }
+    require(topology.domain.empty() || topology.domain.size() == topology.islandCount);
+    for (const auto& decision : topology.domain) {
+        checkpoint(cancel);
+        require(decision.state == DomainState::Included || decision.state == DomainState::Excluded ||
+            decision.state == DomainState::Unexplored);
+        if (!topology.customDomainPolicy)
+            require((decision.state == DomainState::Included ||
+                (topology.coverage.seeded && decision.state == DomainState::Unexplored)) && decision.reason == 0);
     }
     return index;
 }
@@ -157,6 +178,9 @@ StageResult<CrossingArtifact> validateCrossings(const TopologyArtifact& topology
             validateAnchor(candidate.a, index);
             validateAnchor(candidate.b, index);
             require(candidate.a.island != candidate.b.island);
+            if (!topology.domain.empty() &&
+                (topology.domain[candidate.a.island].state == DomainState::Excluded ||
+                 topology.domain[candidate.b.island].state == DomainState::Excluded)) continue;
             Crossing crossing{candidate.a, candidate.b, {}, {}};
             normalizeZero(crossing.a.position);
             normalizeZero(crossing.b.position);
@@ -200,10 +224,39 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
         graph->customPolygonPolicy_ = artifact.topology.customPolygonPolicy;
         graph->validatorSupplied_ = artifact.validatorSupplied;
         graph->customOutboundPolicy_ = artifact.customOutboundPolicy;
+        graph->metrics_ = artifact.topology.metrics;
+        graph->domain_ = artifact.topology.domain;
+        if (graph->domain_.empty()) graph->domain_.resize(artifact.topology.islandCount);
+        graph->customDomainPolicy_ = artifact.topology.customDomainPolicy;
+        graph->coverage_ = artifact.topology.coverage;
+        require(graph->coverage_.complete);
+        if (graph->coverage_.seeded) {
+            require(artifact.validatorSupplied && options.policy == CompilePolicy::ValidatedOnly);
+            require(!graph->coverage_.seeds.empty());
+            for (const auto& seed : graph->coverage_.seeds) {
+                checkpoint(options.canceled);
+                validateAnchor(seed, graph->polygonIslands_);
+                require(graph->includes(seed.island));
+            }
+            for (std::size_t i = 1; i < graph->coverage_.seeds.size(); ++i) {
+                checkpoint(options.canceled);
+                require(anchorKey(graph->coverage_.seeds[i - 1]) < anchorKey(graph->coverage_.seeds[i]));
+            }
+        } else require(graph->coverage_.seeds.empty() && graph->coverage_.seedIdentity == 0);
+        for (const auto& decision : graph->domain_) {
+            checkpoint(options.canceled);
+            switch (decision.state) {
+            case DomainState::Included: ++result.stats.includedIslands; break;
+            case DomainState::Excluded: ++result.stats.excludedIslands; break;
+            case DomainState::Unexplored: ++result.stats.unexploredIslands; break;
+            }
+        }
         const auto& id = graph->identity_;
         graph->persistentReuseEligible_ = id.mesh && id.movementProfile &&
             (!artifact.topology.customPolygonPolicy || id.polygonPolicy) &&
             (!artifact.customOutboundPolicy || id.outboundPolicy) &&
+            (!artifact.topology.customDomainPolicy || id.domainPolicy) &&
+            (!graph->coverage_.seeded || graph->coverage_.seedIdentity) &&
             (!artifact.validatorSupplied || (id.validator && id.environment));
         std::map<CrossingKey, const Crossing*> unique;
         std::vector<int> outbound(artifact.topology.islandCount, -1);
@@ -236,6 +289,7 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
             const auto& crossing = *entry.second;
             countDirection(crossing.ab, result.stats);
             countDirection(crossing.ba, result.stats);
+            if (!graph->includes(crossing.a.island) || !graph->includes(crossing.b.island)) continue;
             const bool ab = usable(crossing.ab, options.policy);
             const bool ba = usable(crossing.ba, options.policy);
             if (!ab && !ba) continue;
@@ -254,6 +308,29 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
             const auto& compiled = graph->crossings_[i];
             if (compiled.traversableAB) graph->traversals_[next[compiled.crossing.a.island]++] = {i, false};
             if (compiled.traversableBA) graph->traversals_[next[compiled.crossing.b.island]++] = {i, true};
+        }
+        if (graph->coverage_.seeded) {
+            std::vector<bool> reached(graph->domain_.size(), false);
+            std::vector<IslandId> queue;
+            for (const auto& seed : graph->coverage_.seeds) if (!reached[seed.island]) {
+                reached[seed.island] = true;
+                queue.push_back(seed.island);
+            }
+            for (std::size_t head = 0; head < queue.size(); ++head) {
+                checkpoint(options.canceled);
+                const auto island = queue[head];
+                for (auto i = graph->offsets_[island]; i < graph->offsets_[island + 1]; ++i) {
+                    checkpoint(options.canceled);
+                    const auto traversal = graph->traversals_[i];
+                    const auto& crossing = graph->crossings_[traversal.crossing].crossing;
+                    const auto target = traversal.reverse ? crossing.a.island : crossing.b.island;
+                    if (!reached[target]) { reached[target] = true; queue.push_back(target); }
+                }
+            }
+            for (std::size_t i = 0; i < reached.size(); ++i) {
+                checkpoint(options.canceled);
+                require(!graph->includes(static_cast<IslandId>(i)) || reached[i]);
+            }
         }
         checkpoint(options.canceled);
         result.stats.compiledCrossings = graph->crossings_.size();

@@ -408,6 +408,102 @@ TEST_CASE("V2 sampling follows three dimensional edge length on slopes") {
             doctest::Approx(1).epsilon(1e-6));
 }
 
+TEST_CASE("V2 topology can be reused for selected boundary sampling") {
+    auto mesh = singleMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    int filterCalls = 0;
+    input.polygonFilter = [&](dtPolyRef, const dtMeshTile&, const dtPoly&) {
+        ++filterCalls;
+        return true;
+    };
+    const auto topology = extractTopology(input);
+    REQUIRE(topology.value);
+    CHECK(topology.stats.samples == 0);
+    CHECK(topology.stats.boundaryIntervals == 8);
+    REQUIRE(topology.value->topology.metrics.size() == 2);
+    CHECK(topology.value->topology.metrics[0].polygonCount == 1);
+    CHECK(topology.value->topology.metrics[0].surfaceArea == doctest::Approx(4));
+    CHECK(topology.value->topology.metrics[1].boundsMin.x == 4);
+    CHECK(topology.value->topology.metrics[1].boundsMax.x == 6);
+
+    SamplingOptions selection;
+    selection.islands = std::vector<IslandId>{1, 1};
+    auto result = sampleBoundaries(*topology.value, config(), selection);
+    REQUIRE(result.value);
+    CHECK(result.value->samples.size() == 4);
+    CHECK(result.value->topology.polygons.size() == 2);
+    for (const auto& anchor : result.value->samples) CHECK(anchor.island == 1);
+    CHECK(filterCalls == 2);
+    const auto discovered = discoverCandidates(*result.value, *mesh, config());
+    REQUIRE(discovered.value);
+    CHECK_FALSE(discovered.value->empty());
+    for (const auto& candidate : *discovered.value) {
+        CHECK(candidate.a.island == 1);
+        CHECK(candidate.b.island == 0);
+    }
+
+    const auto all = sampleBoundaries(*topology.value, config());
+    const auto wrapped = extractAndSample(input, config());
+    REQUIRE(all.value);
+    REQUIRE(wrapped.value);
+    CHECK(sampleKeys(*all.value, mesh) == sampleKeys(*wrapped.value, mesh));
+    selection.islands = std::vector<IslandId>{1, 0, 1};
+    const auto reordered = sampleBoundaries(*topology.value, config(), selection);
+    REQUIRE(reordered.value);
+    CHECK(sampleKeys(*all.value, mesh) == sampleKeys(*reordered.value, mesh));
+
+    selection.islands = std::vector<IslandId>{};
+    result = sampleBoundaries(*topology.value, config(), selection);
+    REQUIRE(result.value);
+    CHECK(result.value->samples.empty());
+    CHECK(result.value->topology.islandCount == 2);
+
+    selection.islands = std::vector<IslandId>{2};
+    result = sampleBoundaries(*topology.value, config(), selection);
+    CHECK(result.status == StageStatus::InvalidInput);
+    CHECK_FALSE(result.value);
+
+    selection.islands.reset();
+    auto limited = config();
+    limited.maxSamples = 7;
+    result = sampleBoundaries(*topology.value, limited, selection);
+    CHECK(result.status == StageStatus::BudgetExceeded);
+    CHECK_FALSE(result.value);
+    limited.maxSamples = 8;
+    CHECK(sampleBoundaries(*topology.value, limited, selection).status == StageStatus::Success);
+    selection.canceled = [] { return true; };
+    result = sampleBoundaries(*topology.value, config(), selection);
+    CHECK(result.status == StageStatus::Canceled);
+    CHECK_FALSE(result.value);
+    selection.canceled = []() -> bool { throw std::runtime_error("cancel failure"); };
+    CHECK(sampleBoundaries(*topology.value, config(), selection).status == StageStatus::CallbackFailed);
+}
+
+TEST_CASE("V2 topology metrics use 3D area and preserve polygon exclusions") {
+    Rect left{0, 0, 4, 2}, right{4, 0, 8, 2};
+    left.neighbors[1] = 1;
+    right.neighbors[3] = 0;
+    auto mesh = singleMesh({left, right});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    auto result = extractTopology(input);
+    REQUIRE(result.value);
+    REQUIRE(result.value->topology.metrics.size() == 1);
+    CHECK(result.value->topology.metrics[0].polygonCount == 2);
+    CHECK(result.value->topology.metrics[0].surfaceArea == doctest::Approx(16));
+    const auto excluded = result.value->topology.polygons[1].polygon;
+    input.polygonFilter = [=](dtPolyRef ref, const dtMeshTile&, const dtPoly&) { return ref != excluded; };
+    auto* tile = const_cast<dtMeshTile*>(mesh->getTileAt(0, 0, 0));
+    tile->verts[4] = tile->verts[7] = 3;
+    result = extractTopology(input);
+    REQUIRE(result.value);
+    CHECK(result.value->topology.metrics[0].polygonCount == 1);
+    CHECK(result.value->topology.metrics[0].surfaceArea == doctest::Approx(10));
+    CHECK(result.value->topology.metrics[0].boundsMax.y == 3);
+    CHECK(result.value->intervals.size() == 4);
+}
+
 TEST_CASE("V2 sampling rejects malformed edge data and cancellation after last filter") {
     auto mesh = singleMesh({{0, 0, 2, 2}});
     BuildInput input;
@@ -427,4 +523,34 @@ TEST_CASE("V2 sampling rejects malformed edge data and cancellation after last f
         CHECK(result.status == StageStatus::Canceled);
         CHECK_FALSE(result.value);
     }
+}
+
+TEST_CASE("V2 island policy failures never publish topology") {
+    auto mesh = singleMesh({{0, 0, 2, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    bool cancel = false;
+    input.canceled = [&] { return cancel; };
+    StageStatus expected = StageStatus::CallbackFailed;
+    SUBCASE("throwing policy") {
+        input.islandPolicy = [](IslandId, const IslandMetrics&) -> IslandDomain {
+            throw std::runtime_error("policy failed");
+        };
+    }
+    SUBCASE("invalid policy result") {
+        expected = StageStatus::InvalidInput;
+        input.islandPolicy = [](IslandId, const IslandMetrics&) {
+            return IslandDomain{static_cast<DomainState>(99), 0};
+        };
+    }
+    SUBCASE("cancel after final decision") {
+        expected = StageStatus::Canceled;
+        input.islandPolicy = [&](IslandId, const IslandMetrics&) {
+            cancel = true;
+            return IslandDomain{};
+        };
+    }
+    const auto result = extractTopology(input);
+    CHECK(result.status == expected);
+    CHECK_FALSE(result.value);
 }

@@ -27,6 +27,30 @@ struct Anchor {
     Point position;
 };
 
+struct IslandMetrics {
+    std::size_t polygonCount = 0;
+    // Sum of coarse polygon triangle-fan 3D areas, in squared navmesh units.
+    // Does not include detail-mesh relief or imply clearance/playability.
+    double surfaceArea = 0;
+    Point boundsMin;
+    Point boundsMax;
+};
+
+// Unexplored is outside current coverage, never a claim of unreachability.
+enum class DomainState : std::uint8_t { Included, Excluded, Unexplored };
+
+struct IslandDomain {
+    DomainState state = DomainState::Included;
+    std::uint32_t reason = 0; // Host-defined evidence/policy reason.
+};
+
+struct BuildCoverage {
+    bool seeded = false;
+    bool complete = true; // Seeded builds publish only after frontier exhaustion.
+    std::uint64_t seedIdentity = 0; // Versioned host seed semantics; zero disables reuse.
+    std::vector<Anchor> seeds; // Checked, projected anchors in canonical order.
+};
+
 // IDs describe immutable inputs, not pointer addresses. Zero means unversioned.
 struct BuildIdentity {
     std::uint64_t mesh = 0;
@@ -36,6 +60,7 @@ struct BuildIdentity {
     std::uint64_t validator = 0;
     std::uint64_t environment = 0;
     double unitsPerMeter = 1;
+    std::uint64_t domainPolicy = 0;
 };
 
 struct BuildInput {
@@ -44,6 +69,9 @@ struct BuildInput {
     BuildIdentity identity;
     std::function<bool(dtPolyRef, const dtMeshTile&, const dtPoly&)> polygonFilter;
     Cancel canceled;
+    // Whole-island decisions preserve native ownership and metrics. Polygon
+    // exclusions that split connectivity must instead use polygonFilter.
+    std::function<IslandDomain(IslandId, const IslandMetrics&)> islandPolicy;
 };
 
 struct DiscoveryConfig {
@@ -65,6 +93,13 @@ struct TopologyArtifact {
     bool customPolygonPolicy = false;
     std::size_t islandCount = 0; // Dense IDs [0, islandCount); no empty islands.
     std::vector<PolygonIsland> polygons;
+    // Empty metrics means unavailable for trusted external producers; otherwise
+    // exactly islandCount records. Mesh extraction always supplies metrics.
+    std::vector<IslandMetrics> metrics;
+    // Empty means exhaustive inclusion. Otherwise exactly islandCount records.
+    std::vector<IslandDomain> domain;
+    bool customDomainPolicy = false;
+    BuildCoverage coverage;
 };
 
 struct BoundaryInterval {
@@ -75,6 +110,19 @@ struct BoundaryInterval {
     double end = 1;
     Point start;
     Point finish;
+};
+
+struct TopologyExtractionArtifact {
+    TopologyArtifact topology;
+    std::vector<BoundaryInterval> intervals;
+};
+
+struct SamplingOptions {
+    // Unset selects all Included islands; an empty vector selects none. Order
+    // and duplicates do not affect output. Excluded/Unexplored islands never
+    // sample, even when explicitly listed. Selection retains target ownership.
+    std::optional<std::vector<IslandId>> islands;
+    Cancel canceled;
 };
 
 struct SamplingArtifact {
@@ -145,6 +193,9 @@ struct StageStats {
     std::size_t groundPolygonsVisited = 0;
     std::size_t eligiblePolygons = 0;
     std::size_t islands = 0;
+    std::size_t includedIslands = 0;
+    std::size_t excludedIslands = 0;
+    std::size_t unexploredIslands = 0;
     std::size_t boundaryIntervals = 0;
     std::size_t sampleAttempts = 0;
     std::size_t sampleDuplicates = 0;
@@ -197,6 +248,13 @@ public:
     bool customPolygonPolicy() const noexcept { return customPolygonPolicy_; }
     bool validatorSupplied() const noexcept { return validatorSupplied_; }
     bool customOutboundPolicy() const noexcept { return customOutboundPolicy_; }
+    const std::vector<IslandMetrics>& metrics() const noexcept { return metrics_; }
+    const std::vector<IslandDomain>& domain() const noexcept { return domain_; }
+    bool customDomainPolicy() const noexcept { return customDomainPolicy_; }
+    const BuildCoverage& coverage() const noexcept { return coverage_; }
+    bool includes(IslandId island) const noexcept {
+        return island < domain_.size() && domain_[island].state == DomainState::Included;
+    }
 
 private:
     friend CompileResult compileGraph(const CrossingArtifact&, const CompileOptions&);
@@ -207,6 +265,10 @@ private:
     bool customPolygonPolicy_ = false;
     bool validatorSupplied_ = false;
     bool customOutboundPolicy_ = false;
+    bool customDomainPolicy_ = false;
+    BuildCoverage coverage_;
+    std::vector<IslandMetrics> metrics_;
+    std::vector<IslandDomain> domain_;
     std::vector<CompiledCrossing> crossings_;
     std::vector<Traversal> traversals_;
     std::vector<std::size_t> offsets_;
@@ -223,6 +285,16 @@ private:
 // independent of tile allocation order. Polygon refs remain snapshot-specific.
 StageResult<SamplingArtifact> extractAndSample(
     const BuildInput& input, const DiscoveryConfig& config);
+
+// Extract native ownership, coarse metrics and exposed intervals once, without
+// generating samples. The same frozen artifact can serve multiple selections.
+StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input);
+
+// Artifacts are trusted producer inputs tied to the original mesh snapshot.
+// Samples and intervals include only selected islands; topology retains all
+// eligible polygons so discovery can find destinations outside the selection.
+StageResult<SamplingArtifact> sampleBoundaries(const TopologyExtractionArtifact& topology,
+    const DiscoveryConfig& config, const SamplingOptions& options = {});
 
 // Candidate discovery from boundary samples. Uses the collector queryPolygons
 // overload so dense stacked geometry cannot truncate silently; the fixed-size
@@ -272,5 +344,21 @@ struct PipelineResult {
 // attempted stage plus the total.
 PipelineResult buildGraph(const BuildInput& input, const DiscoveryConfig& config,
     const ValidationOptions& validation = {}, const CompileOptions& compilation = {});
+
+struct SeededBuildOptions {
+    // Explicit polygon refs avoid ambiguous nearest-layer selection. Every seed
+    // is required, must belong to its stated eligible island, and project over
+    // that polygon within this 3D tolerance in navmesh units.
+    std::vector<Anchor> seeds;
+    float projectionTolerance = 0;
+    std::uint64_t seedIdentity = 0;
+};
+
+// Requires a validator. Only Valid, permitted outgoing directions expand reach.
+// Exclusions persist; other islands begin Unexplored. Publishes ValidatedOnly
+// after exhaustion, never partial output. Sample/candidate caps span all batches.
+// Intermediate batches are discarded; exact crossing evidence is retained.
+CompileResult buildSeededGraph(const BuildInput& input, const DiscoveryConfig& config,
+    const SeededBuildOptions& seeds, const ValidationOptions& validation);
 
 } // namespace detour_island_graph::v2

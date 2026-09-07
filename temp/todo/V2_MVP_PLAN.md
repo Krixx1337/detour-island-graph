@@ -4,6 +4,9 @@ Revised 2026-09-07 after dirty-map and routing reassessment. This document contr
 MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records delivered code and gaps.
 Requirements below are not claims of implementation.
 
+Current execution scope: library implementation first; benchmarking is deferred
+by user request. Host migration and its acceptance gates remain future work.
+
 ## Direction
 
 Keep V2's directional crossing model and immutable graph compiler. Expand MVP to

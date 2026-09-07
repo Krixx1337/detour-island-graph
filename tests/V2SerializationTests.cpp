@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include <detour_island_graph/v2/Build.h>
 #include <detour_island_graph/v2/Serialization.h>
+#include <detour_island_graph/v2/Routing.h>
 #include <DetourNavMeshBuilder.h>
 
 #include <array>
@@ -88,6 +89,24 @@ void checkEqualGraphs(const CompiledGraph& a, const CompiledGraph& b) {
     CHECK(a.customPolygonPolicy() == b.customPolygonPolicy());
     CHECK(a.validatorSupplied() == b.validatorSupplied());
     CHECK(a.customOutboundPolicy() == b.customOutboundPolicy());
+    CHECK(a.customDomainPolicy() == b.customDomainPolicy());
+    CHECK(a.identity().domainPolicy == b.identity().domainPolicy);
+    REQUIRE(a.metrics().size() == b.metrics().size());
+    for (std::size_t i = 0; i < a.metrics().size(); ++i) {
+        CHECK(a.metrics()[i].polygonCount == b.metrics()[i].polygonCount);
+        CHECK(a.metrics()[i].surfaceArea == b.metrics()[i].surfaceArea);
+        CHECK(a.metrics()[i].boundsMin.x == b.metrics()[i].boundsMin.x);
+        CHECK(a.metrics()[i].boundsMin.y == b.metrics()[i].boundsMin.y);
+        CHECK(a.metrics()[i].boundsMin.z == b.metrics()[i].boundsMin.z);
+        CHECK(a.metrics()[i].boundsMax.x == b.metrics()[i].boundsMax.x);
+        CHECK(a.metrics()[i].boundsMax.y == b.metrics()[i].boundsMax.y);
+        CHECK(a.metrics()[i].boundsMax.z == b.metrics()[i].boundsMax.z);
+    }
+    REQUIRE(a.domain().size() == b.domain().size());
+    for (std::size_t i = 0; i < a.domain().size(); ++i) {
+        CHECK(a.domain()[i].state == b.domain()[i].state);
+        CHECK(a.domain()[i].reason == b.domain()[i].reason);
+    }
     CHECK(a.polygonIslands() == b.polygonIslands());
     CHECK(a.offsets() == b.offsets());
     CHECK(a.traversals().size() == b.traversals().size());
@@ -183,7 +202,7 @@ TEST_CASE("V2 serialization rejects foreign corrupt and hostile input") {
     CHECK(GraphSerializer::read(v1).status == SerializationStatus::InvalidMagic);
 
     auto versioned = blob;
-    versioned[4] = 2;
+    versioned[4] = 1;
     std::istringstream versionStream(versioned);
     CHECK(GraphSerializer::read(versionStream).status == SerializationStatus::UnsupportedVersion);
 
@@ -199,7 +218,7 @@ TEST_CASE("V2 serialization rejects foreign corrupt and hostile input") {
 
     // Direction state byte follows the two 24-byte anchors plus two flag bytes.
     auto badState = blob;
-    badState[112 + 24 + 24 + 2] = 3;
+    badState[112 + 24 + 48 + 2] = 3;
     std::istringstream stateStream(badState);
     CHECK(GraphSerializer::read(stateStream).status == SerializationStatus::MalformedData);
 
@@ -217,4 +236,83 @@ TEST_CASE("V2 serialization rejects foreign corrupt and hostile input") {
     canceled.canceled = [] { return true; };
     std::istringstream cancelStream(blob);
     CHECK(GraphSerializer::read(cancelStream, canceled).status == SerializationStatus::Canceled);
+}
+
+TEST_CASE("V2 domain policy preserves ownership while gating sampling discovery and routing") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}, {8, 0, 10, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    input.identity.mesh = 42;
+    input.identity.movementProfile = 7;
+    input.identity.domainPolicy = 19;
+    const DiscoveryConfig config{2, 10, 2, 4, 0, 0};
+    input.islandPolicy = [](IslandId island, const IslandMetrics& metrics) {
+        CHECK(metrics.surfaceArea == doctest::Approx(4));
+        return IslandDomain{island == 0 ? DomainState::Included :
+            island == 1 ? DomainState::Unexplored : DomainState::Excluded, island + 100};
+    };
+    auto built = buildGraph(input, config);
+    REQUIRE(built.status == StageStatus::Success);
+    REQUIRE(built.compilation.value);
+    const auto& graph = **built.compilation.value;
+    CHECK(graph.polygonIslands().size() == 3);
+    CHECK(graph.metrics().size() == 3);
+    CHECK(graph.crossings().empty());
+    CHECK(graph.persistentReuseEligible());
+    CHECK(built.sampling.stats.includedIslands == 1);
+    CHECK(built.sampling.stats.excludedIslands == 1);
+    CHECK(built.sampling.stats.unexploredIslands == 1);
+    CHECK(built.compilation.stats.includedIslands == 1);
+    CHECK(built.compilation.stats.excludedIslands == 1);
+    CHECK(built.compilation.stats.unexploredIslands == 1);
+    REQUIRE(built.sampling.value);
+    CHECK(built.sampling.value->samples.size() == 4);
+    REQUIRE(built.discovery.value);
+    CHECK_FALSE(built.discovery.value->empty());
+    for (const auto& candidate : *built.discovery.value) {
+        CHECK(candidate.a.island == 0);
+        CHECK(candidate.b.island == 1);
+    }
+    for (auto island : {1u, 2u}) {
+        CHECK(findRoute(graph, 0, island, {}, {}).status == RouteStatus::OutOfDomain);
+        CHECK(findRoute(graph, island, 0, {}, {}).status == RouteStatus::OutOfDomain);
+        CHECK(findRoute(graph, island, island, {}, {}).status == RouteStatus::OutOfDomain);
+    }
+    CHECK(findRoute(graph, 0, 0, {}, {}).status == RouteStatus::SameIsland);
+    CHECK(findRoute(graph, 0, 3, {}, {}).status == RouteStatus::InvalidIsland);
+
+    std::ostringstream bytes;
+    REQUIRE(GraphSerializer::write(bytes, graph) == SerializationStatus::Success);
+    std::istringstream stream(bytes.str());
+    const auto decoded = GraphSerializer::read(stream);
+    REQUIRE(decoded.graph);
+    checkEqualGraphs(graph, *decoded.graph);
+    CHECK(decoded.graph->persistentReuseEligible());
+    CHECK(findRoute(*decoded.graph, 0, 1, {}, {}).status == RouteStatus::OutOfDomain);
+    input.identity.domainPolicy = 0;
+    built = buildGraph(input, config);
+    REQUIRE(built.compilation.value);
+    CHECK_FALSE((**built.compilation.value).persistentReuseEligible());
+}
+
+TEST_CASE("V2 serialization rejects corrupt metrics and domain records") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    const auto graph = buildPair(mesh);
+    std::ostringstream bytes;
+    REQUIRE(GraphSerializer::write(bytes, *graph) == SerializationStatus::Success);
+    auto blob = bytes.str();
+    // Format 3 adds 14 coverage bytes for exhaustive builds after domain data.
+    const auto metricsStart = blob.size() - 14 - 2 * 5 - 2 * 36;
+    SUBCASE("invalid domain state") { blob[blob.size() - 14 - 10] = 3; }
+    SUBCASE("undeclared custom domain") { blob[blob.size() - 14 - 10] = 1; }
+    SUBCASE("wrong metric polygon count") { blob[metricsStart] = 2; }
+    SUBCASE("nonfinite metric area") {
+        for (std::size_t i = 4; i < 12; ++i) blob[metricsStart + i] = char(0xff);
+    }
+    SUBCASE("metric count mismatch") { blob[metricsStart - 4] = 1; }
+    SUBCASE("truncated domain reason") { blob.pop_back(); }
+    std::istringstream stream(blob);
+    const auto decoded = GraphSerializer::read(stream);
+    CHECK(decoded.status == SerializationStatus::MalformedData);
+    CHECK_FALSE(decoded.graph);
 }

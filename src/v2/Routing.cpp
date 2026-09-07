@@ -49,6 +49,10 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
             result.status = RouteStatus::InvalidIsland;
             return result;
         }
+        if (!graph.includes(startIsland) || !graph.includes(endIsland)) {
+            result.status = RouteStatus::OutOfDomain;
+            return result;
+        }
         if (startIsland == endIsland) {
             result.status = RouteStatus::SameIsland;
             return result;

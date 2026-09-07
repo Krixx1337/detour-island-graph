@@ -49,7 +49,7 @@ class GraphSerializer {
 public:
     static constexpr std::uint32_t Magic = 0x32474944U; // "DIG2"
     // Format version, independent of the library version.
-    static constexpr std::uint32_t FormatVersion = 1;
+    static constexpr std::uint32_t FormatVersion = 3;
 
     [[nodiscard]] static SerializationStatus write(std::ostream& stream, const CompiledGraph& graph);
     [[nodiscard]] static SerializationResult read(

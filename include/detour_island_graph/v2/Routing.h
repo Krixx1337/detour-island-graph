@@ -57,7 +57,8 @@ enum class RouteStatus : std::uint8_t {
     BudgetExceeded,
     Canceled,
     CallbackFailed,
-    OutOfMemory
+    OutOfMemory,
+    OutOfDomain // Existing island, excluded or outside explored coverage.
 };
 
 struct RouteStats {

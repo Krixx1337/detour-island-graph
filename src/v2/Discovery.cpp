@@ -41,6 +41,15 @@ std::unordered_map<dtPolyRef, IslandId> indexTopology(
     require(std::isfinite(topology.identity.unitsPerMeter) && topology.identity.unitsPerMeter > 0);
     require(topology.islandCount <= topology.polygons.size());
     require(topology.islandCount <= (std::numeric_limits<IslandId>::max)());
+    require(topology.domain.empty() || topology.domain.size() == topology.islandCount);
+    for (const auto& decision : topology.domain) {
+        checkpoint(cancel);
+        require(decision.state == DomainState::Included || decision.state == DomainState::Excluded ||
+            decision.state == DomainState::Unexplored);
+        if (!topology.customDomainPolicy)
+            require((decision.state == DomainState::Included ||
+                (topology.coverage.seeded && decision.state == DomainState::Unexplored)) && decision.reason == 0);
+    }
     std::unordered_map<dtPolyRef, IslandId> index;
     std::vector<bool> seen(topology.islandCount, false);
     for (const auto& entry : topology.polygons) {
@@ -125,6 +134,8 @@ StageResult<std::vector<CrossingCandidate>> discoverCandidates(
         for (const auto& sample : sampling.samples) {
             checkpoint(canceled);
             const float center[3] = {sample.position.x, sample.position.y, sample.position.z};
+            if (!sampling.topology.domain.empty() &&
+                sampling.topology.domain[sample.island].state != DomainState::Included) continue;
             const float extents[3] = {config.maxHorizontalGap, verticalExtent, config.maxHorizontalGap};
             nearby.clear();
             Collector collector(nearby);
@@ -141,6 +152,8 @@ StageResult<std::vector<CrossingCandidate>> discoverCandidates(
                 const auto found = index.find(ref);
                 if (found == index.end()) continue;
                 if (found->second == sample.island) continue;
+                if (!sampling.topology.domain.empty() &&
+                    sampling.topology.domain[found->second].state == DomainState::Excluded) continue;
                 float closest[3] = {};
                 bool overPoly = false;
                 if (dtStatusFailed(query->closestPointOnPoly(ref, center, closest, &overPoly))) {

@@ -54,6 +54,58 @@ TEST_CASE("v2 canonical geometry retains independently validated directions") {
     }
 }
 
+TEST_CASE("v2 domain exclusions gate external candidates and compiled artifacts") {
+    auto native = topology();
+    native.customDomainPolicy = true;
+    native.domain = {{DomainState::Included, 0}, {DomainState::Excluded, 12}};
+    ValidationOptions options;
+    options.validator = [](const ValidationRequest&) -> ValidationResult {
+        FAIL("excluded candidate must not invoke validator");
+        return {};
+    };
+    const auto excluded = validateCrossings(native, config(), {candidate()}, options);
+    REQUIRE(excluded.value);
+    CHECK(excluded.value->crossings.empty());
+    CHECK(excluded.stats.validatorCalls == 0);
+
+    auto existing = validateCrossings(topology(), config(), {candidate()});
+    REQUIRE(existing.value);
+    existing.value->topology = native;
+    const auto compiled = compileGraph(*existing.value);
+    REQUIRE(compiled.value);
+    CHECK((**compiled.value).crossings().empty());
+    CHECK((**compiled.value).polygonIslands().size() == 2);
+
+    native.domain[1].state = DomainState::Unexplored;
+    const auto unexplored = validateCrossings(native, config(), {candidate()});
+    REQUIRE(unexplored.value);
+    CHECK(unexplored.value->crossings.size() == 1);
+    const auto uncovered = compileGraph(*unexplored.value);
+    REQUIRE(uncovered.value);
+    CHECK((**uncovered.value).crossings().empty());
+}
+
+TEST_CASE("v2 rejects inconsistent domain and metric producer inputs") {
+    auto native = topology();
+    native.customDomainPolicy = true;
+    native.domain.resize(2);
+    native.metrics = {{1, 4, {0, 0, 0}, {2, 0, 2}}, {1, 4, {4, 0, 0}, {6, 0, 2}}};
+    SUBCASE("wrong domain count") { native.domain.pop_back(); }
+    SUBCASE("invalid domain state") { native.domain[1].state = static_cast<DomainState>(99); }
+    SUBCASE("undeclared domain evidence") {
+        native.customDomainPolicy = false;
+        native.domain[0].reason = 7;
+    }
+    SUBCASE("wrong metrics count") { native.metrics.pop_back(); }
+    SUBCASE("wrong polygon count") { native.metrics[1].polygonCount = 2; }
+    SUBCASE("negative area") { native.metrics[1].surfaceArea = -1; }
+    SUBCASE("nonfinite bounds") { native.metrics[0].boundsMin.x = std::numeric_limits<float>::infinity(); }
+    SUBCASE("inverted bounds") { native.metrics[0].boundsMin.x = 3; }
+    const auto result = validateCrossings(native, config(), {});
+    CHECK(result.status == StageStatus::InvalidInput);
+    CHECK_FALSE(result.value);
+}
+
 TEST_CASE("v2 unknown validation is explicit and compilation never calls validator") {
     auto result = validateCrossings(topology(), config(), {candidate()});
     REQUIRE(result.value);

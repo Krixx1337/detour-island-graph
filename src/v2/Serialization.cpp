@@ -158,6 +158,25 @@ SerializationStatus GraphSerializer::write(std::ostream& stream, const CompiledG
     for (const auto& compiled : graph.crossings()) {
         if (!writeCrossing(stream, compiled.crossing)) return SerializationStatus::IoError;
     }
+    if (!writeUnsigned(stream, identity.domainPolicy) ||
+        !writeUnsigned(stream, static_cast<std::uint8_t>(graph.customDomainPolicy())) ||
+        !writeCount(stream, graph.metrics().size())) return SerializationStatus::IoError;
+    for (const auto& metric : graph.metrics()) {
+        if (!writeCount(stream, metric.polygonCount) || !writeDouble(stream, metric.surfaceArea) ||
+            !writePoint(stream, metric.boundsMin) || !writePoint(stream, metric.boundsMax))
+            return SerializationStatus::IoError;
+    }
+    for (const auto& decision : graph.domain()) {
+        if (!writeUnsigned(stream, static_cast<std::uint8_t>(decision.state)) ||
+            !writeUnsigned(stream, decision.reason)) return SerializationStatus::IoError;
+    }
+    const auto& coverage = graph.coverage();
+    if (!writeUnsigned(stream, static_cast<std::uint8_t>(coverage.seeded)) ||
+        !writeUnsigned(stream, static_cast<std::uint8_t>(coverage.complete)) ||
+        !writeUnsigned(stream, coverage.seedIdentity) || !writeCount(stream, coverage.seeds.size()))
+        return SerializationStatus::IoError;
+    for (const auto& seed : coverage.seeds)
+        if (!writeAnchor(stream, seed)) return SerializationStatus::IoError;
     return stream.good() ? SerializationStatus::Success : SerializationStatus::IoError;
 }
 
@@ -283,6 +302,65 @@ SerializationResult GraphSerializer::read(std::istream& stream, const DecodeOpti
             crossing.ba.policyAllowed = allowedBA != 0;
             crossing.ba.validation.state = static_cast<ValidationState>(stateBA);
             artifact.crossings.push_back(std::move(crossing));
+        }
+
+        std::uint8_t customDomain = 0;
+        std::uint32_t metricCount = 0;
+        if (!readUnsigned(stream, identity.domainPolicy) ||
+            !readUnsigned(stream, customDomain) || customDomain > 1 ||
+            !readUnsigned(stream, metricCount) || (metricCount != 0 && metricCount != islandCount) ||
+            !consumeBudget(remaining, metricCount, 2 * sizeof(IslandMetrics)) ||
+            !consumeBudget(remaining, islandCount, 2 * sizeof(IslandDomain))) {
+            result.status = SerializationStatus::MalformedData;
+            return result;
+        }
+        artifact.topology.customDomainPolicy = customDomain != 0;
+        artifact.topology.metrics.resize(metricCount);
+        for (auto& metric : artifact.topology.metrics) {
+            checkpoint(options.canceled);
+            std::uint32_t count = 0;
+            if (!readUnsigned(stream, count) || !readDouble(stream, metric.surfaceArea) ||
+                !readPoint(stream, metric.boundsMin) || !readPoint(stream, metric.boundsMax)) {
+                result.status = SerializationStatus::MalformedData;
+                return result;
+            }
+            metric.polygonCount = count;
+        }
+        artifact.topology.domain.resize(islandCount);
+        for (auto& decision : artifact.topology.domain) {
+            checkpoint(options.canceled);
+            std::uint8_t state = 0;
+            if (!readUnsigned(stream, state) || state > 2 || !readUnsigned(stream, decision.reason)) {
+                result.status = SerializationStatus::MalformedData;
+                return result;
+            }
+            decision.state = static_cast<DomainState>(state);
+        }
+
+        auto& coverage = artifact.topology.coverage;
+        std::uint8_t seeded = 0, complete = 0;
+        std::uint32_t seedCount = 0;
+        if (!readUnsigned(stream, seeded) || seeded > 1 ||
+            !readUnsigned(stream, complete) || complete != 1 ||
+            !readUnsigned(stream, coverage.seedIdentity) || !readUnsigned(stream, seedCount) ||
+            seedCount > limits.maxElementsPerVector ||
+            !consumeBudget(remaining, seedCount, 2 * sizeof(Anchor))) {
+            result.status = SerializationStatus::MalformedData;
+            return result;
+        }
+        coverage.seeded = seeded != 0;
+        coverage.complete = true;
+        coverage.seeds.resize(seedCount);
+        for (auto& seed : coverage.seeds) {
+            checkpoint(options.canceled);
+            std::uint64_t ref = 0;
+            if (!readUnsigned(stream, seed.island) || !readUnsigned(stream, ref) ||
+                ref == 0 || ref > static_cast<std::uint64_t>((std::numeric_limits<dtPolyRef>::max)()) ||
+                !readPoint(stream, seed.position)) {
+                result.status = SerializationStatus::MalformedData;
+                return result;
+            }
+            seed.polygon = static_cast<dtPolyRef>(ref);
         }
 
         // Revalidation and adjacency rebuild go through the compiler: stored
