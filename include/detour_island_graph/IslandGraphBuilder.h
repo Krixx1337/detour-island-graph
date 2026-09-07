@@ -307,7 +307,62 @@ struct TimingStats {
     double pruningMs = 0.0;
 };
 
+// One weakly connected component of the mainland-unreachable subgraph, ranked by polygon
+// count. Weak (direction-ignoring) connectivity is used so any stored corridor between two
+// unreachable islands keeps them in one candidate for reconnection analysis. Only
+// components containing at least one unsuppressed island are reported; fully suppressed
+// components are excluded by policy, not by accident.
+struct UnreachableComponentStats {
+    static constexpr std::size_t kMaxRepresentativeIslands = 4;
+    std::size_t polygonCount = 0;
+    std::size_t islandCount = 0;
+    std::size_t unsuppressedIslandCount = 0;
+    std::size_t unsuppressedPolygonCount = 0;
+    Vec3 boundsMin;
+    Vec3 boundsMax;
+    bool hasBounds = false;
+    // Largest member islands by polygon count (ties break toward the smaller id).
+    std::vector<IslandId> representativeIslandIds;
+    std::size_t omittedIslandCount = 0;
+};
+
+// Per-island boundary sampling for one of the largest islands. Retention counts show
+// where samples were lost across reduction stages (raw -> deduplicated -> reduced ->
+// scanned); the spatial figures show whether the scanned representatives actually cover
+// the island's deduplicated boundary. Nearest-representative distances are measured over
+// deduplicated boundary midpoints to same-island scanned representative midpoints.
+// A sample counts as uncovered when no representative is within scanner query reach:
+// horizontal distance within maxHorizontalGap and vertical separation within the larger
+// of the climb/drop limits. p95/max are -1 when the island has no samples or no
+// scanned representatives.
+struct IslandBoundarySampling {
+    IslandId island = 0;
+    std::size_t polygonCount = 0;
+    std::size_t rawBoundaries = 0;
+    std::size_t deduplicatedBoundaries = 0;
+    std::size_t reducedRepresentatives = 0;
+    std::size_t scannedRepresentatives = 0;
+    double rawLength = 0.0;
+    double scannedLength = 0.0;
+    double nearestRepresentativeP95 = -1.0;
+    double nearestRepresentativeMax = -1.0;
+    double uncoveredFraction = 0.0;
+};
+
+// Explicit accounting for the unreachable-component ranking: total weak components found,
+// how many survived the unsuppressed filter, how many are actually reported, and how many
+// were cut by each step. The reported vector length alone cannot distinguish "16 of 16"
+// from "16 of 400".
+struct UnreachableComponentSummary {
+    std::size_t totalComponents = 0;
+    std::size_t withUnsuppressedIslands = 0;
+    std::size_t shownComponents = 0;
+    std::size_t omittedComponents = 0;
+    std::size_t suppressedOnlyExcluded = 0;
+};
+
 struct BoundaryStats {
+    static constexpr std::size_t kMaxSamplingIslands = 32;
     std::size_t rawCount = 0;
     std::size_t deduplicatedCount = 0;
     std::size_t outboundFilteredCount = 0;
@@ -316,6 +371,16 @@ struct BoundaryStats {
     // Scanned boundary representatives per island (indexed by island id). Sized during
     // representative selection; empty when that stage never ran (e.g. deserialized stats).
     std::vector<std::size_t> representativeCountByIsland;
+    // Per-island boundary sampling accumulators (indexed by island id) used to assemble
+    // samplingTopIslands. Lengths are 3D edge lengths in navmesh coordinate units.
+    std::vector<std::size_t> rawCountByIsland;
+    std::vector<std::size_t> deduplicatedCountByIsland;
+    std::vector<std::size_t> reducedCountByIsland;
+    std::vector<double> rawLengthByIsland;
+    std::vector<double> scannedLengthByIsland;
+    // Sampling rows for the largest islands by polygon count (the mainland is always
+    // first when the graph is non-empty). Bounded so reports and caches stay small.
+    std::vector<IslandBoundarySampling> samplingTopIslands;
 };
 
 struct QueryStats {
@@ -374,20 +439,36 @@ struct LargestIslandStats {
 
 // Directed reachability from the largest island ("mainland"). Forward reachability answers
 // what the mainland can reach; reverse reachability answers what can return to it. Mutual
-// reachability is their intersection. Satellite shares use a denominator that excludes
-// mainland geometry so a dominant mainland cannot hide satellite disconnection.
+// reachability is their intersection.
+//
+// Numerator/denominator contract, stated explicitly because the raw shares mislead:
+// - `*ReachablePolygons` count satellites only (mainland excluded from the numerator);
+//   `*ReachablePolygonShare` divides by all polygons (`totalPolygons`).
+// - `*SatellitePolygonShare` divides by satellite polygons (`satellitePolygons`), so a
+//   dominant mainland cannot hide satellite disconnection.
+// - `*IncludingMainlandPolygons` / `*IncludingMainlandShare` add the mainland back into
+//   the numerator for the headline coverage figure.
 struct ReachabilityStats {
     IslandId mainlandId = 0;
     bool valid = false;
+    std::size_t totalPolygons = 0;
+    std::size_t mainlandPolygons = 0;
+    std::size_t satellitePolygons = 0;
     std::size_t forwardReachableIslands = 0;
     std::size_t forwardReachablePolygons = 0;
     double forwardReachablePolygonShare = 0.0;
+    std::size_t forwardIncludingMainlandPolygons = 0;
+    double forwardIncludingMainlandShare = 0.0;
     std::size_t reverseReachableIslands = 0;
     std::size_t reverseReachablePolygons = 0;
     double reverseReachablePolygonShare = 0.0;
+    std::size_t reverseIncludingMainlandPolygons = 0;
+    double reverseIncludingMainlandShare = 0.0;
     std::size_t mutualReachableIslands = 0;
     std::size_t mutualReachablePolygons = 0;
     double mutualReachablePolygonShare = 0.0;
+    std::size_t mutualIncludingMainlandPolygons = 0;
+    double mutualIncludingMainlandShare = 0.0;
     std::size_t unreachableIslands = 0;
     std::size_t unreachablePolygons = 0;
     double unreachablePolygonShare = 0.0;
@@ -396,6 +477,8 @@ struct ReachabilityStats {
     double mutualSatellitePolygonShare = 0.0;
     std::size_t unsuppressedIslandCount = 0;
     std::size_t unsuppressedPolygonCount = 0;
+    std::size_t unsuppressedIslandCountIncludingMainland = 0;
+    std::size_t unsuppressedPolygonCountIncludingMainland = 0;
     std::size_t unreachableSuppressedIslands = 0;
     std::size_t unreachableSuppressedPolygons = 0;
 };
@@ -527,6 +610,12 @@ struct BuildStats {
     double averageLinkLength = 0.0;
     LargestIslandStats largestIsland;
     ReachabilityStats reachability;
+    // Ranked mainland-unreachable components (weak connectivity), largest polygon count
+    // first, bounded so reports stay small. Empty when every island reaches the mainland.
+    // The summary states how many components were found, filtered, and actually shown.
+    static constexpr std::size_t kMaxUnreachableComponents = 16;
+    UnreachableComponentSummary unreachableComponentSummary;
+    std::vector<UnreachableComponentStats> unreachableComponents;
     DirectionValidityStats directionValidity;
     EffectiveBuildSettings effectiveSettings;
 };

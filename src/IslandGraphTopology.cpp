@@ -538,15 +538,24 @@ BuildStatus calculateGraphHealthStats(
         ReachabilityStats& reach = stats.reachability;
         reach.mainlandId = mainlandId;
         reach.valid = true;
-        const double totalPolygonDenominator = totalPolygons > 0
-            ? static_cast<double>(totalPolygons)
-            : 1.0;
+        reach.totalPolygons = totalPolygons;
+        reach.mainlandPolygons = mainlandPolygons;
         const std::size_t satellitePolygons = totalPolygons >= mainlandPolygons
             ? totalPolygons - mainlandPolygons
             : 0;
+        reach.satellitePolygons = satellitePolygons;
+        const double totalPolygonDenominator = totalPolygons > 0
+            ? static_cast<double>(totalPolygons)
+            : 1.0;
         const double satellitePolygonDenominator = satellitePolygons > 0
             ? static_cast<double>(satellitePolygons)
             : 1.0;
+        const Island& mainlandIsland = graph.islands()[mainlandId];
+        if (!mainlandIsland.suppressed) {
+            reach.unsuppressedIslandCountIncludingMainland = 1;
+            reach.unsuppressedPolygonCountIncludingMainland = mainlandPolygons;
+        }
+        std::vector<char> unreachableMarked(islandCount, 0);
         for (IslandId island = 0; island < islandCount; ++island) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
@@ -561,6 +570,8 @@ BuildStatus calculateGraphHealthStats(
             if (!graphIsland.suppressed) {
                 ++reach.unsuppressedIslandCount;
                 reach.unsuppressedPolygonCount += polygons;
+                ++reach.unsuppressedIslandCountIncludingMainland;
+                reach.unsuppressedPolygonCountIncludingMainland += polygons;
             }
             if (forward) {
                 ++reach.forwardReachableIslands;
@@ -577,18 +588,28 @@ BuildStatus calculateGraphHealthStats(
             if (!forward && !reverse) {
                 ++reach.unreachableIslands;
                 reach.unreachablePolygons += polygons;
+                unreachableMarked[island] = 1;
                 if (graphIsland.suppressed) {
                     ++reach.unreachableSuppressedIslands;
                     reach.unreachableSuppressedPolygons += polygons;
                 }
             }
         }
+        reach.forwardIncludingMainlandPolygons = reach.forwardReachablePolygons + mainlandPolygons;
+        reach.reverseIncludingMainlandPolygons = reach.reverseReachablePolygons + mainlandPolygons;
+        reach.mutualIncludingMainlandPolygons = reach.mutualReachablePolygons + mainlandPolygons;
         reach.forwardReachablePolygonShare =
             static_cast<double>(reach.forwardReachablePolygons) / totalPolygonDenominator;
+        reach.forwardIncludingMainlandShare =
+            static_cast<double>(reach.forwardIncludingMainlandPolygons) / totalPolygonDenominator;
         reach.reverseReachablePolygonShare =
             static_cast<double>(reach.reverseReachablePolygons) / totalPolygonDenominator;
+        reach.reverseIncludingMainlandShare =
+            static_cast<double>(reach.reverseIncludingMainlandPolygons) / totalPolygonDenominator;
         reach.mutualReachablePolygonShare =
             static_cast<double>(reach.mutualReachablePolygons) / totalPolygonDenominator;
+        reach.mutualIncludingMainlandShare =
+            static_cast<double>(reach.mutualIncludingMainlandPolygons) / totalPolygonDenominator;
         reach.unreachablePolygonShare =
             static_cast<double>(reach.unreachablePolygons) / totalPolygonDenominator;
         reach.forwardSatellitePolygonShare =
@@ -597,6 +618,120 @@ BuildStatus calculateGraphHealthStats(
             static_cast<double>(reach.reverseReachablePolygons) / satellitePolygonDenominator;
         reach.mutualSatellitePolygonShare =
             static_cast<double>(reach.mutualReachablePolygons) / satellitePolygonDenominator;
+
+        // Guardrail: rank weak components of the unreachable subgraph so the report can
+        // show whether disconnected geometry is one region worth reconnecting or scattered
+        // fragments. Direction is ignored here; any stored corridor keeps islands together.
+        std::vector<char> componentVisited(islandCount, 0);
+        std::vector<UnreachableComponentStats> rankedComponents;
+        std::vector<IslandId> componentStack;
+        std::vector<IslandId> componentMembers;
+        UnreachableComponentSummary& componentSummary = stats.unreachableComponentSummary;
+        for (IslandId seed = 0; seed < islandCount; ++seed) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            if (seed >= islandCount || unreachableMarked[seed] == 0 || componentVisited[seed] != 0) {
+                continue;
+            }
+            componentMembers.clear();
+            componentStack.clear();
+            componentStack.push_back(seed);
+            componentVisited[seed] = 1;
+            UnreachableComponentStats component;
+            component.hasBounds = false;
+            while (!componentStack.empty()) {
+                if (cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
+                const IslandId current = componentStack.back();
+                componentStack.pop_back();
+                if (current >= islandCount || unreachableMarked[current] == 0) {
+                    continue;
+                }
+                componentMembers.push_back(current);
+                const Island& member = graph.islands()[current];
+                ++component.islandCount;
+                component.polygonCount += member.polygons.size();
+                if (!member.suppressed) {
+                    ++component.unsuppressedIslandCount;
+                    component.unsuppressedPolygonCount += member.polygons.size();
+                }
+                if (discovery::isFinite(member.boundsMin) && discovery::isFinite(member.boundsMax)) {
+                    if (!component.hasBounds) {
+                        component.boundsMin = member.boundsMin;
+                        component.boundsMax = member.boundsMax;
+                        component.hasBounds = true;
+                    } else {
+                        component.boundsMin.x = (std::min)(component.boundsMin.x, member.boundsMin.x);
+                        component.boundsMin.y = (std::min)(component.boundsMin.y, member.boundsMin.y);
+                        component.boundsMin.z = (std::min)(component.boundsMin.z, member.boundsMin.z);
+                        component.boundsMax.x = (std::max)(component.boundsMax.x, member.boundsMax.x);
+                        component.boundsMax.y = (std::max)(component.boundsMax.y, member.boundsMax.y);
+                        component.boundsMax.z = (std::max)(component.boundsMax.z, member.boundsMax.z);
+                    }
+                }
+                for (IslandId neighbor : neighbors[current]) {
+                    if (neighbor < islandCount && unreachableMarked[neighbor] != 0 &&
+                        componentVisited[neighbor] == 0) {
+                        componentVisited[neighbor] = 1;
+                        componentStack.push_back(neighbor);
+                    }
+                }
+                for (IslandId neighbor : reverseNeighbors[current]) {
+                    if (neighbor < islandCount && unreachableMarked[neighbor] != 0 &&
+                        componentVisited[neighbor] == 0) {
+                        componentVisited[neighbor] = 1;
+                        componentStack.push_back(neighbor);
+                    }
+                }
+            }
+            ++componentSummary.totalComponents;
+            if (component.unsuppressedIslandCount == 0) {
+                ++componentSummary.suppressedOnlyExcluded;
+                continue;
+            }
+            ++componentSummary.withUnsuppressedIslands;
+            std::sort(componentMembers.begin(), componentMembers.end(), [&](IslandId lhs, IslandId rhs) {
+                const std::size_t lhsPolygons = lhs < islandCount
+                    ? graph.islands()[lhs].polygons.size()
+                    : 0;
+                const std::size_t rhsPolygons = rhs < islandCount
+                    ? graph.islands()[rhs].polygons.size()
+                    : 0;
+                if (lhsPolygons != rhsPolygons) {
+                    return lhsPolygons > rhsPolygons;
+                }
+                return lhs < rhs;
+            });
+            const std::size_t shown = (std::min)(
+                componentMembers.size(),
+                UnreachableComponentStats::kMaxRepresentativeIslands);
+            component.representativeIslandIds.assign(
+                componentMembers.begin(), componentMembers.begin() + shown);
+            component.omittedIslandCount = componentMembers.size() - shown;
+            rankedComponents.push_back(std::move(component));
+        }
+        std::sort(rankedComponents.begin(), rankedComponents.end(), [](const UnreachableComponentStats& lhs, const UnreachableComponentStats& rhs) {
+            if (lhs.polygonCount != rhs.polygonCount) {
+                return lhs.polygonCount > rhs.polygonCount;
+            }
+            if (lhs.islandCount != rhs.islandCount) {
+                return lhs.islandCount > rhs.islandCount;
+            }
+            const IslandId lhsFirst = lhs.representativeIslandIds.empty() ? 0 : lhs.representativeIslandIds.front();
+            const IslandId rhsFirst = rhs.representativeIslandIds.empty() ? 0 : rhs.representativeIslandIds.front();
+            return lhsFirst < rhsFirst;
+        });
+        if (rankedComponents.size() > BuildStats::kMaxUnreachableComponents) {
+            rankedComponents.resize(BuildStats::kMaxUnreachableComponents);
+        }
+        componentSummary.shownComponents = rankedComponents.size();
+        componentSummary.omittedComponents =
+            componentSummary.withUnsuppressedIslands >= componentSummary.shownComponents
+            ? componentSummary.withUnsuppressedIslands - componentSummary.shownComponents
+            : 0;
+        stats.unreachableComponents = std::move(rankedComponents);
     }
     return BuildStatus::Success;
 }

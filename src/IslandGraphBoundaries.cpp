@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace detour_island_graph::detail::discovery {
 namespace {
@@ -120,6 +121,135 @@ bool boundarySpatialLess(const Boundary& lhs, const Boundary& rhs) {
     return lhs.island < rhs.island;
 }
 
+BuildStatus assembleSamplingTopIslands(
+    const IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options,
+    BuildStats& stats,
+    const std::vector<Boundary>& boundaries,
+    const std::vector<Boundary>& representatives) {
+    std::vector<IslandId> ranked;
+    ranked.reserve(graph.islands().size());
+    for (const Island& island : graph.islands()) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        ranked.push_back(island.id);
+    }
+    std::sort(ranked.begin(), ranked.end(), [&](IslandId lhs, IslandId rhs) {
+        const std::size_t lhsPolygons = lhs < graph.islands().size()
+            ? graph.islands()[lhs].polygons.size()
+            : 0;
+        const std::size_t rhsPolygons = rhs < graph.islands().size()
+            ? graph.islands()[rhs].polygons.size()
+            : 0;
+        if (lhsPolygons != rhsPolygons) {
+            return lhsPolygons > rhsPolygons;
+        }
+        return lhs < rhs;
+    });
+    const auto countAt = [&](const std::vector<std::size_t>& counts, IslandId island) {
+        return island < counts.size() ? counts[island] : 0;
+    };
+    const auto lengthAt = [&](const std::vector<double>& lengths, IslandId island) {
+        return island < lengths.size() ? lengths[island] : 0.0;
+    };
+    stats.boundaries.samplingTopIslands.clear();
+    const std::size_t shown = (std::min)(ranked.size(), BoundaryStats::kMaxSamplingIslands);
+    // Guardrail: spatial coverage is measured only for the reported rows. Restricting the
+    // quadratic nearest-representative search to the largest islands keeps diagnostic
+    // work proportional to what the report can actually show.
+    std::unordered_set<IslandId> sampledIslands;
+    for (std::size_t index = 0; index < shown; ++index) {
+        sampledIslands.insert(ranked[index]);
+    }
+    std::unordered_map<IslandId, std::vector<Vec3>> sampleMidpoints;
+    std::unordered_map<IslandId, std::vector<Vec3>> representativeMidpoints;
+    for (const Boundary& boundary : boundaries) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (sampledIslands.find(boundary.island) != sampledIslands.end()) {
+            sampleMidpoints[boundary.island].push_back(boundary.midpoint);
+        }
+    }
+    for (const Boundary& representative : representatives) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (sampledIslands.find(representative.island) != sampledIslands.end()) {
+            representativeMidpoints[representative.island].push_back(representative.midpoint);
+        }
+    }
+    const float maxHorizontalGap = config.gapDiscovery.maxHorizontalGap;
+    const float maxVerticalReach = (std::max)(
+        config.gapDiscovery.maxVerticalGapUp,
+        config.gapDiscovery.maxVerticalGapDown);
+    for (std::size_t index = 0; index < shown; ++index) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        const IslandId island = ranked[index];
+        IslandBoundarySampling row;
+        row.island = island;
+        row.polygonCount = island < graph.islands().size()
+            ? graph.islands()[island].polygons.size()
+            : 0;
+        row.rawBoundaries = countAt(stats.boundaries.rawCountByIsland, island);
+        row.deduplicatedBoundaries = countAt(stats.boundaries.deduplicatedCountByIsland, island);
+        row.reducedRepresentatives = countAt(stats.boundaries.reducedCountByIsland, island);
+        row.scannedRepresentatives = countAt(stats.boundaries.representativeCountByIsland, island);
+        row.rawLength = lengthAt(stats.boundaries.rawLengthByIsland, island);
+        row.scannedLength = lengthAt(stats.boundaries.scannedLengthByIsland, island);
+        const auto samplesIt = sampleMidpoints.find(island);
+        const auto repsIt = representativeMidpoints.find(island);
+        static const std::vector<Vec3> emptyMidpoints;
+        const std::vector<Vec3>& samples =
+            samplesIt != sampleMidpoints.end() ? samplesIt->second : emptyMidpoints;
+        const std::vector<Vec3>& reps =
+            repsIt != representativeMidpoints.end() ? repsIt->second : emptyMidpoints;
+        if (!samples.empty() && !reps.empty()) {
+            std::vector<double> nearestDistances;
+            nearestDistances.reserve(samples.size());
+            std::size_t uncoveredSamples = 0;
+            for (const Vec3& sample : samples) {
+                if (cancellationRequested(options)) {
+                    return BuildStatus::Cancelled;
+                }
+                double best = (std::numeric_limits<double>::max)();
+                bool covered = false;
+                for (const Vec3& rep : reps) {
+                    const double dx = static_cast<double>(sample.x) - rep.x;
+                    const double dz = static_cast<double>(sample.z) - rep.z;
+                    const double dy = static_cast<double>(sample.y) - rep.y;
+                    const double horizontal = std::hypot(dx, dz);
+                    if (horizontal <= maxHorizontalGap && std::fabs(dy) <= maxVerticalReach) {
+                        covered = true;
+                    }
+                    const double dist = std::sqrt(horizontal * horizontal + dy * dy);
+                    if (dist < best) {
+                        best = dist;
+                    }
+                }
+                if (!covered) {
+                    ++uncoveredSamples;
+                }
+                nearestDistances.push_back(best);
+            }
+            std::sort(nearestDistances.begin(), nearestDistances.end());
+            row.nearestRepresentativeP95 =
+                nearestDistances[((nearestDistances.size() - 1) * 95U) / 100U];
+            row.nearestRepresentativeMax = nearestDistances.back();
+            row.uncoveredFraction = static_cast<double>(uncoveredSamples) /
+                static_cast<double>(nearestDistances.size());
+        } else if (!samples.empty()) {
+            row.uncoveredFraction = 1.0;
+        }
+        stats.boundaries.samplingTopIslands.push_back(row);
+    }
+    return BuildStatus::Success;
+}
+
 } // namespace
 
 BuildStatus extractBoundaries(
@@ -134,6 +264,9 @@ BuildStatus extractBoundaries(
     const float cellSize = config.boundaries.effectiveDeduplicationCellSize(
         config.gapDiscovery.maxHorizontalGap);
     const float verticalCellSize = effectiveVerticalCollapseWindow(config);
+    stats.boundaries.rawCountByIsland.assign(graph.islands().size(), 0);
+    stats.boundaries.rawLengthByIsland.assign(graph.islands().size(), 0.0);
+    stats.boundaries.deduplicatedCountByIsland.assign(graph.islands().size(), 0);
     for (const Island& island : graph.islands()) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
@@ -169,6 +302,11 @@ BuildStatus extractBoundaries(
                     return BuildStatus::InvalidNavMesh;
                 }
                 const Boundary boundary{island.id, reference, start, end, midpoint};
+                if (island.id < stats.boundaries.rawCountByIsland.size()) {
+                    ++stats.boundaries.rawCountByIsland[island.id];
+                    stats.boundaries.rawLengthByIsland[island.id] +=
+                        static_cast<double>(distance(start, end));
+                }
                 if (config.boundaries.deduplicationEnabled) {
                     const BoundaryKey key{
                         island.id,
@@ -194,6 +332,14 @@ BuildStatus extractBoundaries(
         }
     }
     stats.boundaries.deduplicatedCount = output.size();
+    for (const Boundary& boundary : output) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (boundary.island < stats.boundaries.deduplicatedCountByIsland.size()) {
+            ++stats.boundaries.deduplicatedCountByIsland[boundary.island];
+        }
+    }
     std::sort(output.begin(), output.end(), boundaryLess);
     return BuildStatus::Success;
 }
@@ -232,6 +378,8 @@ BuildStatus selectBoundaryRepresentatives(
     }
     stats.boundaries.outboundFilteredCount = boundaries.size() - outboundBoundaries.size();
     stats.boundaries.representativeCountByIsland.assign(graph.islands().size(), 0);
+    stats.boundaries.reducedCountByIsland.assign(graph.islands().size(), 0);
+    stats.boundaries.scannedLengthByIsland.assign(graph.islands().size(), 0.0);
     if (!config.boundaries.representativeReductionEnabled) {
         stats.boundaries.representativeCount = outboundBoundaries.size();
         for (const Boundary& boundary : outboundBoundaries) {
@@ -240,10 +388,15 @@ BuildStatus selectBoundaryRepresentatives(
             }
             if (boundary.island < stats.boundaries.representativeCountByIsland.size()) {
                 ++stats.boundaries.representativeCountByIsland[boundary.island];
+                ++stats.boundaries.reducedCountByIsland[boundary.island];
+                stats.boundaries.scannedLengthByIsland[boundary.island] +=
+                    static_cast<double>(distance(boundary.start, boundary.end));
             }
         }
         representatives = std::move(outboundBoundaries);
-        return BuildStatus::Success;
+        // Without reduction every outbound boundary is scanned, so the sample set and the
+        // representative set coincide. (outboundBoundaries was moved from above.)
+        return assembleSamplingTopIslands(graph, config, options, stats, representatives, representatives);
     }
 
     const float cellSize = config.boundaries.effectiveRepresentativeCellSize(
@@ -375,15 +528,25 @@ BuildStatus selectBoundaryRepresentatives(
     std::sort(representatives.begin(), representatives.end(), boundaryLess);
     stats.boundaries.representativeCount = representatives.size();
     stats.boundaries.representativeTrimmedCount = outboundBoundaries.size() - representatives.size();
+    for (const RankedBoundary& rankedBoundary : rankedBoundaries) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (rankedBoundary.boundary.island < stats.boundaries.reducedCountByIsland.size()) {
+            ++stats.boundaries.reducedCountByIsland[rankedBoundary.boundary.island];
+        }
+    }
     for (const Boundary& representative : representatives) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
         if (representative.island < stats.boundaries.representativeCountByIsland.size()) {
             ++stats.boundaries.representativeCountByIsland[representative.island];
+            stats.boundaries.scannedLengthByIsland[representative.island] +=
+                static_cast<double>(distance(representative.start, representative.end));
         }
     }
-    return BuildStatus::Success;
+    return assembleSamplingTopIslands(graph, config, options, stats, boundaries, representatives);
 }
 
 } // namespace detour_island_graph::detail::discovery
