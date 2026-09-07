@@ -238,4 +238,33 @@ StageResult<CrossingArtifact> validateCrossings(
 // Recompiles policy without invoking validators. Rejects malformed or conflicting artifacts.
 CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOptions& options = {});
 
+using DiscoveryResult = StageResult<std::vector<CrossingCandidate>>;
+
+struct StageTimings {
+    double samplingMs = 0;
+    double discoveryMs = 0;
+    double validationMs = 0;
+    double compilationMs = 0;
+    double totalMs = 0;
+};
+
+struct PipelineResult {
+    StageStatus status = StageStatus::InvalidInput;
+    StageTimings timings;
+    StageResult<SamplingArtifact> sampling;
+    DiscoveryResult discovery;
+    StageResult<CrossingArtifact> validation;
+    CompileResult compilation;
+};
+
+// Convenience wrapper over the four stages with one consistent DiscoveryConfig.
+// Sampling and discovery use input.canceled; validation and compilation use
+// their own options' canceled callbacks. Each stage's full StageResult is
+// preserved for testing, timing, and reuse; stages after the first failure
+// are not executed and keep their default result (status InvalidInput, no
+// value), so check per-stage statuses in order. Wall-clock timings cover each
+// attempted stage plus the total.
+PipelineResult buildGraph(const BuildInput& input, const DiscoveryConfig& config,
+    const ValidationOptions& validation = {}, const CompileOptions& compilation = {});
+
 } // namespace detour_island_graph::v2

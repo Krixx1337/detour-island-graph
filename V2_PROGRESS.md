@@ -118,11 +118,31 @@ const DiscoveryConfig&, const Cancel&)`:
 - Stage counters add `discoveryQueries`, `nearbyPolygons`, `projections`,
   `projectionFailures`, and `candidatesVisited` (emitted raw candidates).
 
+## End-to-end build delivered
+
+Implemented in `src/v2/Pipeline.cpp`, declared in
+`include/detour_island_graph/v2/Build.h` as `buildGraph(const BuildInput&,
+const DiscoveryConfig&, const ValidationOptions&, const CompileOptions&)`:
+
+- Runs extract, discover, validate, and compile with one consistent
+  `DiscoveryConfig`. Sampling and discovery use `input.canceled`; validation
+  and compilation use their own options' callbacks. No new validation logic;
+  pure stage plumbing.
+- Each stage's full `StageResult` is preserved in `PipelineResult` for testing,
+  timing, and reuse, including recompiling a preserved `CrossingArtifact`
+  under a different policy without revalidation. Stages after the first
+  failure do not run and keep their default result; per-stage statuses are
+  checked in order.
+- Wall-clock `StageTimings` cover each attempted stage plus the total,
+  providing the per-stage timing basis for the Queensdale benchmark.
+- First failure status becomes the pipeline status; no partial graph is
+  published. `bad_alloc` during plumbing maps to `OutOfMemory`.
+
 ## Verification
 
 - Targeted Windows/MSVC Debug library test build passed.
-- All 66 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
-  topology/sampling tests, and 5 V2 discovery tests.
+- All 70 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
+  topology/sampling tests, 5 V2 discovery tests, and 4 V2 pipeline tests.
 - Whitespace checks passed (no tabs or trailing whitespace in touched files).
 
 No host switch, full application build, Queensdale performance measurement, or
@@ -137,16 +157,13 @@ heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Add one end-to-end convenience build entry point over the completed
-   extract/discover/validate/compile stages. Preserve stage artifacts for
-   testing, timing, and future reuse.
-2. Benchmark the dense, exact-only pipeline on Queensdale before full host
+1. Benchmark the dense, exact-only pipeline on Queensdale before full host
    migration. Record sample/candidate/crossing counts, stage timings and peak
    memory. The current ordered-map implementation is a correctness baseline;
    profile its allocation and duplicate-key cost before optimizing it.
-3. Implement V2 routing and caller scratch, new serialization/cache identity,
+2. Implement V2 routing and caller scratch, new serialization/cache identity,
    then host/settings/report migration and package version 2.0.0. Benchmark query
    latency when the router is available.
 
-End-to-end build, mass diagnostics, routing, serialization,
+Mass diagnostics, routing, serialization,
 and host migration remain unfinished.
