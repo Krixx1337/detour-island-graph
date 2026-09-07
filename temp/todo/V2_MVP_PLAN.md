@@ -1,8 +1,8 @@
 # DetourIslandGraph V2 MVP
 
-Revised 2026-09-07 after dirty-map and routing reassessment. This document controls
-MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records delivered code and gaps.
-Requirements below are not claims of implementation.
+Revised 2026-09-08 after dirty-map, routing, and raw-navmesh-only reassessment.
+This document controls MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records
+delivered code and gaps. Requirements below are not claims of implementation.
 
 Current execution scope: library implementation first; benchmarking is deferred
 by user request. Host migration and its acceptance gates remain future work.
@@ -13,9 +13,25 @@ Keep V2's directional crossing model and immutable graph compiler. Expand MVP to
 separate native topology, playable-domain selection, traversal validation, and
 route preference. Dirty collision-derived navmeshes are a primary workload.
 
+Primary MVP input is a raw dirty `dtNavMesh` with no manual seeds, collision mesh,
+editor metadata, or trusted landmarks. Deliver geometric routing that tolerates
+clutter and selects useful routes under explicit movement assumptions. Classifying
+every island as playable or garbage is not required for MVP.
+
+Exhaustive autonomous construction is the initial implementation and correctness
+reference under configured sampling. Its suitability for production dirty maps
+remains unproven until workload measurements exist. Seeded construction remains
+supported when a caller has real trusted anchors, but MVP cannot depend on them.
+
 An island is a native connectivity group. Size does not prove playability, safety,
 clearance, or short travel between portals. Final navmesh alone cannot reliably
 distinguish legitimate caves from unwanted hollow interiors.
+
+Topology metrics may prioritize work and drive opt-in heuristic labels. They must
+not silently turn the largest island into trusted ground or classify small islands
+as garbage. A large sealed interior can outrank playable ground; tiny platforms and
+thin vertical traversal surfaces can be legitimate. Autonomous cleanup from final
+navmesh geometry is useful as an explicitly lossy policy, not an MVP guarantee.
 
 Keep portable final-navmesh input. Allow frozen collision access or retained bake
 data through the host. Generate traversals adjacent to baking when useful without
@@ -58,10 +74,40 @@ polygon-count cutoff, percentage suppression, bounding-volume cutoff, sky-exposu
 rule, or automatic sink deletion. Small platforms, caves, and one-way destinations
 must remain representable. No garbage-removal percentage without measurements.
 
-## 2. Exhaustive and seeded build modes
+## 2. Autonomous exhaustive and optional seeded modes
 
-Keep exhaustive mode as the exact-only reference and for unseeded workloads.
-Add explicit seeded mode for contaminated maps:
+Use bounded exhaustive mode as the initial raw-navmesh-only implementation and
+exact-only reference. It requires no external trust data:
+
+1. Extract every eligible native island and retain its metrics and ownership.
+2. Apply only explicit caller exclusions by default. Process islands in a stable
+   deterministic order. Area-prioritized scheduling is optional and must preserve
+   completed output; it does not reduce total work.
+3. Sample and discover crossings across the declared domain in bounded batches.
+4. Apply available directional checks. Without collision evidence, publish results
+   as geometric candidates, never as collision-clear or playable-domain truth.
+5. Preserve every island's domain state and every accepted direction's provenance.
+
+Keep built-in heuristic scope narrow: an opt-in minimum-area threshold through the
+domain policy, with a stable exclusion reason and policy identity. Preserve all
+eligible islands by default. Defer built-in polygon-count, vertical-strip, density,
+and cumulative-area classifiers until fixtures demonstrate useful tradeoffs.
+Custom domain policies remain available. No fixed garbage-removal rate or claim
+that heuristic exclusion validates geometry.
+
+Largest-island or top-area selection may produce processing roots and route priors.
+An optional future auto-seeded subset build may deliberately omit components to
+reduce work. Such roots are untrusted; unvisited islands remain Unexplored and
+coverage is explicitly limited. Geometric expansion retains Unknown directions and
+publishes only geometric output. It must not manufacture Valid results to use the
+existing trusted seeded builder. This extension is not a required MVP task.
+
+Automatic roots cannot guarantee exclusion of interiors: geometric links can cross
+walls and expand into junk. Resolve any generated anchor on its actual polygon;
+an island bounding-box center paired with an arbitrary polygon is not valid.
+
+Keep explicit seeded mode for callers that later obtain trusted player-ground
+anchors and a real traversal validator:
 
 1. Resolve verified player-ground anchors or checked landmarks onto eligible
    polygons. Check vertical layer and projection tolerance. A POI coordinate alone
@@ -73,9 +119,9 @@ Add explicit seeded mode for contaminated maps:
 5. Process newly active islands until frontier exhaustion. Reverse-only acceptance
    does not expand forward reach. Preserve AB and BA results independently.
 
-Seeded expansion requires a supplied host validator. Unknown directions do not
-activate islands. Geometric-only experiments remain explicit exhaustive builds;
-they do not establish a trusted seeded domain.
+Trusted seeded expansion requires a supplied host validator. Unknown directions
+do not activate islands in this mode. Keep this contract separate from any future
+geometric subset mode; the latter does not establish a trusted seeded domain.
 
 Unseeded components remain outside the declared build domain, not confirmed junk.
 Distinguish out-of-domain query endpoints from no route inside the domain. Persist
@@ -83,11 +129,13 @@ seed identity, mode, exclusion policy, coverage, and completion state. Completio
 means frontier exhausted under configured sampling, producer, and movement model,
 not continuous-space or whole-map completeness.
 
-This reduces disconnected garbage-to-garbage work only with reliable seeds and
-validation. Initial topology extraction and nearby-target queries still cost work.
-Huge active islands remain expensive. Erroneous native links or extraction holes
-can admit junk; those need upstream exclusions or geometry repair. Missing seeds
-or movement types can omit legitimate areas. These limitations must be visible.
+Subset processing can reduce work by omitting components even with heuristic roots,
+but neither savings nor useful coverage is guaranteed. Reliable seeds and validation
+are needed to justify a trusted reachable domain. Initial topology extraction and
+nearby-target queries still cost work. Huge active islands remain expensive.
+Erroneous native links or extraction holes can admit junk; those need upstream
+exclusions or geometry repair. Missing seeds or movement types can omit legitimate
+areas. These limitations must be visible.
 
 ## 3. Sampling, discovery, and resources
 
@@ -112,6 +160,11 @@ every intermediate artifact by default. Full artifacts remain opt-in for analysi
 and reuse. Exact deduplication must span batches without merging distinct anchors
 or evidence. Preserve deterministic results across batch sizes.
 
+Batching bounds intermediate storage, not total discovery work, the global exact
+deduplication index, or final graph size. Budget those separately. A clean
+`BudgetExceeded` result establishes controlled failure, not production scalability.
+Do not declare exhaustive processing sufficient for dirty maps without measurements.
+
 Specify sample, candidate, temporary-query, and memory/work budgets. Sample and
 candidate caps alone do not bound topology or nearby-polygon allocations. Exactly
 the cap is allowed; exceeding it returns `BudgetExceeded`, counters, and no
@@ -119,11 +172,17 @@ publishable graph. Never thin samples silently or publish an interrupted frontie
 as complete. Cancellation and callback failures abort publication through all
 stages. Failed rebuilds preserve the previous compatible immutable graph.
 
-## 4. Host traversal validation
+## 4. Traversal evidence and host validation
 
-Ship one working host validator matching actual gap execution. A callback contract
-alone is insufficient. Inventory available collision and landing data before
-choosing implementation; missing evidence stays Unknown, not Valid.
+Raw-navmesh-only MVP has no collision source and cannot ship a truthful physical
+clearance validator. Its built-in geometric checks may reject impossible endpoint
+height, distance, direction, or slope cases, but all survivors remain Unknown.
+Detour polygons describe walkable surfaces, not intervening solids. Sampling a
+parabolic arc against those polygons cannot prove that the arc avoids a wall.
+
+When host collision or retained bake triangles become available, ship one working
+host validator matching actual gap execution. A callback contract alone is
+insufficient for `ValidatedOnly` output. Missing evidence stays Unknown, not Valid.
 
 Each canonical crossing stores geometry once with independent AB/BA records for
 geometric eligibility, outbound permission, Valid/Invalid/Unknown, and reason.
@@ -140,7 +199,8 @@ prove reverse validity. Keep one movement profile per build.
   anchors or a documented admissible region, and recheck execution changes.
 - Record movement profile, validator semantics, environment revision, and units.
   Policy recompilation does not revalidate another agent or environment.
-- Validated-only compilation accepts Valid directions and requires a validator.
+- Validated-only compilation accepts Valid directions and requires a validator with
+  evidence beyond final navmesh surface geometry.
   Explicit geometric-only compilation accepts eligible Valid/Unknown directions,
   never Invalid, and makes no collision-clear or playable-world claim.
 - Validate before any future approximate elimination. Omit crossings without
@@ -158,6 +218,12 @@ filtering is supporting cleanup, not interior classification; inspected Unreal
 Keep portal routing and integrate actual native transfers in the host. Existing
 host already applies intermediate-island road bias and human-effort cost through
 `DetourIslandGraphAdapter.cpp`; preserve intentional semantics during migration.
+
+Prioritize area-based route preference and native transfer costs over additional
+cleanup classifiers. These address route selection while retaining small stepping
+stones. They do not certify that a selected crossing avoids a wall. Library work
+includes a reusable Detour transfer provider and bounded per-query cache; host work
+supplies execution-specific costs, units, and adapter integration.
 
 - Prefer soft nonnegative penalties for entering small intermediate islands.
   Keep strict minimum-intermediate-mass policy explicitly selectable; it may
@@ -204,15 +270,17 @@ host already applies intermediate-island road bias and human-effort cost through
 ## 7. Diagnostics and acceptance
 
 Report raw/eligible/excluded/active/unexplored islands and polygons, exclusion
-reasons, seed resolution, frontier completion, spacing, queries/projections, exact
-duplicates, directional outcomes, graph size, stage timing, and peak memory.
+reasons, whether policy decisions are explicit or heuristic, seed source and trust,
+frontier completion, spacing, queries/projections, exact duplicates, directional
+outcomes, graph size, stage timing, and peak memory.
 Separate exclusion from validated unreachability and build failure. Expensive
 nearest-representative diagnostics remain opt-in.
 
 Fixtures and focused checks must cover:
 
 - Valid tiny platforms, large sealed interiors, legitimate caves, stacked layers,
-  ambiguous seeds, one-way destinations, and erroneous native connectivity.
+  largest-island misclassification, ambiguous seeds, one-way destinations, and
+  erroneous native connectivity.
 - Seed chains through small islands, reverse-only links, Unknown during expansion,
   missing seeds, out-of-domain queries, and exclusion-induced topology splits.
 - Clear/blocked host actions, thin obstacles, endpoint support, adjusted landings,
@@ -228,11 +296,12 @@ Fixtures and focused checks must cover:
   not identical sample IDs or polygon-count-based semantics.
 
 Benchmark Queensdale and an interior-heavy stacked map or extracted fixture before
-full host migration. Hold capabilities fixed; compare exhaustive reference with
-seeded production builds. Measure false links, lost valid exits, labeled-domain
-coverage, actual route cost/execution outcomes, build time, memory, and query
-latency distributions. Dense sampling is a reference, not continuous-space ground
-truth. High connectivity alone is not acceptance.
+full host migration. Hold capabilities fixed; compare default exhaustive output,
+opt-in heuristic policies, and trusted seeded builds where real seeds exist. Measure
+false links, lost valid exits, labeled-domain coverage, actual route cost/execution
+outcomes, build time, memory, and query latency distributions. Dense sampling is a
+reference, not continuous-space ground truth. High connectivity alone is not
+acceptance.
 
 Choose performance thresholds from host requirements and measured baselines. No
 arbitrary one-second target or 100% connectivity requirement. Run relevant library
@@ -242,23 +311,30 @@ checks explicitly; do not mark them passed.
 
 ## 8. Remaining implementation order and exclusions
 
-1. Capture dirty-map fixtures and baseline; document collision access, trusted
-   anchors, host execution semantics, and route cost units.
-2. Separate topology/sampling; add metrics, domain decisions, exclusion propagation,
-   coverage contracts, and semantic identity.
-3. Integrate host validator, seeded frontier mode, and bounded candidate processing.
-4. Integrate mass policy and lazy native transfers; fix cost provenance and search
-   termination. Extend serialization for settled contracts.
-5. Benchmark both workloads, resolve measured blockers, then complete host migration,
-   diagnostics/UI, cache replacement, and package version change.
+1. Finish resource bounds and bounded exhaustive batching for raw `dtNavMesh`:
+   topology, sampling, nearby-query storage, retained evidence, final output,
+   cancellation, and deterministic completion or explicit failure.
+2. Finish soft/strict area-based mass preference and lazy native Detour transfers
+   with checked query anchors and a bounded per-query cache.
+3. Add the narrow opt-in minimum-area policy with reasons and identity. Complete
+   serialization, diagnostics, and dirty-mesh regression fixtures. Reapplying a
+   policy that restores unsampled islands requires discovery for those islands;
+   retained metrics alone cannot recover omitted crossings.
+4. Keep trusted seeded mode tested, but do not require seeds for MVP. Integrate a
+   host validator only when collision or equivalent execution evidence exists.
+5. Benchmark later per current user direction. Then resolve measured blockers and
+   complete host migration, diagnostics/UI, cache replacement, and package version.
 
-Deferred: universal collision engine or physical jump solver, automatic interior
-classifier or sink pruning, multiple movement profiles per artifact, spans and
-approximate pruning, regional routing and same-island shortcuts, incremental tile
-builds, artifact disk caches, cross-query transfer caches, worker parallelization,
-and new dependencies.
+Deferred: universal collision engine or physical jump solver, authoritative
+automatic interior classifier or sink pruning, built-in shape/statistical
+classifiers, auto-seeded geometric subset builds, multiple movement profiles per
+artifact, spans and approximate pruning, regional routing and same-island shortcuts,
+incremental tile builds, artifact disk caches, cross-query transfer caches, worker
+parallelization, and new dependencies.
 
 Reconsider spans if measured candidate volume defeats bounded exact-only processing.
 Reconsider regional routing if portal expansion/native transfers miss latency
 requirements. Preserve endpoint provenance now; require measured benefit and
 explicit loss/validity guarantees before either redesign enters scope.
+Benchmarking remains deferred, so production scalability remains an open acceptance
+question. Do not pivot architecture again solely on unmeasured cleanup claims.
