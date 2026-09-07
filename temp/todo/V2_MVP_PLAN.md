@@ -1,6 +1,6 @@
 # DetourIslandGraph V2 MVP
 
-Revised 2026-09-08 after dirty-map, routing, and raw-navmesh-only reassessment.
+Revised 2026-09-08 after confirmation of raw collision and an owned Recast pipeline.
 This document controls MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records
 delivered code and gaps. Requirements below are not claims of implementation.
 
@@ -13,10 +13,12 @@ Keep V2's directional crossing model and immutable graph compiler. Expand MVP to
 separate native topology, playable-domain selection, traversal validation, and
 route preference. Dirty collision-derived navmeshes are a primary workload.
 
-Primary MVP input is a raw dirty `dtNavMesh` with no manual seeds, collision mesh,
-editor metadata, or trusted landmarks. Deliver geometric routing that tolerates
-clutter and selects useful routes under explicit movement assumptions. Classifying
-every island as playable or garbage is not required for MVP.
+Primary deployment has raw collision and an owned Recast bake pipeline, but no
+manual seeds or trusted landmarks. Build V2 after final navmesh assembly while a
+matching frozen collision snapshot is available. Target collision-checked crossings
+under the host's actual movement model. Keep final-navmesh-only geometric output as
+an explicit fallback for callers without that evidence. Classifying every island
+as playable or garbage is not required for MVP.
 
 Exhaustive autonomous construction is the initial implementation and correctness
 reference under configured sampling. Its suitability for production dirty maps
@@ -38,12 +40,29 @@ data through the host. Generate traversals adjacent to baking when useful withou
 requiring Recast internals or retaining all heightfields. Remain C++17 with no new
 third-party dependencies. Movement execution stays in the host.
 
+Scheduling link generation after baking and storing links as native Detour off-mesh
+connections are separate choices. Keep generated crossings in V2 for MVP. Reuse the
+baked navmesh and collision acceleration structure when movement settings change;
+rerun affected discovery and validation. Agent radius, height, or other ground-bake
+settings may require rebaking. Native off-mesh storage is not inherently broken and
+does not inherently require revoxelization when link settings change, but adopting
+it is unnecessary for this MVP.
+
+Audit existing bake filters before tuning them. Low-height and ledge filtering
+address agent walkability; `minRegionArea` removes qualifying small regions in cell
+units. These filters do not identify all interiors and can remove useful surfaces.
+Use fixtures and recorded settings, with no claimed garbage-removal percentage.
+Collision checks can reject blocked crossings into sealed geometry; they do not
+prove that an open interior belongs to the intended playable world.
+
 ## 1. Topology and domain contracts
 
 Split `extractAndSample` into topology extraction and independently scheduled
 boundary sampling. Retain a convenience wrapper. Proposed flow:
 
 ```text
+Raw collision -> Recast bake -> frozen final navmesh
+Matching collision snapshot -> host clearance queries
 Frozen mesh and host evidence
     -> native topology and metrics
     -> domain policy and seed resolution
@@ -76,16 +95,18 @@ must remain representable. No garbage-removal percentage without measurements.
 
 ## 2. Autonomous exhaustive and optional seeded modes
 
-Use bounded exhaustive mode as the initial raw-navmesh-only implementation and
-exact-only reference. It requires no external trust data:
+Use bounded exhaustive mode as the initial implementation and exact-only reference.
+It requires no manual seeds. Collision-backed validation applies to the primary
+deployment, with explicit geometric fallback:
 
 1. Extract every eligible native island and retain its metrics and ownership.
 2. Apply only explicit caller exclusions by default. Process islands in a stable
    deterministic order. Area-prioritized scheduling is optional and must preserve
    completed output; it does not reduce total work.
 3. Sample and discover crossings across the declared domain in bounded batches.
-4. Apply available directional checks. Without collision evidence, publish results
-   as geometric candidates, never as collision-clear or playable-domain truth.
+4. Apply directional eligibility and host collision/execution validation. Compile
+   ValidatedOnly when the required checks are implemented. Without sufficient
+   evidence, retain Unknown and use only explicit GeometricOnly output.
 5. Preserve every island's domain state and every accepted direction's provenance.
 
 Keep built-in heuristic scope narrow: an opt-in minimum-area threshold through the
@@ -174,15 +195,24 @@ stages. Failed rebuilds preserve the previous compatible immutable graph.
 
 ## 4. Traversal evidence and host validation
 
-Raw-navmesh-only MVP has no collision source and cannot ship a truthful physical
-clearance validator. Its built-in geometric checks may reject impossible endpoint
-height, distance, direction, or slope cases, but all survivors remain Unknown.
-Detour polygons describe walkable surfaces, not intervening solids. Sampling a
-parabolic arc against those polygons cannot prove that the arc avoids a wall.
+Raw collision is available. Ship one working host validator matching actual gap
+execution as part of host acceptance. A callback contract alone is insufficient.
+Current library-only work keeps this integration boundary testable; it does not
+claim that the real validator has shipped. Missing evidence stays Unknown.
 
-When host collision or retained bake triangles become available, ship one working
-host validator matching actual gap execution. A callback contract alone is
-insufficient for `ValidatedOnly` output. Missing evidence stays Unknown, not Valid.
+Prefer existing collision queries or an acceleration structure over the frozen raw
+triangles. Inventory coordinate transforms, collision completeness, sidedness,
+agent shape, endpoint support, and movement execution before choosing the backend.
+Retained solid heightfields are an alternative if their resolution and spatial
+coverage support the required clearance checks. Compact walkable data alone is not
+equivalent to solid collision. Cross-tile trajectories need collision coverage over
+the entire swept agent volume. Retaining all bake intermediates is not required.
+
+One offset centerline ray cannot establish jump validity. Physical traversal needs
+agent-volume clearance along the executed trajectory, with conservative treatment
+of discretization, plus takeoff and landing checks. A ray-only implementation must
+not promote an otherwise Unknown physical crossing to Valid. For callers without
+collision, endpoint geometry remains a rejection filter and survivors stay Unknown.
 
 Each canonical crossing stores geometry once with independent AB/BA records for
 geometric eligibility, outbound permission, Valid/Invalid/Unknown, and reason.
@@ -212,6 +242,11 @@ in `DetourNavLinkBuilder.cpp`, especially `sampleGroundSegment`,
 its complete implementation or assumed movement semantics. Recast small-region
 filtering is supporting cleanup, not interior classification; inspected Unreal
 `RecastRegion.cpp` also preserves border-connected regions.
+
+Do not adopt the chat's unconditional native-link overflow, 50-metre node exhaustion,
+or sub-millisecond routing claims. Limits depend on the Detour fork, configuration,
+and workload. The inspected Unreal fork has a 16-bit static `maxLinkCount` and also
+dynamic link storage; that is not a universal argument against native off-mesh links.
 
 ## 5. Mass preference and route quality
 
@@ -257,6 +292,10 @@ supplies execution-specific costs, units, and adapter integration.
 - Identity covers mesh, units, polygon/exclusion policy, seeds/build mode,
   discovery settings, movement profile, validator/environment, and compile policy.
   Cost-only route preference changes should not force geometry rebuilds.
+- Pair collision revision and transform with the baked mesh revision. Changed
+  collision or movement semantics invalidate validation. Freeze their lifetimes
+  through the build and reject mixed revisions before publication. Reuse topology
+  when compatible; larger discovery reach requires discovering new candidates.
 - Unversioned custom build semantics disable persistent reuse. Validate decoded
   counts, geometry, refs, mappings, direction states, and coverage consistency.
 - Preserve protected-cache wrapping, atomic replacement, revision checks, and
@@ -285,6 +324,10 @@ Fixtures and focused checks must cover:
   missing seeds, out-of-domain queries, and exclusion-induced topology splits.
 - Clear/blocked host actions, thin obstacles, endpoint support, adjusted landings,
   asymmetric validity, and changed validation identity.
+- Centerline-clear but capsule-blocked gaps, overhead trajectory obstacles,
+  cross-tile collision coverage, mesh/collision transform mismatch, and missing
+  collision regions returning Unknown. Compare bake-filter settings on valid tiny
+  platforms, caves, and unwanted interiors before enabling more aggressive cleanup.
 - Long-edge opportunities, partial portals, spacing on large islands, exact
   deduplication across batches, and alternative anchored approaches.
 - Soft preference retaining necessary stepping stones, explicit strict rejection,
@@ -320,8 +363,10 @@ checks explicitly; do not mark them passed.
    serialization, diagnostics, and dirty-mesh regression fixtures. Reapplying a
    policy that restores unsampled islands requires discovery for those islands;
    retained metrics alone cannot recover omitted crossings.
-4. Keep trusted seeded mode tested, but do not require seeds for MVP. Integrate a
-   host validator only when collision or equivalent execution evidence exists.
+4. When host work resumes, connect the existing bake pipeline's frozen collision to
+   an execution-matched validator and run V2 after final mesh assembly. This is now
+   a concrete host acceptance task. Keep trusted seeded mode tested; seeds remain
+   optional. Validate clearance fixtures before claiming ValidatedOnly readiness.
 5. Benchmark later per current user direction. Then resolve measured blockers and
    complete host migration, diagnostics/UI, cache replacement, and package version.
 
