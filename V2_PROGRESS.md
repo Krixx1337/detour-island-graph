@@ -138,11 +138,37 @@ const DiscoveryConfig&, const ValidationOptions&, const CompileOptions&)`:
 - First failure status becomes the pipeline status; no partial graph is
   published. `bad_alloc` during plumbing maps to `OutOfMemory`.
 
+## Routing delivered
+
+Implemented in `src/v2/Routing.cpp`, declared in
+`include/detour_island_graph/v2/Routing.h` as `findRoute` over
+`CompiledGraph`:
+
+- Portal-based search over compiled directed traversals using the graph's
+  precomputed offsets. No mutable search state in the shared graph;
+  caller-owned `RouteScratch` holds states and the heap, reusable across
+  queries with identical results to scratch-less calls.
+- `TransferCost` receives the island plus anchored endpoints (ad-hoc query
+  positions carry polygon 0); `CrossingCost`/`CrossingFilter` receive the
+  crossing, direction, and route context. Null costs mean Euclidean.
+- Geometric A* runs only under fully default costs with an explicitly
+  `estimatedCost` label. Any custom cost provider switches to Dijkstra; no
+  custom heuristic callback exists. Non-finite or negative costs block that
+  candidate rather than poisoning the search; callback exceptions fail the
+  query without partial output.
+- Search stops expanding once the remaining bound cannot beat the best
+  completed route. Same-island queries return `SameIsland` with no search.
+  No Detour transfer integration or cross-query cache in MVP.
+- Statuses cover success, same-island, no-path, invalid islands/input,
+  budgets, cancellation, callback failure, and out-of-memory, with
+  expanded/queued/peak-open telemetry.
+
 ## Verification
 
 - Targeted Windows/MSVC Debug library test build passed.
-- All 70 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
-  topology/sampling tests, 5 V2 discovery tests, and 4 V2 pipeline tests.
+- All 75 tests passed: 35 existing V1 tests, 11 V2 contract tests, 15 V2
+  topology/sampling tests, 5 V2 discovery tests, 4 V2 pipeline tests, and
+  5 V2 routing tests.
 - Whitespace checks passed (no tabs or trailing whitespace in touched files).
 
 No host switch, full application build, Queensdale performance measurement, or
@@ -161,9 +187,9 @@ heightfield data remain caller-supplied validator concerns.
    migration. Record sample/candidate/crossing counts, stage timings and peak
    memory. The current ordered-map implementation is a correctness baseline;
    profile its allocation and duplicate-key cost before optimizing it.
-2. Implement V2 routing and caller scratch, new serialization/cache identity,
+2. Implement new serialization/cache identity,
    then host/settings/report migration and package version 2.0.0. Benchmark query
    latency when the router is available.
 
-Mass diagnostics, routing, serialization,
+Mass diagnostics, serialization,
 and host migration remain unfinished.
