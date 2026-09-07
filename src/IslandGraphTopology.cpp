@@ -1,5 +1,6 @@
 #include "IslandGraphBuilderInternal.h"
 
+#include "IslandGraphDiscoveryInternal.h"
 #include "VectorMath.h"
 
 #include <DetourNavMeshQuery.h>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <queue>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -443,6 +445,457 @@ BuildStatus calculateGraphHealthStats(
             stats.largestConnectedComponentMass = componentMass;
         }
     }
+
+    // Guardrail: dominant-island and reachability diagnostics must follow the same directed
+    // traversals as routing. Sorting local copies for distinct-neighbor counts leaves the
+    // adjacency used above untouched.
+    std::size_t totalPolygons = 0;
+    for (const Island& island : graph.islands()) {
+        totalPolygons += island.polygons.size();
+    }
+    IslandId mainlandId = 0;
+    std::size_t mainlandPolygons = 0;
+    bool hasMainland = false;
+    for (const Island& island : graph.islands()) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (!hasMainland || island.polygons.size() > mainlandPolygons ||
+            (island.polygons.size() == mainlandPolygons && island.id < mainlandId)) {
+            hasMainland = true;
+            mainlandId = island.id;
+            mainlandPolygons = island.polygons.size();
+        }
+    }
+    if (hasMainland && mainlandId < islandCount) {
+        const Island& mainland = graph.islands()[mainlandId];
+        LargestIslandStats& largest = stats.largestIsland;
+        largest.id = mainlandId;
+        largest.valid = true;
+        largest.polygonCount = mainlandPolygons;
+        largest.polygonShare = totalPolygons > 0
+            ? static_cast<double>(mainlandPolygons) / static_cast<double>(totalPolygons)
+            : 0.0;
+        largest.outgoingTraversalCount = outgoingDegrees[mainlandId];
+        largest.incomingTraversalCount = incomingDegrees[mainlandId];
+        const auto distinctNeighborCount = [](std::vector<IslandId> targets, std::size_t islandCount) {
+            std::sort(targets.begin(), targets.end());
+            targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+            std::size_t distinct = 0;
+            for (IslandId target : targets) {
+                if (target < islandCount) {
+                    ++distinct;
+                }
+            }
+            return distinct;
+        };
+        largest.distinctOutgoingNeighbors = distinctNeighborCount(neighbors[mainlandId], islandCount);
+        largest.distinctIncomingNeighbors = distinctNeighborCount(reverseNeighbors[mainlandId], islandCount);
+        for (std::uint32_t edgeIndex : mainland.edgeIndices) {
+            if (edgeIndex < graph.edges().size()) {
+                ++largest.incidentCorridorCount;
+            }
+        }
+        if (mainlandId < stats.boundaries.representativeCountByIsland.size()) {
+            largest.representativeCount = stats.boundaries.representativeCountByIsland[mainlandId];
+        }
+        largest.suppressed = mainland.suppressed;
+        largest.massScore = mainland.massScore;
+
+        std::vector<char> forwardVisited(islandCount, 0);
+        std::vector<char> reverseVisited(islandCount, 0);
+        std::vector<IslandId> stack{mainlandId};
+        forwardVisited[mainlandId] = 1;
+        while (!stack.empty()) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            const IslandId current = stack.back();
+            stack.pop_back();
+            for (IslandId neighbor : neighbors[current]) {
+                if (neighbor < islandCount && !forwardVisited[neighbor]) {
+                    forwardVisited[neighbor] = 1;
+                    stack.push_back(neighbor);
+                }
+            }
+        }
+        stack.push_back(mainlandId);
+        reverseVisited[mainlandId] = 1;
+        while (!stack.empty()) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            const IslandId current = stack.back();
+            stack.pop_back();
+            for (IslandId neighbor : reverseNeighbors[current]) {
+                if (neighbor < islandCount && !reverseVisited[neighbor]) {
+                    reverseVisited[neighbor] = 1;
+                    stack.push_back(neighbor);
+                }
+            }
+        }
+
+        ReachabilityStats& reach = stats.reachability;
+        reach.mainlandId = mainlandId;
+        reach.valid = true;
+        const double totalPolygonDenominator = totalPolygons > 0
+            ? static_cast<double>(totalPolygons)
+            : 1.0;
+        const std::size_t satellitePolygons = totalPolygons >= mainlandPolygons
+            ? totalPolygons - mainlandPolygons
+            : 0;
+        const double satellitePolygonDenominator = satellitePolygons > 0
+            ? static_cast<double>(satellitePolygons)
+            : 1.0;
+        for (IslandId island = 0; island < islandCount; ++island) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            if (island == mainlandId) {
+                continue;
+            }
+            const Island& graphIsland = graph.islands()[island];
+            const std::size_t polygons = graphIsland.polygons.size();
+            const bool forward = forwardVisited[island] != 0;
+            const bool reverse = reverseVisited[island] != 0;
+            if (!graphIsland.suppressed) {
+                ++reach.unsuppressedIslandCount;
+                reach.unsuppressedPolygonCount += polygons;
+            }
+            if (forward) {
+                ++reach.forwardReachableIslands;
+                reach.forwardReachablePolygons += polygons;
+            }
+            if (reverse) {
+                ++reach.reverseReachableIslands;
+                reach.reverseReachablePolygons += polygons;
+            }
+            if (forward && reverse) {
+                ++reach.mutualReachableIslands;
+                reach.mutualReachablePolygons += polygons;
+            }
+            if (!forward && !reverse) {
+                ++reach.unreachableIslands;
+                reach.unreachablePolygons += polygons;
+                if (graphIsland.suppressed) {
+                    ++reach.unreachableSuppressedIslands;
+                    reach.unreachableSuppressedPolygons += polygons;
+                }
+            }
+        }
+        reach.forwardReachablePolygonShare =
+            static_cast<double>(reach.forwardReachablePolygons) / totalPolygonDenominator;
+        reach.reverseReachablePolygonShare =
+            static_cast<double>(reach.reverseReachablePolygons) / totalPolygonDenominator;
+        reach.mutualReachablePolygonShare =
+            static_cast<double>(reach.mutualReachablePolygons) / totalPolygonDenominator;
+        reach.unreachablePolygonShare =
+            static_cast<double>(reach.unreachablePolygons) / totalPolygonDenominator;
+        reach.forwardSatellitePolygonShare =
+            static_cast<double>(reach.forwardReachablePolygons) / satellitePolygonDenominator;
+        reach.reverseSatellitePolygonShare =
+            static_cast<double>(reach.reverseReachablePolygons) / satellitePolygonDenominator;
+        reach.mutualSatellitePolygonShare =
+            static_cast<double>(reach.mutualReachablePolygons) / satellitePolygonDenominator;
+    }
+    return BuildStatus::Success;
+}
+
+namespace {
+
+struct CanonicalEdgeKey {
+    IslandId lowIsland = 0;
+    IslandId highIsland = 0;
+    float pointAX = 0.0f;
+    float pointAY = 0.0f;
+    float pointAZ = 0.0f;
+    float pointBX = 0.0f;
+    float pointBY = 0.0f;
+    float pointBZ = 0.0f;
+
+    bool operator==(const CanonicalEdgeKey& other) const {
+        return lowIsland == other.lowIsland &&
+            highIsland == other.highIsland &&
+            pointAX == other.pointAX &&
+            pointAY == other.pointAY &&
+            pointAZ == other.pointAZ &&
+            pointBX == other.pointBX &&
+            pointBY == other.pointBY &&
+            pointBZ == other.pointBZ;
+    }
+};
+
+struct CanonicalEdgeKeyHash {
+    std::size_t operator()(const CanonicalEdgeKey& key) const {
+        std::size_t hash = 0;
+        discovery::hashCombine(hash, key.lowIsland);
+        discovery::hashCombine(hash, key.highIsland);
+        discovery::hashCombine(hash, key.pointAX);
+        discovery::hashCombine(hash, key.pointAY);
+        discovery::hashCombine(hash, key.pointAZ);
+        discovery::hashCombine(hash, key.pointBX);
+        discovery::hashCombine(hash, key.pointBY);
+        discovery::hashCombine(hash, key.pointBZ);
+        return hash;
+    }
+};
+
+bool edgeIndexListed(const Island& island, std::uint32_t edgeIndex) {
+    return std::find(
+        island.edgeIndices.begin(),
+        island.edgeIndices.end(),
+        edgeIndex) != island.edgeIndices.end();
+}
+
+} // namespace
+
+BuildStatus calculateDirectionValidity(
+    const IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options,
+    BuildStats& stats) {
+    DirectionValidityStats validity;
+    const std::size_t islandCount = graph.islands().size();
+    const auto recordExample = [&](const DirectionOffense& offense) {
+        if (validity.examples.size() < DirectionValidityStats::kMaxExamples) {
+            validity.examples.push_back(offense);
+        }
+    };
+
+    std::vector<char> outboundIslands(islandCount, 1);
+    if (config.outboundIslandFilter) {
+        for (const Island& island : graph.islands()) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            if (island.id < islandCount) {
+                outboundIslands[island.id] =
+                    (!island.suppressed && config.outboundIslandFilter(island, graph)) ? 1 : 0;
+            }
+        }
+    } else {
+        for (const Island& island : graph.islands()) {
+            if (island.id < islandCount) {
+                outboundIslands[island.id] = island.suppressed ? 0 : 1;
+            }
+        }
+    }
+
+    std::unordered_map<CanonicalEdgeKey, std::uint32_t, CanonicalEdgeKeyHash> firstEdgeByGeometry;
+    std::uint32_t edgeIndex = 0;
+    for (const Edge& edge : graph.edges()) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        ++validity.corridorCount;
+        if (edge.islandA >= islandCount || edge.islandB >= islandCount) {
+            ++validity.invalidIslandRefCount;
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::InvalidIslandRef});
+            ++edgeIndex;
+            continue;
+        }
+        if (edge.islandA == edge.islandB) {
+            ++validity.selfEdgeCount;
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::SelfEdge});
+        }
+        if (!discovery::isFinite(edge.pointA) || !discovery::isFinite(edge.pointB)) {
+            ++validity.nonFiniteGeometryCount;
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::NonFiniteGeometry});
+            ++edgeIndex;
+            continue;
+        }
+
+        if (edge.traversableAB && edge.traversableBA) {
+            ++validity.bidirectionalCount;
+        } else if (edge.traversableAB) {
+            ++validity.oneWayABOnlyCount;
+        } else if (edge.traversableBA) {
+            ++validity.oneWayBAOnlyCount;
+        } else {
+            ++validity.noDirectionCount;
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                false, false,
+                DirectionOffenseReason::NoDirection});
+        }
+        validity.directedTraversalCount +=
+            (edge.traversableAB ? 1U : 0U) + (edge.traversableBA ? 1U : 0U);
+
+        const double dx = static_cast<double>(edge.pointB.x) - edge.pointA.x;
+        const double dz = static_cast<double>(edge.pointB.z) - edge.pointA.z;
+        const double dy = static_cast<double>(edge.pointB.y) - edge.pointA.y;
+        const float recomputedHorizontal =
+            static_cast<float>(std::hypot(dx, dz));
+        const float recomputedVertical = static_cast<float>(dy);
+        if (std::fabs(recomputedHorizontal - edge.horizontalDistance) > 0.001f ||
+            std::fabs(recomputedVertical - edge.verticalDeltaAB) > 0.001f) {
+            ++validity.inconsistentStoredDistanceCount;
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::InconsistentStoredDistance});
+        }
+
+        const float maxGap = config.gapDiscovery.maxHorizontalGap;
+        const float maxUp = config.gapDiscovery.maxVerticalGapUp;
+        const float maxDown = config.gapDiscovery.maxVerticalGapDown;
+        const bool allowsAB = discovery::withinTraversalLimits(edge.pointA, edge.pointB, config);
+        const bool allowsBA = discovery::withinTraversalLimits(edge.pointB, edge.pointA, config);
+        if (edge.traversableAB && !allowsAB) {
+            ++validity.limitViolationABCount;
+            validity.maxExcessHorizontal = (std::max)(
+                validity.maxExcessHorizontal, recomputedHorizontal - maxGap);
+            if (recomputedVertical > maxUp) {
+                validity.maxExcessUp = (std::max)(
+                    validity.maxExcessUp, recomputedVertical - maxUp);
+            }
+            if (recomputedVertical < -maxDown) {
+                validity.maxExcessDown = (std::max)(
+                    validity.maxExcessDown, -maxDown - recomputedVertical);
+            }
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::LimitViolationAB});
+        } else if (!edge.traversableAB) {
+            if (allowsAB && outboundIslands[edge.islandA] != 0) {
+                ++validity.missingAllowedABCount;
+                recordExample(DirectionOffense{
+                    edgeIndex, edge.islandA, edge.islandB,
+                    edge.horizontalDistance, edge.verticalDeltaAB,
+                    edge.traversableAB, edge.traversableBA,
+                    DirectionOffenseReason::MissingAllowedAB});
+            } else if (allowsAB) {
+                ++validity.policyBlockedABCount;
+            } else {
+                ++validity.geometryBlockedABCount;
+            }
+        }
+        if (edge.traversableBA && !allowsBA) {
+            ++validity.limitViolationBACount;
+            validity.maxExcessHorizontal = (std::max)(
+                validity.maxExcessHorizontal, recomputedHorizontal - maxGap);
+            if (-recomputedVertical > maxUp) {
+                validity.maxExcessUp = (std::max)(
+                    validity.maxExcessUp, -recomputedVertical - maxUp);
+            }
+            if (-recomputedVertical < -maxDown) {
+                validity.maxExcessDown = (std::max)(
+                    validity.maxExcessDown, -maxDown + recomputedVertical);
+            }
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::LimitViolationBA});
+        } else if (!edge.traversableBA) {
+            if (allowsBA && outboundIslands[edge.islandB] != 0) {
+                ++validity.missingAllowedBACount;
+                recordExample(DirectionOffense{
+                    edgeIndex, edge.islandA, edge.islandB,
+                    edge.horizontalDistance, edge.verticalDeltaAB,
+                    edge.traversableAB, edge.traversableBA,
+                    DirectionOffenseReason::MissingAllowedBA});
+            } else if (allowsBA) {
+                ++validity.policyBlockedBACount;
+            } else {
+                ++validity.geometryBlockedBACount;
+            }
+        }
+
+        const bool canonicalOrder = edge.islandA <= edge.islandB;
+        const CanonicalEdgeKey geometryKey{
+            canonicalOrder ? edge.islandA : edge.islandB,
+            canonicalOrder ? edge.islandB : edge.islandA,
+            canonicalOrder ? edge.pointA.x : edge.pointB.x,
+            canonicalOrder ? edge.pointA.y : edge.pointB.y,
+            canonicalOrder ? edge.pointA.z : edge.pointB.z,
+            canonicalOrder ? edge.pointB.x : edge.pointA.x,
+            canonicalOrder ? edge.pointB.y : edge.pointA.y,
+            canonicalOrder ? edge.pointB.z : edge.pointA.z};
+        if (!firstEdgeByGeometry.emplace(geometryKey, edgeIndex).second) {
+            ++validity.exactDuplicateGeometryCount;
+            recordExample(DirectionOffense{
+                edgeIndex, edge.islandA, edge.islandB,
+                edge.horizontalDistance, edge.verticalDeltaAB,
+                edge.traversableAB, edge.traversableBA,
+                DirectionOffenseReason::ExactDuplicateGeometry});
+        }
+        ++edgeIndex;
+    }
+
+    for (const Island& island : graph.islands()) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (island.id >= islandCount) {
+            continue;
+        }
+        std::vector<std::uint32_t> orderedAdjacency(
+            island.edgeIndices.begin(), island.edgeIndices.end());
+        std::sort(orderedAdjacency.begin(), orderedAdjacency.end());
+        for (std::size_t index = 1; index < orderedAdjacency.size(); ++index) {
+            if (orderedAdjacency[index] == orderedAdjacency[index - 1]) {
+                ++validity.duplicateAdjacencyCount;
+                recordExample(DirectionOffense{
+                    orderedAdjacency[index], island.id, island.id,
+                    0.0f, 0.0f, false, false,
+                    DirectionOffenseReason::AdjacencyMismatch});
+            }
+        }
+        for (std::uint32_t listedIndex : island.edgeIndices) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            if (listedIndex >= graph.edges().size() ||
+                !connectsIsland(graph.edges()[listedIndex], island.id)) {
+                ++validity.adjacencyMismatchCount;
+                recordExample(DirectionOffense{
+                    listedIndex, island.id, island.id,
+                    0.0f, 0.0f, false, false,
+                    DirectionOffenseReason::AdjacencyMismatch});
+            }
+        }
+    }
+
+    edgeIndex = 0;
+    for (const Edge& edge : graph.edges()) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (edge.islandA < islandCount && edge.islandB < islandCount &&
+            edge.islandA != edge.islandB) {
+            const Island& islandA = graph.islands()[edge.islandA];
+            const Island& islandB = graph.islands()[edge.islandB];
+            if (!edgeIndexListed(islandA, edgeIndex) ||
+                !edgeIndexListed(islandB, edgeIndex)) {
+                ++validity.adjacencyMismatchCount;
+                recordExample(DirectionOffense{
+                    edgeIndex, edge.islandA, edge.islandB,
+                    edge.horizontalDistance, edge.verticalDeltaAB,
+                    edge.traversableAB, edge.traversableBA,
+                    DirectionOffenseReason::AdjacencyMismatch});
+            }
+        }
+        ++edgeIndex;
+    }
+
+    stats.directionValidity = std::move(validity);
     return BuildStatus::Success;
 }
 

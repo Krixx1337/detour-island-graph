@@ -17,6 +17,53 @@ struct QueryDeleter {
 
 namespace detail {
 
+void captureEffectiveSettings(const BuildConfig& config, BuildStats& stats) {
+    EffectiveBuildSettings& effective = stats.effectiveSettings;
+    effective.maxHorizontalGap = config.gapDiscovery.maxHorizontalGap;
+    effective.maxVerticalGapUp = config.gapDiscovery.maxVerticalGapUp;
+    effective.maxVerticalGapDown = config.gapDiscovery.maxVerticalGapDown;
+    effective.symmetricLimits =
+        config.gapDiscovery.maxVerticalGapUp == config.gapDiscovery.maxVerticalGapDown;
+    effective.maxTraversalExtent = discovery::maxTraversalExtent(config);
+    effective.queryMaxNodes = config.query.maxNodes;
+    effective.outboundFilterPresent = static_cast<bool>(config.outboundIslandFilter);
+    effective.massAwareEnabled = config.massAware.enabled;
+    effective.suppressSmallIslands = config.massAware.suppressSmallIslands;
+    effective.suppressedIslandPercent = config.massAware.suppressedIslandPercent;
+    effective.boundaryDeduplicationEnabled = config.boundaries.deduplicationEnabled;
+    effective.boundaryDeduplicationCellSize = config.boundaries.effectiveDeduplicationCellSize(
+        config.gapDiscovery.maxHorizontalGap);
+    effective.verticalCollapseWindow = discovery::effectiveVerticalCollapseWindow(config);
+    effective.representativeReductionEnabled = config.boundaries.representativeReductionEnabled;
+    effective.representativeCellSize = config.boundaries.effectiveRepresentativeCellSize(
+        config.gapDiscovery.maxHorizontalGap);
+    effective.representativeDirectionBuckets = config.boundaries.representativeDirectionBuckets;
+    effective.minRepresentativesPerIsland = config.boundaries.minRepresentativesPerIsland;
+    effective.maxRepresentativesPerIsland = config.boundaries.maxRepresentativesPerIsland;
+    effective.pairScanSuppressionEnabled = config.density.pairScanSuppression.enabled;
+    effective.pairScanSuppressionActive = config.density.pairScanSuppression.enabled &&
+        effective.symmetricLimits;
+    effective.pairScanSuppressionCellSize =
+        config.density.pairScanSuppression.effectiveCellSize(effective.maxTraversalExtent);
+    effective.shortGapRecoveryEnabled = config.density.shortGapRecovery.enabled;
+    effective.shortGapRecoveryGap = config.density.shortGapRecovery.effectiveMaxHorizontalGap(
+        config.gapDiscovery.maxHorizontalGap);
+    effective.candidateDeduplicationEnabled = config.density.candidateDeduplication.enabled;
+    effective.candidateDeduplicationCellSize =
+        config.density.candidateDeduplication.effectiveCellSize(effective.maxTraversalExtent);
+    effective.localPruningEnabled = config.density.localPruning.enabled;
+    effective.localPruningRadius =
+        config.density.localPruning.effectiveRadius(effective.maxTraversalExtent);
+    effective.globalPruningEnabled = config.density.globalPruning.enabled;
+    effective.globalPruningRadius =
+        config.density.globalPruning.effectiveRadius(effective.maxTraversalExtent);
+    effective.spannerPruningEnabled = config.density.spannerPruning.enabled;
+    effective.spannerPathRatio = config.density.spannerPruning.pathRatio;
+    effective.distinctTargetReserveEnabled = config.density.distinctTargetReserve.enabled;
+    effective.minDistinctTargetsPerIsland = config.density.distinctTargetReserve.minTargetsPerIsland;
+    effective.maxDistinctTargetsPerIsland = config.density.distinctTargetReserve.maxTargetsPerIsland;
+}
+
 bool validate(const BuildConfig& config, std::string& message) {
     const MassAwareTuning& massAware = config.massAware;
     const DensityTuning& density = config.density;
@@ -155,6 +202,7 @@ BuildStatus discoverLinks(
     if (cancellationRequested(options)) {
         return BuildStatus::Cancelled;
     }
+    captureEffectiveSettings(config, stats);
     std::unique_ptr<dtNavMeshQuery, QueryDeleter> query(dtAllocNavMeshQuery());
     if (!query || dtStatusFailed(query->init(&navMesh, config.query.maxNodes))) {
         message = "Failed to initialize dtNavMeshQuery.";

@@ -57,5 +57,13 @@ BuildStatus calculateGraphHealthStats(
     const IslandGraph& graph,
     const BuildOptions& options,
     BuildStats& stats);
+void captureEffectiveSettings(
+    const BuildConfig& config,
+    BuildStats& stats);
+BuildStatus calculateDirectionValidity(
+    const IslandGraph& graph,
+    const BuildConfig& config,
+    const BuildOptions& options,
+    BuildStats& stats);
 
 } // namespace detour_island_graph::detail

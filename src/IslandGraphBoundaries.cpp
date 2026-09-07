@@ -231,8 +231,17 @@ BuildStatus selectBoundaryRepresentatives(
         }
     }
     stats.boundaries.outboundFilteredCount = boundaries.size() - outboundBoundaries.size();
+    stats.boundaries.representativeCountByIsland.assign(graph.islands().size(), 0);
     if (!config.boundaries.representativeReductionEnabled) {
         stats.boundaries.representativeCount = outboundBoundaries.size();
+        for (const Boundary& boundary : outboundBoundaries) {
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
+            if (boundary.island < stats.boundaries.representativeCountByIsland.size()) {
+                ++stats.boundaries.representativeCountByIsland[boundary.island];
+            }
+        }
         representatives = std::move(outboundBoundaries);
         return BuildStatus::Success;
     }
@@ -366,6 +375,14 @@ BuildStatus selectBoundaryRepresentatives(
     std::sort(representatives.begin(), representatives.end(), boundaryLess);
     stats.boundaries.representativeCount = representatives.size();
     stats.boundaries.representativeTrimmedCount = outboundBoundaries.size() - representatives.size();
+    for (const Boundary& representative : representatives) {
+        if (cancellationRequested(options)) {
+            return BuildStatus::Cancelled;
+        }
+        if (representative.island < stats.boundaries.representativeCountByIsland.size()) {
+            ++stats.boundaries.representativeCountByIsland[representative.island];
+        }
+    }
     return BuildStatus::Success;
 }
 

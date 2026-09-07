@@ -495,6 +495,12 @@ BuildStatus pruneCandidates(
     }
     IslandGraphAccess::rebuildAdjacency(graph);
     stats.candidates.acceptedLinkCount = edges.size();
+    // Guardrail: structural validation reads the stored graph against the effective build
+    // capability, so it must run after final edge assembly and adjacency rebuild.
+    const BuildStatus validityStatus = calculateDirectionValidity(graph, config, options, stats);
+    if (validityStatus != BuildStatus::Success) {
+        return validityStatus;
+    }
     stats.timings.pruningMs = elapsedMilliseconds(pruningStart);
     return BuildStatus::Success;
 }
