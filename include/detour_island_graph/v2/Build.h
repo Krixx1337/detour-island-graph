@@ -51,7 +51,7 @@ struct DiscoveryConfig {
     float maxHorizontalGap = 0;
     float maxClimb = 0;
     float maxDrop = 0;
-    std::size_t maxSamples = 0; // Zero means uncapped.
+    std::size_t maxSamples = 0; // Unique boundary samples; zero means uncapped.
     std::size_t maxCandidates = 0; // Raw candidates, before exact deduplication.
 };
 
@@ -65,6 +65,23 @@ struct TopologyArtifact {
     bool customPolygonPolicy = false;
     std::size_t islandCount = 0; // Dense IDs [0, islandCount); no empty islands.
     std::vector<PolygonIsland> polygons;
+};
+
+struct BoundaryInterval {
+    IslandId island = 0;
+    dtPolyRef polygon = 0;
+    unsigned char edge = 0;
+    double begin = 0; // Parameters along the owning polygon edge, in [0, 1].
+    double end = 1;
+    Point start;
+    Point finish;
+};
+
+struct SamplingArtifact {
+    TopologyArtifact topology;
+    float sampleSpacing = 0;
+    std::vector<BoundaryInterval> intervals;
+    std::vector<Anchor> samples;
 };
 
 struct CrossingCandidate {
@@ -125,6 +142,13 @@ enum class StageStatus : std::uint8_t {
 };
 
 struct StageStats {
+    std::size_t groundPolygonsVisited = 0;
+    std::size_t eligiblePolygons = 0;
+    std::size_t islands = 0;
+    std::size_t boundaryIntervals = 0;
+    std::size_t sampleAttempts = 0;
+    std::size_t sampleDuplicates = 0;
+    std::size_t samples = 0;
     std::size_t candidatesVisited = 0;
     std::size_t exactDuplicates = 0;
     std::size_t validatorCalls = 0;
@@ -179,7 +203,18 @@ private:
     std::unordered_map<dtPolyRef, IslandId> polygonIslands_;
 };
 
-// Foundation entry point for anchored candidates. Mesh extraction/discovery follows later.
+// First build stage. The snapshot must be complete, valid, immutable Detour data.
+// Only ground polygons participate, even with a custom filter. Eligible native
+// neighbors must be reciprocal; one-way ground adjacency is rejected, not merged.
+// Samples follow coarse polygon edges, not detail-mesh height or collision clearance.
+// Spacing bounds 3D arclength in exact arithmetic, subject to float representation.
+// Collapsed adjacent samples fail instead of silently losing requested resolution.
+// Island IDs and duplicate ownership follow (tile x, y, layer, polygon index),
+// independent of tile allocation order. Polygon refs remain snapshot-specific.
+StageResult<SamplingArtifact> extractAndSample(
+    const BuildInput& input, const DiscoveryConfig& config);
+
+// Entry point for already-discovered anchored candidates.
 // Exact duplicates require identical anchors, including polygon refs. Distinct approaches survive.
 StageResult<CrossingArtifact> validateCrossings(
     const TopologyArtifact& topology, const DiscoveryConfig& config,

@@ -32,16 +32,54 @@ Implemented in `include/detour_island_graph/v2/Build.h` and `src/v2/Build.cpp`:
   policies/validator/environment. This is an eligibility flag, not a cache-key
   implementation or serializer.
 
+## Topology and sampling delivered
+
+Implemented in `src/v2/Sampling.cpp`, with public artifacts and entry point in
+`include/detour_island_graph/v2/Build.h`:
+
+- `extractAndSample` reads a frozen final `dtNavMesh`, selects eligible native
+  ground polygons, and creates deterministic dense island IDs. Off-mesh action
+  polygons never join native topology, even when a custom polygon filter is
+  supplied.
+- Island and sample ownership follows tile coordinates, layer, and polygon
+  index rather than tile allocation order. Polygon references remain tied to
+  the input mesh snapshot.
+- Native ground adjacency must be reciprocal. A malformed or one-way native
+  relationship fails instead of merging polygons and falsely allowing reverse
+  on-island travel.
+- External portal coverage is unioned from all eligible linked neighbors.
+  Only uncovered intervals remain boundaries, so partial portals and multiple
+  linked spans no longer hide an entire polygon edge.
+- Boundary intervals retain island, polygon, edge, normalized interval, and
+  endpoint provenance. Final-navmesh extraction treats unresolved external
+  seams as exposed because MVP assumes a complete snapshot and defers streaming
+  semantics.
+- Every exposed interval is sampled at both endpoints plus evenly spaced
+  interiors. Three-dimensional edge spacing never exceeds the explicit
+  `sampleSpacing`, apart from float representation limits. Sampling density is
+  independent of island size and climb/drop reach.
+- Exact coincident samples deduplicate only within the same island. Ownership is
+  deterministic; coincident samples on different islands remain separate.
+- `maxSamples` limits unique samples. Exceeding the cap returns
+  `BudgetExceeded` with no artifact. Cancellation, malformed mesh data, callback
+  failure, and float-resolution collapse also publish no artifact.
+- Stage counters now expose ground polygons visited, eligible polygons, islands,
+  boundary intervals, sample attempts, duplicate samples, and stored samples.
+
+No v1 mass quota, representative reduction, voxel merging, pair suppression,
+recovery pass, or pruning heuristic enters this stage.
+
 V2 currently lives in a separate namespace while replacement proceeds. There are
 no V1-to-V2 compatibility wrappers. Existing host still uses V1. Public package
 version and cache formats remain unchanged until the complete replacement lands.
 
 ## Trust and ownership contracts
 
-Topology and candidates are trusted producer inputs, not serialized or hostile
-input. The compiler checks consistency against the supplied polygon ownership
-table, but cannot prove polygon references or endpoint positions belong to an
-actual navmesh. The forthcoming mesh producer must establish that fact.
+Directly supplied topology and candidates remain trusted producer inputs, not
+serialized or hostile input. The compiler checks consistency against the
+supplied polygon ownership table. `extractAndSample` now establishes topology,
+polygon references, and boundary sample positions from the frozen Detour mesh;
+future candidate projection must establish landing anchor ownership.
 
 Callbacks must be deterministic and capture frozen state. Artifacts must not be
 mutated concurrently with compilation. Validation results and their provenance
@@ -54,30 +92,36 @@ Movement execution remains outside this library.
 ## Verification
 
 - Targeted Windows/MSVC Debug library test build passed.
-- All 46 tests passed: 35 existing V1 tests and 11 V2 contract tests.
+- All 61 tests passed: 35 existing V1 tests, 11 V2 contract tests, and 15 V2
+  topology/sampling tests.
 - Root architecture boundary checker and whitespace checks passed.
 
 No host switch, full application build, Queensdale performance measurement, or
-in-game execution check is part of this foundation slice. No UE implementation
-was copied; these contracts require no Unreal-specific algorithm.
+in-game execution check is part of this slice.
+
+Relevant Unreal source was inspected at
+`Engine/Source/Runtime/Navmesh/Private/Detour/DetourNavLinkBuilder.cpp`.
+Unreal extracts pre-bake contours and samples ground against retained
+heightfields. V2 uses portable final-Detour-mesh interval extraction instead;
+no Unreal implementation or Unreal dependency was copied. Rich collision and
+heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Extract native ground topology and exposed edge intervals from frozen Detour
-   input. Subtract the union of eligible external portal intervals.
-2. Sample endpoints and interiors with explicit maximum spacing, deterministic
-   ownership, cancellation, and fail-on-exceeded sample cap. No island quotas.
-3. Discover projected anchored candidates with cancellable Detour queries and
+1. Discover projected anchored candidates with cancellable Detour queries and
    feed the validation/compiler stages. Enforce candidate cap while generating,
-   not merely after allocating the candidate list.
-4. Benchmark the dense, exact-only pipeline on Queensdale before full host
+   not merely after allocating the candidate list. Avoid Detour's fixed-size
+   polygon result overload so dense stacked geometry cannot truncate silently.
+2. Add one end-to-end convenience build entry point once candidate discovery is
+   complete. Preserve stage artifacts for testing, timing, and future reuse.
+3. Benchmark the dense, exact-only pipeline on Queensdale before full host
    migration. Record sample/candidate/crossing counts, stage timings and peak
    memory. The current ordered-map implementation is a correctness baseline;
    profile its allocation and duplicate-key cost before optimizing it.
-5. Implement V2 routing and caller scratch, new serialization/cache identity,
+4. Implement V2 routing and caller scratch, new serialization/cache identity,
    then host/settings/report migration and package version 2.0.0. Benchmark query
    latency when the router is available.
 
-Sampling, actual discovery, mass diagnostics, routing, serialization and host
-migration remain unfinished. This is the first foundation slice, not a usable
-end-to-end V2 navmesh builder.
+Candidate discovery, end-to-end build, mass diagnostics, routing, serialization,
+and host migration remain unfinished. V2 still cannot build a usable graph
+directly from a navmesh without caller-supplied candidates.

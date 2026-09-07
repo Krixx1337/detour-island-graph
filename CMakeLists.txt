@@ -32,6 +32,7 @@ add_library(detour_island_graph
     src/IslandGraphSerializer.cpp
     src/IslandGraphTopology.cpp
     src/v2/Build.cpp
+    src/v2/Sampling.cpp
 )
 add_library(detour_island_graph::detour_island_graph ALIAS detour_island_graph)
 
@@ -132,6 +133,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
     add_executable(detour_island_graph_tests
         tests/IslandGraphTests.cpp
         tests/V2BuildTests.cpp
+        tests/V2SamplingTests.cpp
     )
     target_link_libraries(detour_island_graph_tests
         PRIVATE
