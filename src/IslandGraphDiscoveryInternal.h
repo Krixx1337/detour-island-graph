@@ -73,15 +73,14 @@ inline float maxTraversalExtent(const BuildConfig& config) {
         (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown));
 }
 
-inline bool hasSymmetricVerticalCapabilities(const BuildConfig& config) {
-    return std::abs(
-        config.gapDiscovery.maxVerticalGapUp -
-        config.gapDiscovery.maxVerticalGapDown) <= 0.001f;
-}
-
-inline bool usesSphericalTraversalEnvelope(const BuildConfig& config) {
-    return hasSymmetricVerticalCapabilities(config) &&
-        std::abs(config.gapDiscovery.maxHorizontalGap - config.gapDiscovery.maxVerticalGapUp) <= 0.001f;
+inline bool withinTraversalLimits(const Vec3& start, const Vec3& end, const BuildConfig& config) {
+    const double dx = static_cast<double>(end.x) - start.x;
+    const double dz = static_cast<double>(end.z) - start.z;
+    const double dy = static_cast<double>(end.y) - start.y;
+    return isFinite(start) && isFinite(end) &&
+        std::hypot(dx, dz) <= config.gapDiscovery.maxHorizontalGap &&
+        dy <= config.gapDiscovery.maxVerticalGapUp &&
+        dy >= -config.gapDiscovery.maxVerticalGapDown;
 }
 
 BuildStatus extractBoundaries(

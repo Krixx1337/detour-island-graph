@@ -127,60 +127,28 @@ bool hasAcceptableIndirectRoute(
             continue;
         }
         const auto& secondOutgoing = acceptedOutgoing[firstHop.toIsland];
-        float bestSecondHopDist = (std::numeric_limits<float>::max)();
         for (const Link& secondHop : secondOutgoing) {
             if (secondHop.toIsland == candidate.toIsland) {
-                const float dist = effort(secondHop);
-                if (dist < bestSecondHopDist) {
-                    bestSecondHopDist = dist;
+                const float indirectDist =
+                    distance(candidate.start, firstHop.start) + effort(firstHop) +
+                    distance(firstHop.end, secondHop.start) + effort(secondHop) +
+                    distance(secondHop.end, candidate.end);
+                if (indirectDist <= candidateDist * pathRatio) {
+                    return true;
                 }
-            }
-        }
-        if (bestSecondHopDist != (std::numeric_limits<float>::max)()) {
-            const float firstHopDist = effort(firstHop);
-            const float indirectDist = firstHopDist + bestSecondHopDist;
-            if (indirectDist <= candidateDist * pathRatio) {
-                return true;
             }
         }
     }
     return false;
 }
 
-void collapseAcceptedLocalDuplicates(
-    std::vector<std::vector<Link>>& acceptedOutgoing,
-    float radius,
-    BuildStats& stats) {
-    const float radiusSquared = radius * radius;
-    for (auto& outgoing : acceptedOutgoing) {
-        if (outgoing.size() < 2) {
-            continue;
-        }
-
-        std::vector<Link> collapsed;
-        collapsed.reserve(outgoing.size());
-        for (const Link& link : outgoing) {
-            const bool duplicate = std::any_of(collapsed.begin(), collapsed.end(), [&](const Link& existing) {
-                return existing.toIsland == link.toIsland &&
-                    withinLocalPruningWindow(link, existing, radiusSquared);
-            });
-            if (duplicate) {
-                ++stats.candidates.localPruningRejectCount;
-                continue;
-            }
-            collapsed.push_back(link);
-        }
-        outgoing = std::move(collapsed);
-    }
-}
-
 std::vector<std::uint32_t> makeDistinctTargetReserveBudgets(
     const IslandGraph& graph,
     const BuildConfig& config) {
-    std::vector<std::uint32_t> budgets(graph.islands().size(), 0);
-    if (!config.density.distinctTargetReserve.enabled) {
-        return budgets;
+    if (!config.density.spannerPruning.enabled || !config.density.distinctTargetReserve.enabled) {
+        return {};
     }
+    std::vector<std::uint32_t> budgets(graph.islands().size(), 0);
     for (const Island& island : graph.islands()) {
         if (island.id >= budgets.size()) {
             continue;
@@ -219,7 +187,7 @@ bool isBetterLink(const Link& lhs, const Link& rhs, const IslandGraph& graph, co
     if (config.massAware.enabled) {
         const float lhsImportance = linkImportance(lhs, graph);
         const float rhsImportance = linkImportance(rhs, graph);
-        if (std::abs(lhsImportance - rhsImportance) > 0.001f) {
+        if (lhsImportance != rhsImportance) {
             return lhsImportance > rhsImportance;
         }
     }
@@ -260,7 +228,6 @@ BuildStatus pruneCandidates(
 
     auto& islands = IslandGraphAccess::islands(graph);
     auto& edges = IslandGraphAccess::edges(graph);
-    const bool symmetricCapabilities = hasSymmetricVerticalCapabilities(config);
     std::vector<bool> outboundIslands(islands.size(), true);
     if (config.outboundIslandFilter) {
         for (const Island& island : islands) {
@@ -276,6 +243,12 @@ BuildStatus pruneCandidates(
             }
         }
     }
+    const auto reverseAllowed = [&](const Link& link) {
+        const double reverseRise = static_cast<double>(link.start.y) - link.end.y;
+        return outboundIslands[link.toIsland] &&
+            reverseRise <= config.gapDiscovery.maxVerticalGapUp &&
+            reverseRise >= -config.gapDiscovery.maxVerticalGapDown;
+    };
     edges.clear();
     for (Island& island : islands) {
         island.edgeIndices.clear();
@@ -336,27 +309,26 @@ BuildStatus pruneCandidates(
             quantize(point.y, globalBaseRadius),
             quantize(point.z, globalBaseRadius)}].push_back(point);
     };
-    // Guardrail: locality ownership lives at the source island, not the (source,target) pair.
-    // Complex 3D maps can fragment one real exit into many tiny neighboring targets; pruning only
-    // per pair keeps the full fan-out and recreates link bloat even after dedup elsewhere.
-    std::unordered_map<IslandId, std::vector<Link>> acceptedBySource;
-    const float localPruneRadius = config.density.localPruning.effectiveRadius(maxTraversalExtent(config));
+    std::vector<std::vector<Link>> acceptedBySource(
+        config.density.localPruning.enabled ? islands.size() : 0);
     std::vector<Link> locallyAccepted;
     locallyAccepted.reserve(candidates.size());
     std::vector<std::vector<Link>> acceptedOutgoing(islands.size());
-    std::vector<std::vector<Link>> spannerOutgoing(islands.size());
+    std::vector<std::vector<Link>> spannerOutgoing(
+        config.density.spannerPruning.enabled ? islands.size() : 0);
     const std::vector<std::uint32_t> distinctTargetReserveBudgets =
         makeDistinctTargetReserveBudgets(graph, config);
-    std::vector<std::unordered_set<IslandId>> localReservedTargets(islands.size());
-    std::vector<std::unordered_set<IslandId>> spannerReservedTargets(islands.size());
+    std::vector<std::unordered_set<IslandId>> spannerReservedTargets(distinctTargetReserveBudgets.size());
     for (const Link& candidate : candidates) {
         if (cancellationRequested(options)) {
             return BuildStatus::Cancelled;
         }
         if (candidate.fromIsland >= islands.size() ||
             candidate.toIsland >= islands.size() ||
+            candidate.fromIsland == candidate.toIsland ||
             !outboundIslands[candidate.fromIsland] ||
-            islands[candidate.toIsland].suppressed) {
+            islands[candidate.toIsland].suppressed ||
+            !withinTraversalLimits(candidate.start, candidate.end, config)) {
             continue;
         }
         bool duplicate = false;
@@ -365,42 +337,15 @@ BuildStatus pruneCandidates(
             const float radius = pruneRadius(candidate, graph, config);
             const float radiusSquared = radius * radius;
             duplicate = std::any_of(accepted.begin(), accepted.end(), [&](const Link& existing) {
-                // Guardrail: symmetry-first pruning treats a corridor as a 3D object. Same island
-                // pair is not enough to collapse links; both endpoints must occupy nearby space.
-                return withinLocalPruningWindow(candidate, existing, radiusSquared);
+                return candidate.toIsland == existing.toIsland &&
+                    (!reverseAllowed(candidate) || reverseAllowed(existing)) &&
+                    withinLocalPruningWindow(candidate, existing, radiusSquared);
             });
-            if (duplicate &&
-                needsDistinctTargetReserve(
-                    candidate.fromIsland,
-                    candidate.toIsland,
-                    distinctTargetReserveBudgets,
-                    localReservedTargets)) {
-                // Guardrail: huge mainland islands must retain several distinct neighboring
-                // islands before local cleanup can collapse exits. This is a target reserve, not
-                // a link quota, so duplicate links to already-kept targets still get removed.
-                duplicate = false;
-                ++stats.candidates.distinctTargetReserveCount;
-            }
             if (!duplicate) {
                 accepted.push_back(candidate);
-                reserveDistinctTarget(
-                    candidate.fromIsland,
-                    candidate.toIsland,
-                    distinctTargetReserveBudgets,
-                    localReservedTargets);
-                if (symmetricCapabilities &&
-                    candidate.toIsland < islands.size() &&
-                    outboundIslands[candidate.toIsland]) {
-                    // Guardrail: symmetric traversal stores one bidirectional edge, so source-local
-                    // pruning must also reserve the reverse source bucket. Without this, opposite
-                    // scan directions can keep duplicate corridors that add branching but no reach.
+                if (reverseAllowed(candidate)) {
                     const Link reverse = reverseLink(candidate);
                     acceptedBySource[candidate.toIsland].push_back(reverse);
-                    reserveDistinctTarget(
-                        reverse.fromIsland,
-                        reverse.toIsland,
-                        distinctTargetReserveBudgets,
-                        localReservedTargets);
                 }
             } else {
                 ++stats.candidates.localPruningRejectCount;
@@ -424,43 +369,45 @@ BuildStatus pruneCandidates(
                 continue;
             }
         }
-        if (config.density.spannerPruning.enabled &&
-            needsDistinctTargetReserve(
-                candidate.fromIsland,
-                candidate.toIsland,
-                distinctTargetReserveBudgets,
-                spannerReservedTargets) &&
+        const bool hasReplacement = config.density.spannerPruning.enabled &&
             hasAcceptableIndirectRoute(
                 candidate,
                 spannerOutgoing,
-                config.density.spannerPruning.pathRatio)) {
-            ++stats.candidates.distinctTargetReserveCount;
-        } else if (config.density.spannerPruning.enabled &&
-            hasAcceptableIndirectRoute(
-                candidate,
-                spannerOutgoing,
-                config.density.spannerPruning.pathRatio)) {
-            ++stats.candidates.spannerPruningRejectCount;
-            continue;
+                config.density.spannerPruning.pathRatio) &&
+            (!reverseAllowed(candidate) || hasAcceptableIndirectRoute(
+                reverseLink(candidate), spannerOutgoing, config.density.spannerPruning.pathRatio));
+        if (hasReplacement) {
+            const bool reserved = needsDistinctTargetReserve(
+                candidate.fromIsland, candidate.toIsland,
+                distinctTargetReserveBudgets, spannerReservedTargets) ||
+                (reverseAllowed(candidate) && needsDistinctTargetReserve(
+                    candidate.toIsland, candidate.fromIsland,
+                    distinctTargetReserveBudgets, spannerReservedTargets));
+            if (reserved) {
+                ++stats.candidates.distinctTargetReserveCount;
+            } else {
+                ++stats.candidates.spannerPruningRejectCount;
+                continue;
+            }
         }
 
         acceptedOutgoing[candidate.fromIsland].push_back(candidate);
-        spannerOutgoing[candidate.fromIsland].push_back(candidate);
-        reserveDistinctTarget(
-            candidate.fromIsland,
-            candidate.toIsland,
-            distinctTargetReserveBudgets,
-            spannerReservedTargets);
-        if (symmetricCapabilities &&
-            candidate.toIsland < spannerOutgoing.size() &&
-            outboundIslands[candidate.toIsland]) {
-            const Link reverse = reverseLink(candidate);
-            spannerOutgoing[candidate.toIsland].push_back(reverse);
+        if (config.density.spannerPruning.enabled) {
+            spannerOutgoing[candidate.fromIsland].push_back(candidate);
             reserveDistinctTarget(
-                reverse.fromIsland,
-                reverse.toIsland,
+                candidate.fromIsland,
+                candidate.toIsland,
                 distinctTargetReserveBudgets,
                 spannerReservedTargets);
+            if (reverseAllowed(candidate)) {
+                const Link reverse = reverseLink(candidate);
+                spannerOutgoing[candidate.toIsland].push_back(reverse);
+                reserveDistinctTarget(
+                    reverse.fromIsland,
+                    reverse.toIsland,
+                    distinctTargetReserveBudgets,
+                    spannerReservedTargets);
+            }
         }
         ++stats.candidates.acceptedLinkCount;
         if (config.density.globalPruning.enabled) {
@@ -469,9 +416,6 @@ BuildStatus pruneCandidates(
         }
     }
 
-    if (config.density.localPruning.enabled) {
-        collapseAcceptedLocalDuplicates(acceptedOutgoing, localPruneRadius, stats);
-    }
     stats.candidates.acceptedLinkCount = 0;
     for (const auto& outgoing : acceptedOutgoing) {
         stats.candidates.acceptedLinkCount += outgoing.size();
@@ -480,12 +424,12 @@ BuildStatus pruneCandidates(
     struct EdgeKey {
         IslandId islandA = 0;
         IslandId islandB = 0;
-        SpatialCoordinate pointAX = 0;
-        SpatialCoordinate pointAY = 0;
-        SpatialCoordinate pointAZ = 0;
-        SpatialCoordinate pointBX = 0;
-        SpatialCoordinate pointBY = 0;
-        SpatialCoordinate pointBZ = 0;
+        float pointAX = 0;
+        float pointAY = 0;
+        float pointAZ = 0;
+        float pointBX = 0;
+        float pointBY = 0;
+        float pointBZ = 0;
 
         bool operator==(const EdgeKey& other) const {
             return islandA == other.islandA &&
@@ -517,19 +461,19 @@ BuildStatus pruneCandidates(
     std::unordered_map<EdgeKey, std::uint32_t, EdgeKeyHash> edgeByKey;
     for (IslandId fromIsland = 0; fromIsland < acceptedOutgoing.size(); ++fromIsland) {
         for (const Link& link : acceptedOutgoing[fromIsland]) {
-            const float cellSize = (std::max)(
-                config.density.candidateDeduplication.effectiveCellSize(maxTraversalExtent(config)),
-                0.001f);
+            if (cancellationRequested(options)) {
+                return BuildStatus::Cancelled;
+            }
             const bool forward = link.fromIsland <= link.toIsland;
             const EdgeKey key{
                 forward ? link.fromIsland : link.toIsland,
                 forward ? link.toIsland : link.fromIsland,
-                quantize(forward ? link.start.x : link.end.x, cellSize),
-                quantize(forward ? link.start.y : link.end.y, cellSize),
-                quantize(forward ? link.start.z : link.end.z, cellSize),
-                quantize(forward ? link.end.x : link.start.x, cellSize),
-                quantize(forward ? link.end.y : link.start.y, cellSize),
-                quantize(forward ? link.end.z : link.start.z, cellSize)};
+                forward ? link.start.x : link.end.x,
+                forward ? link.start.y : link.end.y,
+                forward ? link.start.z : link.end.z,
+                forward ? link.end.x : link.start.x,
+                forward ? link.end.y : link.start.y,
+                forward ? link.end.z : link.start.z};
             const auto existing = edgeByKey.find(key);
             if (existing == edgeByKey.end()) {
                 Edge edge;
@@ -537,20 +481,15 @@ BuildStatus pruneCandidates(
                 edge.islandB = key.islandB;
                 edge.pointA = forward ? link.start : link.end;
                 edge.pointB = forward ? link.end : link.start;
-                edge.horizontalDistance = link.horizontalDistance;
+                edge.horizontalDistance = horizontalDistance(edge.pointA, edge.pointB);
                 edge.verticalDeltaAB = edge.pointB.y - edge.pointA.y;
-                edge.traversableAB = forward || (symmetricCapabilities && outboundIslands[edge.islandA]);
-                edge.traversableBA = !forward || (symmetricCapabilities && outboundIslands[edge.islandB]);
+                edge.traversableAB = outboundIslands[edge.islandA] &&
+                    withinTraversalLimits(edge.pointA, edge.pointB, config);
+                edge.traversableBA = outboundIslands[edge.islandB] &&
+                    withinTraversalLimits(edge.pointB, edge.pointA, config);
                 edgeByKey.emplace(key, static_cast<std::uint32_t>(edges.size()));
                 edges.push_back(edge);
                 continue;
-            }
-            Edge& edge = edges[existing->second];
-            if (forward || (symmetricCapabilities && outboundIslands[edge.islandA])) {
-                edge.traversableAB = true;
-            }
-            if (!forward || (symmetricCapabilities && outboundIslands[edge.islandB])) {
-                edge.traversableBA = true;
             }
         }
     }

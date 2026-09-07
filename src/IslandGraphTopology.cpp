@@ -47,27 +47,29 @@ bool isEligiblePolygon(
             : polygon.getType() == DT_POLYTYPE_GROUND);
 }
 
-dtPolyRef getNeighbor(
+template <typename Visitor>
+void visitNeighbors(
     const dtNavMesh& navMesh,
     const dtMeshTile& tile,
     const dtPoly& polygon,
-    unsigned char edge) {
+    unsigned char edge,
+    Visitor&& visit) {
     const unsigned short neighbor = polygon.neis[edge];
     if (neighbor == 0) {
-        return 0;
+        return;
     }
     if ((neighbor & DT_EXT_LINK) == 0) {
-        return navMesh.getPolyRefBase(&tile) | static_cast<dtPolyRef>(neighbor - 1);
+        visit(navMesh.getPolyRefBase(&tile) | static_cast<dtPolyRef>(neighbor - 1));
+        return;
     }
     for (unsigned int linkIndex = polygon.firstLink;
          linkIndex != DT_NULL_LINK;
          linkIndex = tile.links[linkIndex].next) {
         const dtLink& link = tile.links[linkIndex];
         if (link.edge == edge && link.ref != 0) {
-            return link.ref;
+            visit(link.ref);
         }
     }
-    return 0;
 }
 
 float lerp(float low, float high, float alpha) {
@@ -258,10 +260,11 @@ BuildStatus floodFill(
                     divide(centroid, static_cast<float>(currentPolygon->vertCount)));
 
                 for (unsigned char edge = 0; edge < currentPolygon->vertCount; ++edge) {
-                    const dtPolyRef neighbor = getNeighbor(navMesh, *currentTile, *currentPolygon, edge);
-                    if (neighbor != 0 && polygonToIsland.find(neighbor) == polygonToIsland.end()) {
-                        pending.push(neighbor);
-                    }
+                    visitNeighbors(navMesh, *currentTile, *currentPolygon, edge, [&](dtPolyRef neighbor) {
+                        if (polygonToIsland.find(neighbor) == polygonToIsland.end()) {
+                            pending.push(neighbor);
+                        }
+                    });
                 }
             }
 

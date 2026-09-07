@@ -2,6 +2,8 @@
 
 #include "IslandGraphBuilderInternal.h"
 
+#include <utility>
+
 namespace detour_island_graph {
 
 BuildConfig BuildConfig::forProfile(
@@ -47,7 +49,7 @@ BuildResult IslandGraphBuilder::build(
             result.message = "Build cancelled.";
         }
         result.stats.timings.totalMs = detail::elapsedMilliseconds(totalStart);
-        return result;
+        return std::move(result);
     };
     if (!detail::validate(config, result.message)) {
         result.status = BuildStatus::InvalidConfiguration;

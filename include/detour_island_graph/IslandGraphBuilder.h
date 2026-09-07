@@ -55,6 +55,7 @@ struct CandidateDeduplicationTuning {
 };
 
 struct PairScanSuppressionTuning {
+    // Applied only with equal climb/drop limits; asymmetric scans retain direction classes.
     bool enabled = false;
     // Zero keeps the autoscaled voxel size derived from maxTraversalExtent * cellSizeRatio.
     // Set an explicit meter value only for benchmarked map-specific tuning.
@@ -82,6 +83,7 @@ struct ShortGapRecoveryTuning {
 };
 
 struct LocalPruningTuning {
+    // Collapses nearby corridors only within the same island pair, preserving valid directions.
     bool enabled = true;
     // Zero keeps the autoscaled pruning radius derived from maxTraversalExtent * radiusRatio.
     // Set an explicit meter value only for benchmarked map-specific tuning.
@@ -117,6 +119,7 @@ struct GlobalPruningTuning {
 
 struct SpannerPruningTuning {
     bool enabled = false;
+    // Uses crossing lengths plus Euclidean transfers between corridor endpoints.
     float pathRatio = 1.5f;
 };
 
@@ -161,6 +164,7 @@ struct DensityTuning {
 };
 
 struct GapDiscoveryTuning {
+    // Independent horizontal and signed vertical limits, in navmesh coordinate units.
     float maxHorizontalGap;
     float maxVerticalGapUp;
     float maxVerticalGapDown;

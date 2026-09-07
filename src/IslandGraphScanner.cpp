@@ -21,6 +21,7 @@ struct LinkKey {
     SpatialCoordinate endX = 0;
     SpatialCoordinate endY = 0;
     SpatialCoordinate endZ = 0;
+    unsigned int directions = 0;
 
     bool operator==(const LinkKey& other) const {
         return islandA == other.islandA &&
@@ -30,7 +31,7 @@ struct LinkKey {
             startZ == other.startZ &&
             endX == other.endX &&
             endY == other.endY &&
-            endZ == other.endZ;
+            endZ == other.endZ && directions == other.directions;
     }
 };
 
@@ -45,6 +46,7 @@ struct LinkKeyHash {
         hashCombine(hash, key.endX);
         hashCombine(hash, key.endY);
         hashCombine(hash, key.endZ);
+        hashCombine(hash, key.directions);
         return hash;
     }
 };
@@ -111,8 +113,8 @@ BuildStatus discoverCandidates(
     std::vector<std::pair<IslandId, dtPolyRef>> targetPolygons;
     PolygonCollector collector(nearby);
     std::vector<bool> outboundIslands(graph.islands().size(), true);
-    const bool symmetricCapabilities = hasSymmetricVerticalCapabilities(config);
-    const bool sphericalTraversalEnvelope = usesSphericalTraversalEnvelope(config);
+    const bool suppressPairScans = config.density.pairScanSuppression.enabled &&
+        config.gapDiscovery.maxVerticalGapUp == config.gapDiscovery.maxVerticalGapDown;
     const float pairScanCellSize = config.density.pairScanSuppression.effectiveCellSize(
         maxTraversalExtent(config));
     dtQueryFilter filter;
@@ -146,7 +148,12 @@ BuildStatus discoverCandidates(
         }
         const float candidateCellSize =
             config.density.candidateDeduplication.effectiveCellSize(maxTraversalExtent(config));
-        const bool normalizeOrder = symmetricCapabilities && link.toIsland < link.fromIsland;
+        const bool normalizeOrder = link.toIsland < link.fromIsland;
+        const bool reverseAllowed = outboundIslands[link.toIsland] &&
+            withinTraversalLimits(link.end, link.start, config);
+        const unsigned int directions = normalizeOrder
+            ? (2U | (reverseAllowed ? 1U : 0U))
+            : (1U | (reverseAllowed ? 2U : 0U));
         const LinkKey key{
             normalizeOrder ? link.toIsland : link.fromIsland,
             normalizeOrder ? link.fromIsland : link.toIsland,
@@ -155,7 +162,8 @@ BuildStatus discoverCandidates(
             quantize(normalizeOrder ? link.end.z : link.start.z, candidateCellSize),
             quantize(normalizeOrder ? link.start.x : link.end.x, candidateCellSize),
             quantize(normalizeOrder ? link.start.y : link.end.y, candidateCellSize),
-            quantize(normalizeOrder ? link.start.z : link.end.z, candidateCellSize)};
+            quantize(normalizeOrder ? link.start.z : link.end.z, candidateCellSize),
+            directions};
         const auto existing = deduplicated.find(key);
         if (existing == deduplicated.end() || isBetterLink(link, existing->second, graph, config)) {
             if (recovery) {
@@ -170,11 +178,14 @@ BuildStatus discoverCandidates(
             (std::max)(config.gapDiscovery.maxVerticalGapUp, config.gapDiscovery.maxVerticalGapDown);
         const float extents[3]{
             maxHorizontalGap,
-            recovery ? (std::min)(maxHorizontalGap, configuredVerticalExtent) : configuredVerticalExtent,
+            configuredVerticalExtent,
             maxHorizontalGap};
         for (const Boundary& boundary : scanBoundaries) {
             if (cancellationRequested(options)) {
                 return BuildStatus::Cancelled;
+            }
+            if (!outboundIslands[boundary.island]) {
+                continue;
             }
             float center[3];
             toDetour(boundary.midpoint, center);
@@ -213,13 +224,8 @@ BuildStatus discoverCandidates(
                 }
                 link.horizontalDistance = horizontalDistance(link.start, link.end);
                 link.verticalDistance = link.end.y - link.start.y;
-                if (sphericalTraversalEnvelope && distance(link.start, link.end) > maxTraversalExtent(config)) {
-                    return BuildStatus::Success;
-                }
-                if (!sphericalTraversalEnvelope &&
-                    (link.horizontalDistance > maxHorizontalGap ||
-                     link.verticalDistance > config.gapDiscovery.maxVerticalGapUp ||
-                     link.verticalDistance < -config.gapDiscovery.maxVerticalGapDown)) {
+                if (link.horizontalDistance > maxHorizontalGap ||
+                    !withinTraversalLimits(link.start, link.end, config)) {
                     return BuildStatus::Success;
                 }
                 accepted = true;
@@ -242,7 +248,7 @@ BuildStatus discoverCandidates(
                 if (*target >= graph.islands().size() || graph.islands()[*target].suppressed) {
                     continue;
                 }
-                if (!recovery && config.density.pairScanSuppression.enabled) {
+                if (!recovery && suppressPairScans) {
                     targetPolygons.push_back({*target, candidatePolygon});
                     continue;
                 }
@@ -270,7 +276,7 @@ BuildStatus discoverCandidates(
                     targetPolygons[targetEnd].first == target) {
                     ++targetEnd;
                 }
-                const bool normalizePair = symmetricCapabilities && target < boundary.island;
+                const bool normalizePair = target < boundary.island;
                 const PairScanKey pairScanKey{
                     normalizePair ? target : boundary.island,
                     normalizePair ? boundary.island : target,

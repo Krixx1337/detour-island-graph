@@ -52,10 +52,15 @@ Start with a profile and customize only when the resulting graph or build cost r
 - Use the unpruned profile as a diagnostic reference, not as a typical production configuration.
 - Treat gap limits as movement capabilities. Use density and pruning controls to shape graph size.
 - Expect symmetric climb/drop limits to produce bi-directional traversal on a single stored corridor edge. With asymmetric climb/drop limits, the same edge model records only the physically valid traversal direction(s).
+- Horizontal, climb, and drop limits are independent, including when their values match. Reverse traversal is checked against each retained corridor's geometry and outbound policy.
+- Local pruning preserves distinct target islands and valid traversal directions. Pair-scan suppression applies only with equal climb/drop limits; asymmetric builds retain all direction classes for candidate evaluation.
+- The unpruned profile retains distinct corridor geometry and merges only exact reverse copies. Spanner pruning checks both valid directions and includes Euclidean travel between crossing endpoints; it does not guarantee actual on-mesh walking distance.
 - Increase `density.candidateDeduplication.cellSizeRatio` or `density.localPruning.radiusRatio` to collapse nearby 3D sampling noise more aggressively while staying map-agnostic.
 - Set explicit voxel sizes or radii only when debugging or when a deployment has benchmarked map-specific production values. A zero explicit value keeps the autoscaled `*Ratio` behavior.
 - Leave `density.globalPruning.enabled` disabled unless endpoint-level pruning has been benchmarked for the target map family; it is useful as an optional coarse density control, but local pruning and spanner pruning are the topology-aware defaults.
 - Adjust one graph-shaping stage at a time. Compare connectivity, accepted-link density, link distribution, and build cost after each change.
+
+Rebuild cached graphs after upgrading from the previous corridor-pruning behavior. Serialized graphs retain their stored geometry and traversal flags; loading does not re-evaluate them against new build rules.
 
 Query the high-level graph with `IslandGraphPathfinder`:
 

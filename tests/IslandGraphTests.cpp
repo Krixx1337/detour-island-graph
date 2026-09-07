@@ -656,15 +656,19 @@ TEST_CASE("Builder density tuning") {
     }
     SUBCASE("Enabled pair scan suppression reduces projection work") {
         BuildConfig suppressionConfig = buildConfig;
+        suppressionConfig.gapDiscovery.maxVerticalGapDown = suppressionConfig.gapDiscovery.maxVerticalGapUp;
+        const BuildResult suppressionBaseline = builder.build(*navMesh, suppressionConfig);
+        REQUIRE(static_cast<bool>(suppressionBaseline));
         suppressionConfig.density.pairScanSuppression.enabled = true;
         suppressionConfig.density.pairScanSuppression.cellSize = 10.0f;
         const BuildResult result = builder.build(*navMesh, suppressionConfig);
         REQUIRE(static_cast<bool>(result));
         CHECK(result.stats.candidates.pairScanSuppressedCount > 0);
-        CHECK(result.stats.candidates.closestPointQueryCount <= baseline.stats.candidates.closestPointQueryCount);
+        CHECK(result.stats.candidates.closestPointQueryCount <= suppressionBaseline.stats.candidates.closestPointQueryCount);
     }
     SUBCASE("Short-gap recovery rescans boundaries after pair suppression") {
         BuildConfig recoveryConfig = buildConfig;
+        recoveryConfig.gapDiscovery.maxVerticalGapDown = recoveryConfig.gapDiscovery.maxVerticalGapUp;
         recoveryConfig.density.pairScanSuppression.enabled = true;
         recoveryConfig.density.pairScanSuppression.cellSize = 10.0f;
         recoveryConfig.density.shortGapRecovery.enabled = true;
@@ -1080,7 +1084,7 @@ TEST_CASE("Local pruning collapses only nearby 3D corridors across fragmented ta
     CHECK(hasLink(graph, 0, 2));
 }
 
-TEST_CASE("Distinct target reserve protects large-island targets from local pruning") {
+TEST_CASE("Local pruning preserves distinct targets without consuming reserve") {
     IslandGraph graph({makeIsland(0), makeIsland(1), makeIsland(2)});
     auto& islands = detour_island_graph::detail::IslandGraphAccess::islands(graph);
     islands[0].massScore = 1.0f;
@@ -1109,7 +1113,7 @@ TEST_CASE("Distinct target reserve protects large-island targets from local prun
     CHECK(hasLink(graph, 0, 1));
     CHECK(hasLink(graph, 0, 2));
     CHECK(graph.findIsland(0)->edgeIndices.size() == 2);
-    CHECK(stats.candidates.distinctTargetReserveCount == 1);
+    CHECK(stats.candidates.distinctTargetReserveCount == 0);
     CHECK(stats.candidates.localPruningRejectCount == 1);
 }
 
@@ -1289,7 +1293,7 @@ TEST_CASE("Vertical symmetry is independent from horizontal traversal range") {
         CHECK(hasLink(graph, 1, 0));
     }
 
-    SUBCASE("Unequal climb and drop preserve direction") {
+    SUBCASE("Unequal climb and drop allow both valid directions") {
         IslandGraph graph({makeIsland(0), makeIsland(1)});
         BuildConfig config(30.0f, 4.0f, 15.0f);
         config.density.localPruning.enabled = false;
@@ -1301,7 +1305,7 @@ TEST_CASE("Vertical symmetry is independent from horizontal traversal range") {
         REQUIRE(pruneCandidates(graph, config, {}, stats, working) == BuildStatus::Success);
         REQUIRE(graph.edges().size() == 1);
         CHECK(hasLink(graph, 0, 1));
-        CHECK_FALSE(hasLink(graph, 1, 0));
+        CHECK(hasLink(graph, 1, 0));
     }
 }
 
@@ -1344,7 +1348,7 @@ TEST_CASE("Mass-aware global pruning collapses low-mass endpoint clutter proport
     BuildStats stats;
     std::vector<Link> candidates{
         Link{0, 1, {0.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, 10.0f, 0.0f},
-        Link{2, 3, {2.0f, 0.0f, 0.0f}, {20.0f, 0.0f, 0.0f}, 10.0f, 0.0f}};
+        Link{2, 3, {2.0f, 0.0f, 0.0f}, {12.0f, 0.0f, 0.0f}, 10.0f, 0.0f}};
 
     const BuildStatus status = pruneCandidates(graph, config, BuildOptions{}, stats, candidates);
 
