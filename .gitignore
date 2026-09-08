@@ -29,5 +29,6 @@
 *.exe
 *.lib
 *.obj
+!tests/fixtures/real/**/*.obj
 *.o
 *.pdb
