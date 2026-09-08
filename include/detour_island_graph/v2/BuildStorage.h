@@ -24,7 +24,9 @@ public:
     using value_type = T;
     using propagate_on_container_move_assignment = std::true_type;
     using propagate_on_container_swap = std::true_type;
-    BuildAllocator() noexcept : account_(detail::currentAllocationAccount()) {}
+    // MSVC debug containers allocate iterator proxies in their default
+    // constructors. Keep those constructors throwable when the budget fails.
+    BuildAllocator() : account_(detail::currentAllocationAccount()) {}
     template<class U> BuildAllocator(const BuildAllocator<U>& other) noexcept : account_(other.account_) {}
     BuildAllocator select_on_container_copy_construction() const noexcept { return {}; }
     T* allocate(std::size_t n) {

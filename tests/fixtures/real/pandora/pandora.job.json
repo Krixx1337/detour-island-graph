@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "objPath": "pandora.obj",
+  "outputPath": "pandora.nav",
+  "sourceId": "pandora",
+  "sourceScale": 0.05,
+  "sourceUpAxis": "Z",
+  "mode": "navmesh",
+  "recastSettings": {
+    "schemaVersion": 1,
+    "cellSize": 0.3,
+    "cellHeight": 0.1,
+    "agentHeight": 1.71875,
+    "agentRadius": 1.1,
+    "agentMaxClimb": 0.65,
+    "agentMaxSlope": 44.0,
+    "regionMinSize": 5.0,
+    "regionMergeSize": 18.0,
+    "partitionType": "Layer",
+    "edgeMaxLen": 8.0,
+    "edgeMaxError": 0.75,
+    "vertsPerPoly": 6.0,
+    "detailSampleDist": 4.0,
+    "detailSampleMaxError": 0.75,
+    "tileSize": 128,
+    "workerThreads": 1
+  },
+  "protectOutput": false
+}

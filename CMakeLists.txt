@@ -139,6 +139,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
     add_executable(detour_island_graph_tests
         tests/IslandGraphTests.cpp
         tests/V2BudgetTests.cpp
+        tests/V2RealFixtureTests.cpp
         tests/V2BuildTests.cpp
         tests/V2SamplingTests.cpp
         tests/V2DiscoveryTests.cpp
@@ -151,6 +152,8 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
             detour_island_graph
             doctest::doctest
     )
+    target_compile_definitions(detour_island_graph_tests PRIVATE
+        DIG_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/real")
 
     # Keep Release builds clean: only auto-build tests in Debug.
     set_target_properties(detour_island_graph_tests PROPERTIES
