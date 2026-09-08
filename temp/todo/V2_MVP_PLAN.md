@@ -5,8 +5,11 @@ an extractor-owned post-assembly traversal-build stage.
 This document controls MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records
 delivered code and gaps. Requirements below are not claims of implementation.
 
-Current execution scope: library implementation first; benchmarking is deferred
-by user request. Host migration and its acceptance gates remain future work.
+Current execution scope: extractor integration has resumed; benchmarking remains
+deferred by user request. Final mesh assembly, teleport validation, pinned DIG
+dependency, optional collision capture and snapshot coverage assessment are in
+place. DAT/OBJ coverage remains incomplete by default. Traversal Job wiring,
+matched graph delivery, host migration and their acceptance gates remain future work.
 
 ## Direction
 

@@ -348,13 +348,20 @@ heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Continue library-only work; benchmarking and extractor/host integration remain deferred.
+Extractor integration has resumed. Gw2CollisionExtractor now owns final navmesh
+assembly, the execution-matched teleport destination validator, a pinned DIG
+dependency, optional unfiltered collision capture, and owned collision snapshots.
+Coverage assessment requires an explicit trusted source-domain declaration and
+rejects partial parsing or capture defects. Ordinary DAT/OBJ evidence remains
+incomplete; synthetic complete scenes exercise positive strict validation.
+
+1. Establish real source coverage and calibrated host movement inputs, then wire
+   the extractor traversal Job contract and matched graph delivery. Current CLI
+   does not execute traversal or export a graph; live-game completeness is unproven.
 2. Add soft/strict area preference and lazy native Detour transfers with checked
    query anchors and bounded per-query transfer cache.
 3. Add the narrow opt-in minimum-area policy, remaining diagnostics and dirty-map
    fixtures, and update persistence when those contracts change.
-4. Integrate the dedicated extractor post-assembly stage and execution-matched
-   collision validator, matched graph transport, checked host loading, and link-only
-   rebuilds when integration resumes. Use the bounded production APIs.
+4. Add checked host loading and link-only rebuilds using bounded production APIs.
 5. Benchmark before host migration and package version 2.0.0. Measure candidate
    memory and routing latency before adopting spans or regional routing.
