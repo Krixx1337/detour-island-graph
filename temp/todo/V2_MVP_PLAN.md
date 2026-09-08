@@ -1,6 +1,7 @@
 # DetourIslandGraph V2 MVP
 
-Revised 2026-09-08 after confirmation of raw collision and an owned Recast pipeline.
+Revised 2026-09-08 after inspection of the owned Recast pipeline and selection of
+an extractor-owned post-assembly traversal-build stage.
 This document controls MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records
 delivered code and gaps. Requirements below are not claims of implementation.
 
@@ -36,7 +37,7 @@ thin vertical traversal surfaces can be legitimate. Autonomous cleanup from fina
 navmesh geometry is useful as an explicitly lossy policy, not an MVP guarantee.
 
 Keep portable final-navmesh input. Allow frozen collision access or retained bake
-data through the host. Generate traversals adjacent to baking when useful without
+data through the calling application. Generate traversals beside baking without
 requiring Recast internals or retaining all heightfields. Remain C++17 with no new
 third-party dependencies. Movement execution stays in the host.
 
@@ -55,21 +56,107 @@ Use fixtures and recorded settings, with no claimed garbage-removal percentage.
 Collision checks can reject blocked crossings into sealed geometry; they do not
 prove that an open interior belongs to the intended playable world.
 
+### Traversal-build placement and ownership
+
+V2 runs as a dedicated stage in Gw2CollisionExtractor after ground baking and
+assembly of every tile in the declared snapshot into a frozen final `dtNavMesh`.
+Retain matching collision through validation, then export the navmesh and compiled
+graph for the host. Do not generate jumps inside individual Recast tile builds.
+
+DetourIslandGraph owns portable topology, sampling, discovery, validation contracts,
+and graph compilation. The extractor owns collision lifetime, acceleration queries,
+final mesh assembly, and execution of the build stages. The host supplies versioned
+movement settings and policies, schedules worker jobs, and owns routing, movement
+execution, cache acceptance, and immutable publication. Implement the validator
+outside the portable library with semantics matching the host controller. Keep one
+builder and one versioned movement definition across producer and consumer.
+
+Inspection of `C:/Users/User/source/repos/Gw2CollisionExtractor` established:
+
+- `src/Processors/NavMesh/RecastProcessor.cpp` builds Detour tile blobs and writes
+  them with `tileRef = 0`; it does not assemble a final `dtNavMesh`. The consumer's
+  `Assets/Loaders/RecastMeshLoader.cpp` assembles the mesh using `addTile` with
+  automatically assigned references. Final native connectivity and polygon
+  anchors must be established before V2 extraction.
+- `BuildNavRegions` frees the solid heightfield after compact-heightfield
+  construction. `BuildPolyMesh` frees compact data after detail-mesh construction.
+  Retaining heightfields requires explicit lifetime and memory changes. Existing
+  tile borders are sized for ground baking, not arbitrary cross-tile trajectories.
+- Indexed collision triangles and `rcChunkyTriMesh` remain available during
+  `Generate`. The chunk index offers horizontal broad-phase queries, not an
+  agent-volume collision validator. Reuse is possible only with a suitable
+  narrow-phase implementation and frozen lifetime.
+- `src/Core/ExtractionPipeline.cpp` can filter underwater geometry, omit blockers,
+  and continue after HAVK parse failure. Collision export is a separate debug-only
+  mode; the production navmesh output does not hand collision to the host.
+  Successful baking alone does not establish complete collision evidence.
+
+Inspection of `E:/Projects/CPP/kx-vision-private2/GW2NavMeshBuilder` and the host
+loaders also established:
+
+- `GW2NavMeshBuilder.cpp` reads OBJ, bakes tile blobs, and writes `.nav` with zero
+  tile references. It supplies neither final mesh assembly nor a jump validator.
+- `CollisionMeshLoader.cpp` can load `.gw2mesh` and build a horizontal spatial grid.
+  This is collision-loading support, not an existing swept-agent validator.
+- `MapAssetService` selects Recast or collision data; both loaders clear their
+  destination. Paired navmesh/collision snapshots need separate ownership and
+  lifecycle work before host-side generation could use them together.
+- `Gw2MeshFormat.h` uses map-wide 16-bit coordinate quantization and lacks collision
+  revision, transform, and coverage metadata. Authoritative clearance from this
+  format would require stronger identity and explicit quantization-error handling.
+
+Prefer worker generation for MVP because collision is already resident during the
+bake and routing needs the compiled graph. Avoid mandatory collision export,
+decode, indexing, and map-sized collision storage in the host. Preserve obstacles
+needed for execution checks independently of ground walkability policy; record
+omissions and return Unknown where collision coverage is insufficient. Collision
+availability alone does not mean the validator has shipped.
+
+Keep the library C++17 without GW2 parsing, Recast heightfield dependencies, or host
+controller logic. Extend the extractor's stateless job/output contract explicitly
+for movement settings and compiled graph delivery. Update its
+`docs/timeless-cli-architecture.md`, job schema, reporting, and consumer contracts
+together. The host still owns UX and policy; no extractor-owned presets are needed.
+
+Split worker build/assemble/validate/write boundaries. Export a matched navmesh and
+graph with versioned identity and a checked polygon-reference contract. Current
+zero tile refs and automatic loader assignment are not sufficient proof that
+worker graph refs match host refs. Establish matching assembly/ref identity or
+checked anchor remapping, with compatible Detour configuration, before publication.
+Native off-mesh export and a separate traversal executable remain outside MVP.
+
+Provide a link-only worker rebuild path using the existing compatible navmesh.
+After the extractor exits, raw collision and its index are gone: movement changes
+require matching collision re-extraction, or a future worker-readable collision
+cache. Re-extraction must not force Recast rebaking. Reuse resident collision/index
+within a job; do not promise cross-job reuse without persistence. A worker-owned
+collision cache and host collision loading remain optional future work, justified
+by repeated tuning costs or an actual runtime collision-query requirement.
+
+Placement alone does not reduce candidate count or prove a speedup. Prioritize
+bounded batches, spatial destination queries, cheap directional rejection, exact
+deduplication, and collision broad-phase queries over swept trajectory bounds.
+Reuse compatible navmesh and collision acceleration across movement rebuilds.
+Consider a 3D collision index for stacked maps only when measurements justify it;
+retaining all bake intermediates is not the default optimization.
+
 ## 1. Topology and domain contracts
 
 Split `extractAndSample` into topology extraction and independently scheduled
 boundary sampling. Retain a convenience wrapper. Proposed flow:
 
 ```text
-Raw collision -> Recast bake -> frozen final navmesh
-Matching collision snapshot -> host clearance queries
-Frozen mesh and host evidence
+Extractor: raw collision -> Recast tile bake -> assembly -> frozen final dtNavMesh
+Matching resident collision -> execution-matched clearance queries
+Dedicated extractor traversal-build stage using DetourIslandGraph
+    -> frozen mesh, collision evidence, and host-supplied movement profile
     -> native topology and metrics
     -> domain policy and seed resolution
     -> selected-island sampling, discovery, directional validation
     -> frontier expansion when seeded mode is selected
     -> immutable graph with domain coverage and provenance
-    -> routing with host costs and native transfers
+    -> export matched navmesh and compiled graph
+Host: checked load/publication -> routing with host costs and native transfers
 ```
 
 - Flood-fill eligible reciprocal native ground connectivity only. Generated
@@ -104,7 +191,7 @@ deployment, with explicit geometric fallback:
    deterministic order. Area-prioritized scheduling is optional and must preserve
    completed output; it does not reduce total work.
 3. Sample and discover crossings across the declared domain in bounded batches.
-4. Apply directional eligibility and host collision/execution validation. Compile
+4. Apply directional eligibility and execution-matched collision validation. Compile
    ValidatedOnly when the required checks are implemented. Without sufficient
    evidence, retain Unknown and use only explicit GeometricOnly output.
 5. Preserve every island's domain state and every accepted direction's provenance.
@@ -140,7 +227,7 @@ anchors and a real traversal validator:
 5. Process newly active islands until frontier exhaustion. Reverse-only acceptance
    does not expand forward reach. Preserve AB and BA results independently.
 
-Trusted seeded expansion requires a supplied host validator. Unknown directions
+Trusted seeded expansion requires a supplied execution-matched validator. Unknown directions
 do not activate islands in this mode. Keep this contract separate from any future
 geometric subset mode; the latter does not establish a trusted seeded domain.
 
@@ -193,10 +280,10 @@ publishable graph. Never thin samples silently or publish an interrupted frontie
 as complete. Cancellation and callback failures abort publication through all
 stages. Failed rebuilds preserve the previous compatible immutable graph.
 
-## 4. Traversal evidence and host validation
+## 4. Traversal evidence and execution-matched validation
 
-Raw collision is available. Ship one working host validator matching actual gap
-execution as part of host acceptance. A callback contract alone is insufficient.
+Raw collision is available in the extractor. Ship one working worker-side validator
+matching actual host gap execution as part of integration acceptance. A callback contract alone is insufficient.
 Current library-only work keeps this integration boundary testable; it does not
 claim that the real validator has shipped. Missing evidence stays Unknown.
 
@@ -299,7 +386,14 @@ supplies execution-specific costs, units, and adapter integration.
 - Unversioned custom build semantics disable persistent reuse. Validate decoded
   counts, geometry, refs, mappings, direction states, and coverage consistency.
 - Preserve protected-cache wrapping, atomic replacement, revision checks, and
-  immutable publication. Persist compiled graphs only in MVP.
+  immutable publication. Deliver navmesh and compiled graph as a matched revision;
+  reject mixed, incomplete, or incompatible outputs and preserve the previous
+  compatible publication on failure. Among V2 artifacts, persist compiled graphs
+  only in MVP; intermediate discovery/validation artifacts remain in memory.
+- Version the worker graph delivery contract and verify polygon references after
+  host loading. Test tile order, reference assignment, Detour configuration, and
+  stale/mismatched graph rejection. Add a link-only job path that loads the existing
+  navmesh and re-extracts matching collision without rebaking ground geometry.
 - Migrate adapter, settings, callbacks, reports, UI, and cache together. Remove
   retired heuristic controls; expose soft versus strict policy and seeded-domain
   coverage. Keep existing maintenance lane and host movement ownership.
@@ -363,10 +457,15 @@ checks explicitly; do not mark them passed.
    serialization, diagnostics, and dirty-mesh regression fixtures. Reapplying a
    policy that restores unsampled islands requires discovery for those islands;
    retained metrics alone cannot recover omitted crossings.
-4. When host work resumes, connect the existing bake pipeline's frozen collision to
-   an execution-matched validator and run V2 after final mesh assembly. This is now
-   a concrete host acceptance task. Keep trusted seeded mode tested; seeds remain
-   optional. Validate clearance fixtures before claiming ValidatedOnly readiness.
+4. When integration work resumes, add final mesh assembly and the dedicated V2
+   traversal stage to Gw2CollisionExtractor while matching collision is resident.
+   Implement the execution-matched validator, host-supplied movement job settings,
+   matched navmesh/graph delivery, and checked host loading/reference identity.
+   Add link-only rebuilds using existing navmesh and matching collision
+   re-extraction. Version collision coverage/transform, movement semantics, and
+   cache identity together. Keep trusted seeded mode tested; seeds remain optional.
+   Validate clearance, missing-collision, export/load, and rebuild fixtures before
+   claiming ValidatedOnly readiness or switching the host to V2.
 5. Benchmark later per current user direction. Then resolve measured blockers and
    complete host migration, diagnostics/UI, cache replacement, and package version.
 
@@ -374,8 +473,9 @@ Deferred: universal collision engine or physical jump solver, authoritative
 automatic interior classifier or sink pruning, built-in shape/statistical
 classifiers, auto-seeded geometric subset builds, multiple movement profiles per
 artifact, spans and approximate pruning, regional routing and same-island shortcuts,
-incremental tile builds, artifact disk caches, cross-query transfer caches, worker
-parallelization, and new dependencies.
+incremental tile builds, intermediate V2 artifact disk caches, worker collision
+caches, paired host collision loading, cross-query transfer caches, traversal worker
+parallelization, native off-mesh export, and new dependencies.
 
 Reconsider spans if measured candidate volume defeats bounded exact-only processing.
 Reconsider regional routing if portal expansion/native transfers miss latency

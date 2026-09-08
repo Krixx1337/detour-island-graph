@@ -9,6 +9,7 @@
 #include <vector>
 #include <sstream>
 #include <stdexcept>
+#include <limits>
 
 namespace {
 using namespace detour_island_graph::v2;
@@ -47,6 +48,7 @@ Mesh makeMesh(const std::vector<Rect>& rects) {
     params.bmax[0] = 10;
     params.bmax[1] = 5;
     params.bmax[2] = 10;
+    for (const auto& r : rects) params.bmax[1] = (std::max)(params.bmax[1], float(r.y + 1));
     params.walkableHeight = 2;
     params.walkableRadius = 0.5f;
     params.walkableClimb = 0.5f;
@@ -237,7 +239,7 @@ TEST_CASE("V2 pipeline empty input succeeds with an empty graph") {
     CHECK(result.status == StageStatus::Success);
     REQUIRE(result.compilation.value);
     CHECK((**result.compilation.value).crossings().empty());
-    CHECK((**result.compilation.value).offsets() == std::vector<std::size_t>{0});
+    CHECK((**result.compilation.value).offsets() == BuildVector<std::size_t>{0});
 }
 
 TEST_CASE("V2 pipeline propagates stage failures with no graph") {
@@ -284,4 +286,327 @@ TEST_CASE("V2 pipeline honors supplied validators end to end") {
     REQUIRE(result.compilation.value);
     CHECK_FALSE((**result.compilation.value).crossings().empty());
     CHECK(result.validation.stats.validDirections > 0);
+}
+
+
+namespace {
+ProductionBuildOptions productionOptions() {
+    ProductionBuildOptions o;
+    o.limits = {64 * 1024 * 1024, 1000000, 10000, 10000, 10000, 10000, 10000, 20000};
+    o.sampleBatchSize = 3;
+    o.candidateBatchSize = 5;
+    return o;
+}
+DiscoveryConfig boundedConfig() { auto c = config(); c.maxSamples = 10000; c.maxCandidates = 10000; return c; }
+std::string graphBytes(const CompiledGraph& graph) {
+    std::ostringstream out(std::ios::binary);
+    REQUIRE(GraphSerializer::write(out, graph) == SerializationStatus::Success);
+    return out.str();
+}
+}
+
+TEST_CASE("V2 bounded exhaustive matches reference across batches and directional policies") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}, {8, 0, 10, 2, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    input.identity = {1, 2, 3, 4, 5, 6, 1, 7};
+    ValidationOptions validation;
+    CompileOptions compilation;
+    SUBCASE("geometric unknown") {}
+    SUBCASE("directional validation") {
+        validation.validator = [](const ValidationRequest& r) {
+            return ValidationResult{r.from.island < r.to.island ? ValidationState::Valid : ValidationState::Invalid, 42};
+        };
+        compilation.policy = CompilePolicy::ValidatedOnly;
+    }
+    SUBCASE("excluded destination") {
+        input.islandPolicy = [](IslandId i, const IslandMetrics&) {
+            return IslandDomain{i == 1 ? DomainState::Excluded : DomainState::Included, 17};
+        };
+    }
+    SUBCASE("outbound policy") { validation.outboundPolicy = [](IslandId i) { return i != 1; }; }
+    const auto c = boundedConfig();
+    const auto reference = buildGraph(input, c, validation, compilation);
+    REQUIRE(reference.compilation.value);
+    const auto expected = graphBytes(**reference.compilation.value);
+    std::size_t work = 0;
+    for (std::size_t batch : {1u, 2u, 7u, 1000u}) {
+        auto o = productionOptions();
+        o.sampleBatchSize = batch;
+        o.candidateBatchSize = batch + 1;
+        auto built = buildGraphBounded(input, c, o, validation, compilation);
+        REQUIRE(built.status == StageStatus::Success);
+        REQUIRE(built.graph);
+        CHECK(graphBytes(*built.graph) == expected);
+        CHECK(built.stats.samples == reference.sampling.stats.samples);
+        CHECK(built.stats.sampleDuplicates == reference.sampling.stats.sampleDuplicates);
+        CHECK(built.stats.candidatesVisited == reference.discovery.stats.candidatesVisited);
+        CHECK(built.stats.exactDuplicates == reference.validation.stats.exactDuplicates);
+        CHECK(built.stats.validatorCalls == reference.validation.stats.validatorCalls);
+        CHECK(built.budget.exhausted == BudgetResource::None);
+        CHECK(built.budget.peakAllocationBytes > 0);
+        CHECK(built.budget.peakSampleBatch <= o.sampleBatchSize);
+        CHECK(built.budget.peakCandidateBatch <= o.candidateBatchSize);
+        if (work) CHECK(built.budget.workUnits == work);
+        work = built.budget.workUnits;
+    }
+}
+
+TEST_CASE("V2 bounded production permits exact resource caps and rejects next operation") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}, {8, 0, 10, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    const auto config = boundedConfig();
+    const auto options = productionOptions();
+    auto baseline = buildGraphBounded(input, config, options);
+    REQUIRE(baseline.graph);
+    struct Case { std::size_t BuildLimits::*field; std::size_t used; BudgetResource resource; };
+    const Case cases[] = {
+        {&BuildLimits::maxAllocationBytes, baseline.budget.peakAllocationBytes, BudgetResource::AllocationBytes},
+        {&BuildLimits::maxWorkUnits, baseline.budget.workUnits, BudgetResource::WorkUnits},
+        {&BuildLimits::maxTopologyPolygons, baseline.stats.eligiblePolygons, BudgetResource::TopologyPolygons},
+        {&BuildLimits::maxBoundaryIntervals, baseline.stats.boundaryIntervals, BudgetResource::BoundaryIntervals},
+        {&BuildLimits::maxNearbyRefsPerQuery, baseline.budget.peakNearbyRefs, BudgetResource::NearbyRefsPerQuery},
+        {&BuildLimits::maxUniqueCrossings, baseline.budget.uniqueCrossings, BudgetResource::UniqueCrossings},
+        {&BuildLimits::maxCompiledCrossings, baseline.stats.compiledCrossings, BudgetResource::CompiledCrossings},
+        {&BuildLimits::maxCompiledDirections, baseline.stats.compiledDirections, BudgetResource::CompiledDirections}
+    };
+    const auto expected = graphBytes(*baseline.graph);
+    for (auto item : cases) {
+        CAPTURE(int(item.resource));
+        REQUIRE(item.used > 1);
+        auto exact = options;
+        exact.limits.*item.field = item.used;
+        auto succeeded = buildGraphBounded(input, config, exact);
+        REQUIRE(succeeded.graph);
+        CHECK(graphBytes(*succeeded.graph) == expected);
+        exact.limits.*item.field = item.used - 1;
+        auto failed = buildGraphBounded(input, config, exact);
+        CHECK(failed.status == StageStatus::BudgetExceeded);
+        CHECK_FALSE(failed.graph);
+        CHECK(failed.budget.exhausted == item.resource);
+        CHECK(failed.budget.limit == item.used - 1);
+        CHECK(failed.budget.attempted > failed.budget.limit);
+        CHECK(failed.budget.peakAllocationBytes <= exact.limits.maxAllocationBytes);
+    }
+    for (bool sampleLimit : {false, true}) {
+        auto c = config;
+        auto& cap = sampleLimit ? c.maxSamples : c.maxCandidates;
+        cap = sampleLimit ? baseline.stats.samples : baseline.stats.candidatesVisited;
+        REQUIRE(buildGraphBounded(input, c, options).graph);
+        --cap;
+        const auto failed = buildGraphBounded(input, c, options);
+        CHECK(failed.status == StageStatus::BudgetExceeded);
+        CHECK_FALSE(failed.graph);
+        CHECK(failed.budget.exhausted == (sampleLimit ? BudgetResource::Samples : BudgetResource::Candidates));
+    }
+    // Failed rebuild never touches the caller's previous publication.
+    CHECK(graphBytes(*baseline.graph) == expected);
+}
+
+TEST_CASE("V2 bounded rejected and duplicate candidates still consume global budgets") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    ValidationOptions validation;
+    validation.validator = [](const ValidationRequest&) { return ValidationResult{ValidationState::Invalid, 1}; };
+    auto o = productionOptions();
+    o.sampleBatchSize = o.candidateBatchSize = 1;
+    auto good = buildGraphBounded(input, boundedConfig(), o, validation);
+    REQUIRE(good.graph);
+    CHECK(good.graph->crossings().empty());
+    CHECK(good.stats.exactDuplicates > 0);
+    CHECK(good.budget.uniqueCrossings > 0);
+    CHECK(good.stats.candidatesVisited > good.budget.uniqueCrossings);
+    CHECK(good.stats.validatorCalls == 2 * good.budget.uniqueCrossings);
+    o.limits.maxUniqueCrossings = good.budget.uniqueCrossings - 1;
+    auto failed = buildGraphBounded(input, boundedConfig(), o, validation);
+    CHECK(failed.status == StageStatus::BudgetExceeded);
+    CHECK_FALSE(failed.graph);
+    CHECK(failed.budget.exhausted == BudgetResource::UniqueCrossings);
+}
+
+TEST_CASE("V2 bounded seeded frontier matches reference and budgets span islands") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}, {8, 0, 10, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    auto extracted = extractTopology(input);
+    REQUIRE(extracted.value);
+    SeededBuildOptions seeds;
+    seeds.seedIdentity = 31;
+    seeds.seeds = {{0, extracted.value->topology.polygons[0].polygon, {1, 0, 1}}};
+    ValidationState forward = ValidationState::Valid;
+    SUBCASE("valid chain") {}
+    SUBCASE("unknown does not expand") { forward = ValidationState::Unknown; }
+    SUBCASE("reverse does not expand") { forward = ValidationState::Invalid; }
+    ValidationOptions validation;
+    validation.validator = [&](const ValidationRequest& r) {
+        return ValidationResult{r.from.island < r.to.island ? forward : ValidationState::Valid, 9};
+    };
+    auto c = boundedConfig();
+    auto reference = buildSeededGraph(input, c, seeds, validation);
+    REQUIRE(reference.value);
+    const auto expected = graphBytes(**reference.value);
+    for (std::size_t batch : {1u, 5u, 1000u}) {
+        auto o = productionOptions();
+        o.sampleBatchSize = o.candidateBatchSize = batch;
+        auto built = buildSeededGraphBounded(input, c, seeds, o, validation);
+        REQUIRE(built.graph);
+        CHECK(graphBytes(*built.graph) == expected);
+        CHECK(built.stats.samples == reference.stats.samples);
+        CHECK(built.stats.candidatesVisited == reference.stats.candidatesVisited);
+        auto capped = c;
+        capped.maxSamples = built.stats.samples;
+        capped.maxCandidates = built.stats.candidatesVisited;
+        REQUIRE(buildSeededGraphBounded(input, capped, seeds, o, validation).graph);
+        --capped.maxSamples;
+        auto failed = buildSeededGraphBounded(input, capped, seeds, o, validation);
+        CHECK(failed.status == StageStatus::BudgetExceeded);
+        CHECK_FALSE(failed.graph);
+    }
+}
+
+TEST_CASE("V2 bounded cancellation callback failures and invalid controls publish nothing") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    auto o = productionOptions();
+    auto c = boundedConfig();
+    ValidationOptions v;
+    CompileOptions compilation;
+    auto expected = StageStatus::Canceled;
+    SUBCASE("input cancel") { input.canceled = [] { return true; }; }
+    SUBCASE("validation cancel") { v.canceled = [] { return true; }; }
+    SUBCASE("compilation cancel applies throughout") { compilation.canceled = [] { return true; }; }
+    SUBCASE("polygon callback exception") {
+        input.polygonFilter = [](dtPolyRef, const dtMeshTile&, const dtPoly&) -> bool { throw std::runtime_error("test"); };
+        expected = StageStatus::CallbackFailed;
+    }
+    SUBCASE("validator bad_alloc remains callback failure") {
+        v.validator = [](const ValidationRequest&) -> ValidationResult { throw std::bad_alloc(); };
+        expected = StageStatus::CallbackFailed;
+    }
+    SUBCASE("cancel callback exception") {
+        compilation.canceled = []() -> bool { throw std::runtime_error("test"); };
+        expected = StageStatus::CallbackFailed;
+    }
+    SUBCASE("unset limits") { o = {}; expected = StageStatus::InvalidInput; }
+    SUBCASE("zero candidate batch") { o.candidateBatchSize = 0; expected = StageStatus::InvalidInput; }
+    SUBCASE("uncapped samples forbidden") { c.maxSamples = 0; expected = StageStatus::InvalidInput; }
+    auto result = buildGraphBounded(input, c, o, v, compilation);
+    CHECK(result.status == expected);
+    CHECK_FALSE(result.graph);
+}
+
+TEST_CASE("V2 bounded every cancellation checkpoint releases unpublished graph") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    std::size_t calls = 0;
+    std::size_t stop = (std::numeric_limits<std::size_t>::max)();
+    input.canceled = [&] { return ++calls == stop; };
+    auto reference = buildGraphBounded(input, boundedConfig(), productionOptions());
+    REQUIRE(reference.graph);
+    const auto total = calls;
+    const auto bytes = graphBytes(*reference.graph);
+    // Includes topology, collector, all compilation loops, and final publication.
+    for (stop = 1; stop <= total; ++stop) {
+        calls = 0;
+        auto result = buildGraphBounded(input, boundedConfig(), productionOptions());
+        CHECK(result.status == StageStatus::Canceled);
+        CHECK_FALSE(result.graph);
+    }
+    CHECK(graphBytes(*reference.graph) == bytes);
+}
+
+TEST_CASE("V2 bounded callbacks can reenter without inheriting allocation or work budgets") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    auto normal = buildGraphBounded(input, boundedConfig(), productionOptions());
+    REQUIRE(normal.graph);
+    auto limits = productionOptions();
+    limits.limits.maxAllocationBytes = normal.budget.peakAllocationBytes;
+    ValidationOptions v;
+    v.validator = [&](const ValidationRequest&) {
+        auto inner = buildGraphBounded(input, boundedConfig(), productionOptions());
+        CHECK(inner.status == StageStatus::Success);
+        return ValidationResult{};
+    };
+    auto nested = buildGraphBounded(input, boundedConfig(), limits, v);
+    REQUIRE(nested.graph);
+    CHECK(nested.budget.peakAllocationBytes == normal.budget.peakAllocationBytes);
+    // Returned storage outlives build scope; another independent build cannot affect it.
+    CHECK(nested.graph->crossings().size() == normal.graph->crossings().size());
+    CHECK_FALSE(graphBytes(*nested.graph).empty());
+}
+
+
+TEST_CASE("V2 bounded collector rejects dense stacked query before a 65th ref is stored") {
+    std::vector<Rect> rects;
+    for (unsigned short y = 0; y < 80; ++y) rects.push_back({0, 0, 2, 2, y});
+    auto mesh = makeMesh(rects);
+    BuildInput input;
+    input.navMesh = mesh.get();
+    auto c = boundedConfig();
+    c.maxClimb = c.maxDrop = 100;
+    auto options = productionOptions();
+    options.limits.maxNearbyRefsPerQuery = 64;
+    auto result = buildGraphBounded(input, c, options);
+    CHECK(result.status == StageStatus::BudgetExceeded);
+    CHECK_FALSE(result.graph);
+    CHECK(result.budget.exhausted == BudgetResource::NearbyRefsPerQuery);
+    CHECK(result.budget.peakNearbyRefs == 64);
+    CHECK(result.budget.attempted == 65);
+    CHECK(result.stats.discoveryQueries == 1);
+    CHECK(result.stats.validatorCalls == 0);
+}
+
+TEST_CASE("V2 bounded empty domain is complete and seeded input remains checked") {
+    auto mesh = makeMesh({{0, 0, 2, 2}, {4, 0, 6, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    SUBCASE("excluded all") {
+        input.islandPolicy = [](IslandId, const IslandMetrics&) { return IslandDomain{DomainState::Excluded, 1}; };
+        auto r = buildGraphBounded(input, boundedConfig(), productionOptions());
+        REQUIRE(r.graph);
+        CHECK(r.graph->coverage().complete);
+        CHECK(r.stats.excludedIslands == 2);
+        CHECK(r.stats.samples == 0);
+        CHECK(r.graph->crossings().empty());
+    }
+    SUBCASE("no eligible polygons") {
+        input.polygonFilter = [](dtPolyRef, const dtMeshTile&, const dtPoly&) { return false; };
+        auto r = buildGraphBounded(input, boundedConfig(), productionOptions());
+        REQUIRE(r.graph);
+        CHECK(r.graph->offsets().size() == 1);
+        CHECK(r.stats.samples == 0);
+    }
+    SUBCASE("bad required seed") {
+        SeededBuildOptions seeds;
+        seeds.seeds = {{0, 0, {1, 0, 1}}};
+        ValidationOptions validation;
+        validation.validator = [](const ValidationRequest&) { return ValidationResult{ValidationState::Valid, 0}; };
+        auto r = buildSeededGraphBounded(input, boundedConfig(), seeds, productionOptions(), validation);
+        CHECK(r.status == StageStatus::InvalidInput);
+        CHECK_FALSE(r.graph);
+    }
+}
+
+
+TEST_CASE("V2 bounded invalid geometry settings are rejected before allocations and callbacks") {
+    auto mesh = makeMesh({{0, 0, 2, 2}});
+    BuildInput input;
+    input.navMesh = mesh.get();
+    int calls = 0;
+    input.canceled = [&] { ++calls; return false; };
+    auto c = boundedConfig();
+    c.sampleSpacing = 0;
+    auto o = productionOptions();
+    o.limits.maxAllocationBytes = 1;
+    auto r = buildGraphBounded(input, c, o);
+    CHECK(r.status == StageStatus::InvalidInput);
+    CHECK_FALSE(r.graph);
+    CHECK(r.budget.peakAllocationBytes == 0);
+    CHECK(calls == 0);
 }

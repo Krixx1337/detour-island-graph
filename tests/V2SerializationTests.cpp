@@ -186,7 +186,7 @@ TEST_CASE("V2 serialization round-trips empty graphs") {
     CHECK(decoded.status == SerializationStatus::Success);
     REQUIRE(decoded.graph);
     CHECK(decoded.graph->crossings().empty());
-    CHECK(decoded.graph->offsets() == std::vector<std::size_t>{0});
+    CHECK(decoded.graph->offsets() == BuildVector<std::size_t>{0});
 }
 
 TEST_CASE("V2 serialization rejects foreign corrupt and hostile input") {

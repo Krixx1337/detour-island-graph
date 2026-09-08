@@ -1,4 +1,5 @@
 #include <detour_island_graph/v2/Build.h>
+#include "BuildBudget.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,7 +19,7 @@ void require(bool condition) {
 }
 
 void checkpoint(const Cancel& canceled) {
-    if (canceled && canceled()) throw Abort{StageStatus::Canceled};
+    detail::checkCancel(canceled);
 }
 
 bool finite(Point p) {
@@ -42,15 +43,16 @@ void validateConfig(const DiscoveryConfig& config) {
         require(std::isfinite(limit) && limit >= 0);
 }
 
-std::unordered_map<dtPolyRef, IslandId> indexTopology(const TopologyArtifact& topology, const Cancel& cancel) {
+BuildUnorderedMap<dtPolyRef, IslandId> indexTopology(const TopologyArtifact& topology, const Cancel& cancel) {
     require(std::isfinite(topology.identity.unitsPerMeter) && topology.identity.unitsPerMeter > 0);
     require(topology.islandCount <= topology.polygons.size());
     require(topology.islandCount <= (std::numeric_limits<IslandId>::max)());
-    std::unordered_map<dtPolyRef, IslandId> index;
-    std::vector<bool> seen(topology.islandCount, false);
-    std::vector<std::size_t> counts(topology.islandCount, 0);
+    BuildUnorderedMap<dtPolyRef, IslandId> index;
+    BuildVector<bool> seen(topology.islandCount, false);
+    BuildVector<std::size_t> counts(topology.islandCount, 0);
     for (const auto& entry : topology.polygons) {
         checkpoint(cancel);
+        detail::work();
         require(entry.polygon != 0 && entry.island < topology.islandCount);
         require(index.emplace(entry.polygon, entry.island).second);
         seen[entry.island] = true;
@@ -58,11 +60,13 @@ std::unordered_map<dtPolyRef, IslandId> indexTopology(const TopologyArtifact& to
     }
     for (bool present : seen) {
         checkpoint(cancel);
+        detail::work();
         require(present);
     }
     require(topology.metrics.empty() || topology.metrics.size() == topology.islandCount);
     for (std::size_t i = 0; i < topology.metrics.size(); ++i) {
         checkpoint(cancel);
+        detail::work();
         const auto& metric = topology.metrics[i];
         require(metric.polygonCount == counts[i]);
         require(std::isfinite(metric.surfaceArea) && metric.surfaceArea >= 0);
@@ -73,6 +77,7 @@ std::unordered_map<dtPolyRef, IslandId> indexTopology(const TopologyArtifact& to
     require(topology.domain.empty() || topology.domain.size() == topology.islandCount);
     for (const auto& decision : topology.domain) {
         checkpoint(cancel);
+        detail::work();
         require(decision.state == DomainState::Included || decision.state == DomainState::Excluded ||
             decision.state == DomainState::Unexplored);
         if (!topology.customDomainPolicy)
@@ -82,7 +87,7 @@ std::unordered_map<dtPolyRef, IslandId> indexTopology(const TopologyArtifact& to
     return index;
 }
 
-void validateAnchor(const Anchor& anchor, const std::unordered_map<dtPolyRef, IslandId>& index) {
+void validateAnchor(const Anchor& anchor, const BuildUnorderedMap<dtPolyRef, IslandId>& index) {
     const auto it = index.find(anchor.polygon);
     require(finite(anchor.position) && it != index.end() && it->second == anchor.island);
 }
@@ -127,10 +132,12 @@ DirectionResult evaluate(const Anchor& from, const Anchor& to, const BuildIdenti
     result.policyAllowed = allowed;
     if (result.geometricallyEligible && allowed && options.validator) {
         checkpoint(options.canceled);
+        detail::work();
         ++stats.validatorCalls;
-        result.validation = options.validator({from, to, identity});
+        result.validation = detail::callback(options.validator, ValidationRequest{from, to, identity});
         require(validState(result.validation.state));
         checkpoint(options.canceled);
+        detail::work();
     }
     countDirection(result, stats);
     return result;
@@ -157,6 +164,7 @@ StageResult<CrossingArtifact> validateCrossings(const TopologyArtifact& topology
     StageResult<CrossingArtifact> result;
     try {
         checkpoint(options.canceled);
+        detail::work();
         validateConfig(config);
         const auto index = indexTopology(topology, options.canceled);
         if (config.maxCandidates && candidates.size() > config.maxCandidates)
@@ -166,14 +174,16 @@ StageResult<CrossingArtifact> validateCrossings(const TopologyArtifact& topology
         artifact.discovery = config;
         artifact.validatorSupplied = bool(options.validator);
         artifact.customOutboundPolicy = bool(options.outboundPolicy);
-        std::vector<bool> allowed(topology.islandCount, true);
+        BuildVector<bool> allowed(topology.islandCount, true);
         for (std::size_t i = 0; i < allowed.size(); ++i) {
             checkpoint(options.canceled);
-            if (options.outboundPolicy) allowed[i] = options.outboundPolicy(static_cast<IslandId>(i));
+            detail::work();
+            if (options.outboundPolicy) allowed[i] = detail::callback(options.outboundPolicy, static_cast<IslandId>(i));
         }
-        std::map<CrossingKey, Crossing> unique;
+        detail::Map<CrossingKey, Crossing> unique;
         for (const auto& candidate : candidates) {
             checkpoint(options.canceled);
+            detail::work();
             ++result.stats.candidatesVisited;
             validateAnchor(candidate.a, index);
             validateAnchor(candidate.b, index);
@@ -198,12 +208,15 @@ StageResult<CrossingArtifact> validateCrossings(const TopologyArtifact& topology
         }
         for (auto& entry : unique) {
             checkpoint(options.canceled);
+            detail::work();
             artifact.crossings.push_back(std::move(entry.second));
         }
         checkpoint(options.canceled);
+        detail::work();
         result.value.emplace(std::move(artifact));
         result.status = StageStatus::Success;
     } catch (const Abort& error) { result.status = error.status; }
+    catch (const detail::BuildAbort& error) { result.status = error.status; }
     catch (const std::bad_alloc&) { result.status = StageStatus::OutOfMemory; }
     catch (...) { result.status = StageStatus::CallbackFailed; }
     return result;
@@ -213,10 +226,11 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
     CompileResult result;
     try {
         checkpoint(options.canceled);
+        detail::work();
         validateConfig(artifact.discovery);
         require(options.policy == CompilePolicy::GeometricOnly || options.policy == CompilePolicy::ValidatedOnly);
         require(options.policy != CompilePolicy::ValidatedOnly || artifact.validatorSupplied);
-        auto graph = std::make_shared<CompiledGraph>();
+        auto graph = std::allocate_shared<CompiledGraph>(BuildAllocator<CompiledGraph>{});
         graph->polygonIslands_ = indexTopology(artifact.topology, options.canceled);
         graph->identity_ = artifact.topology.identity;
         graph->discovery_ = artifact.discovery;
@@ -235,16 +249,19 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
             require(!graph->coverage_.seeds.empty());
             for (const auto& seed : graph->coverage_.seeds) {
                 checkpoint(options.canceled);
+                detail::work();
                 validateAnchor(seed, graph->polygonIslands_);
                 require(graph->includes(seed.island));
             }
             for (std::size_t i = 1; i < graph->coverage_.seeds.size(); ++i) {
                 checkpoint(options.canceled);
+                detail::work();
                 require(anchorKey(graph->coverage_.seeds[i - 1]) < anchorKey(graph->coverage_.seeds[i]));
             }
         } else require(graph->coverage_.seeds.empty() && graph->coverage_.seedIdentity == 0);
         for (const auto& decision : graph->domain_) {
             checkpoint(options.canceled);
+            detail::work();
             switch (decision.state) {
             case DomainState::Included: ++result.stats.includedIslands; break;
             case DomainState::Excluded: ++result.stats.excludedIslands; break;
@@ -258,10 +275,11 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
             (!artifact.topology.customDomainPolicy || id.domainPolicy) &&
             (!graph->coverage_.seeded || graph->coverage_.seedIdentity) &&
             (!artifact.validatorSupplied || (id.validator && id.environment));
-        std::map<CrossingKey, const Crossing*> unique;
-        std::vector<int> outbound(artifact.topology.islandCount, -1);
+        detail::Map<CrossingKey, const Crossing*> unique;
+        BuildVector<int> outbound(artifact.topology.islandCount, -1);
         for (const auto& crossing : artifact.crossings) {
             checkpoint(options.canceled);
+            detail::work();
             ++result.stats.candidatesVisited;
             validateAnchor(crossing.a, graph->polygonIslands_);
             validateAnchor(crossing.b, graph->polygonIslands_);
@@ -286,6 +304,7 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
         graph->offsets_.resize(artifact.topology.islandCount + 1, 0);
         for (const auto& entry : unique) {
             checkpoint(options.canceled);
+            detail::work();
             const auto& crossing = *entry.second;
             countDirection(crossing.ab, result.stats);
             countDirection(crossing.ba, result.stats);
@@ -293,34 +312,45 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
             const bool ab = usable(crossing.ab, options.policy);
             const bool ba = usable(crossing.ba, options.policy);
             if (!ab && !ba) continue;
+            if (detail::activeAccount) {
+                detail::limit(BudgetResource::CompiledCrossings, graph->crossings_.size(), 1,
+                    detail::activeAccount->limits.maxCompiledCrossings);
+                detail::limit(BudgetResource::CompiledDirections, result.stats.compiledDirections,
+                    std::size_t(ab) + std::size_t(ba), detail::activeAccount->limits.maxCompiledDirections);
+            }
+            result.stats.compiledDirections += std::size_t(ab) + std::size_t(ba);
             graph->crossings_.push_back({crossing, ab, ba});
             if (ab) ++graph->offsets_[crossing.a.island + 1];
             if (ba) ++graph->offsets_[crossing.b.island + 1];
         }
         for (std::size_t i = 1; i < graph->offsets_.size(); ++i) {
             checkpoint(options.canceled);
+            detail::work();
             graph->offsets_[i] += graph->offsets_[i - 1];
         }
         graph->traversals_.resize(graph->offsets_.back());
         auto next = graph->offsets_;
         for (std::size_t i = 0; i < graph->crossings_.size(); ++i) {
             checkpoint(options.canceled);
+            detail::work();
             const auto& compiled = graph->crossings_[i];
             if (compiled.traversableAB) graph->traversals_[next[compiled.crossing.a.island]++] = {i, false};
             if (compiled.traversableBA) graph->traversals_[next[compiled.crossing.b.island]++] = {i, true};
         }
         if (graph->coverage_.seeded) {
-            std::vector<bool> reached(graph->domain_.size(), false);
-            std::vector<IslandId> queue;
+            BuildVector<bool> reached(graph->domain_.size(), false);
+            BuildVector<IslandId> queue;
             for (const auto& seed : graph->coverage_.seeds) if (!reached[seed.island]) {
                 reached[seed.island] = true;
                 queue.push_back(seed.island);
             }
             for (std::size_t head = 0; head < queue.size(); ++head) {
                 checkpoint(options.canceled);
+                detail::work();
                 const auto island = queue[head];
                 for (auto i = graph->offsets_[island]; i < graph->offsets_[island + 1]; ++i) {
                     checkpoint(options.canceled);
+                    detail::work();
                     const auto traversal = graph->traversals_[i];
                     const auto& crossing = graph->crossings_[traversal.crossing].crossing;
                     const auto target = traversal.reverse ? crossing.a.island : crossing.b.island;
@@ -329,15 +359,18 @@ CompileResult compileGraph(const CrossingArtifact& artifact, const CompileOption
             }
             for (std::size_t i = 0; i < reached.size(); ++i) {
                 checkpoint(options.canceled);
+                detail::work();
                 require(!graph->includes(static_cast<IslandId>(i)) || reached[i]);
             }
         }
         checkpoint(options.canceled);
+        detail::work();
         result.stats.compiledCrossings = graph->crossings_.size();
         result.stats.compiledDirections = graph->traversals_.size();
         result.value.emplace(std::move(graph));
         result.status = StageStatus::Success;
     } catch (const Abort& error) { result.status = error.status; }
+    catch (const detail::BuildAbort& error) { result.status = error.status; }
     catch (const std::bad_alloc&) { result.status = StageStatus::OutOfMemory; }
     catch (...) { result.status = StageStatus::CallbackFailed; }
     return result;

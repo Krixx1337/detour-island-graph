@@ -1,4 +1,5 @@
 #include <detour_island_graph/v2/Build.h>
+#include "BuildBudget.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,7 +19,7 @@ void require(bool condition) {
 }
 
 void checkpoint(const Cancel& canceled) {
-    if (canceled && canceled()) throw Abort{StageStatus::Canceled};
+    detail::checkCancel(canceled);
 }
 
 Point vertex(const dtMeshTile& tile, const dtPoly& polygon, unsigned char index) {
@@ -43,16 +44,17 @@ struct Polygon {
     const dtMeshTile* tile;
     const dtPoly* poly;
     dtPolyRef ref;
-    std::vector<std::size_t> neighbors;
+    BuildVector<std::size_t> neighbors;
 };
 
-using PolygonIndex = std::unordered_map<dtPolyRef, std::size_t>;
+using PolygonIndex = BuildUnorderedMap<dtPolyRef, std::size_t>;
 
 // Native off-mesh links never participate. Internal neis and external edge links
 // describe walk adjacency; action links attached to a ground polygon do not.
 template <class Visitor>
 void visitNeighbors(const dtNavMesh& mesh, const Polygon& polygon, unsigned char edge,
     const PolygonIndex& index, const Cancel& canceled, Visitor visit) {
+    detail::work();
     const auto neighbor = polygon.poly->neis[edge];
     if (!neighbor) return;
     if (!(neighbor & DT_EXT_LINK)) {
@@ -64,6 +66,7 @@ void visitNeighbors(const dtNavMesh& mesh, const Polygon& polygon, unsigned char
     std::size_t visited = 0;
     for (auto linkIndex = polygon.poly->firstLink; linkIndex != DT_NULL_LINK;) {
         checkpoint(canceled);
+        detail::work();
         require(linkIndex < static_cast<unsigned int>(polygon.tile->header->maxLinkCount));
         require(++visited <= static_cast<std::size_t>(polygon.tile->header->maxLinkCount));
         const auto& link = polygon.tile->links[linkIndex];
@@ -79,7 +82,7 @@ void visitNeighbors(const dtNavMesh& mesh, const Polygon& polygon, unsigned char
 }
 
 void sampleInterval(const BoundaryInterval& interval, const DiscoveryConfig& config,
-    const Cancel& canceled, SamplingArtifact& artifact, std::set<SampleKey>& unique,
+    const Cancel& canceled, SamplingArtifact& artifact, detail::Set<SampleKey>& unique,
     StageStats& stats) {
     Point a = interval.start, b = interval.finish;
     // Equal geometric segments generate equal positions regardless of edge winding.
@@ -127,9 +130,10 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
         require(input.navMesh != nullptr);
         require(std::isfinite(input.identity.unitsPerMeter) && input.identity.unitsPerMeter > 0);
         const auto& mesh = *input.navMesh;
-        std::vector<const dtMeshTile*> tiles;
+        BuildVector<const dtMeshTile*> tiles;
         for (int i = 0; i < mesh.getMaxTiles(); ++i) {
             checkpoint(input.canceled);
+            detail::work();
             const auto* tile = mesh.getTile(i);
             if (tile && tile->header) tiles.push_back(tile);
         }
@@ -142,20 +146,23 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
         });
         for (std::size_t i = 1; i < tiles.size(); ++i) require(tileKey(tiles[i - 1]) != tileKey(tiles[i]));
 
-        std::vector<Polygon> polygons;
+        BuildVector<Polygon> polygons;
         PolygonIndex index;
         for (const auto* tile : tiles) {
             checkpoint(input.canceled);
             require(tile->header->polyCount >= 0 && tile->header->maxLinkCount >= 0);
             for (int i = 0; i < tile->header->polyCount; ++i) {
                 checkpoint(input.canceled);
+                detail::work();
                 const auto& poly = tile->polys[i];
                 if (poly.getType() != DT_POLYTYPE_GROUND) continue;
                 ++result.stats.groundPolygonsVisited;
                 const auto ref = mesh.getPolyRefBase(tile) | dtPolyRef(i);
-                if (input.polygonFilter && !input.polygonFilter(ref, *tile, poly)) continue;
+                if (input.polygonFilter && !detail::callback(input.polygonFilter, ref, *tile, poly)) continue;
                 require(poly.vertCount >= 3 && poly.vertCount <= DT_VERTS_PER_POLYGON);
                 for (unsigned char v = 0; v < poly.vertCount; ++v) vertex(*tile, poly, v);
+                if (detail::activeAccount) detail::limit(BudgetResource::TopologyPolygons, polygons.size(), 1,
+                    detail::activeAccount->limits.maxTopologyPolygons);
                 require(index.emplace(ref, polygons.size()).second);
                 polygons.push_back({tile, &poly, ref, {}});
                 ++result.stats.eligiblePolygons;
@@ -175,6 +182,8 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
         for (std::size_t i = 0; i < polygons.size(); ++i) {
             checkpoint(input.canceled);
             for (auto neighbor : polygons[i].neighbors) {
+                checkpoint(input.canceled);
+                detail::work();
                 const auto& reverse = polygons[neighbor].neighbors;
                 // Weak connectivity would silently permit impossible reverse
                 // on-island transfers. MVP supports reciprocal native ground only.
@@ -185,8 +194,8 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
         TopologyExtractionArtifact artifact;
         artifact.topology.identity = input.identity;
         artifact.topology.customPolygonPolicy = bool(input.polygonFilter);
-        std::vector<IslandId> owners(polygons.size(), (std::numeric_limits<IslandId>::max)());
-        std::vector<std::size_t> queue;
+        BuildVector<IslandId> owners(polygons.size(), (std::numeric_limits<IslandId>::max)());
+        BuildVector<std::size_t> queue;
         for (std::size_t i = 0; i < polygons.size(); ++i) {
             checkpoint(input.canceled);
             if (owners[i] != (std::numeric_limits<IslandId>::max)()) continue;
@@ -199,6 +208,8 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
             for (std::size_t head = 0; head < queue.size(); ++head) {
                 checkpoint(input.canceled);
                 for (auto neighbor : polygons[queue[head]].neighbors) {
+                    checkpoint(input.canceled);
+                    detail::work();
                     if (owners[neighbor] == (std::numeric_limits<IslandId>::max)()) {
                         owners[neighbor] = island;
                         queue.push_back(neighbor);
@@ -240,7 +251,7 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
             const auto& polygon = polygons[i];
             for (unsigned char edge = 0; edge < polygon.poly->vertCount; ++edge) {
                 checkpoint(input.canceled);
-                std::vector<std::pair<int, int>> covered;
+                BuildVector<std::pair<int, int>> covered;
                 visitNeighbors(mesh, polygon, edge, index, input.canceled,
                     [&](std::size_t, int begin, int end) { covered.emplace_back(begin, end); });
                 std::sort(covered.begin(), covered.end());
@@ -251,6 +262,8 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
                     if (begin >= end) return;
                     BoundaryInterval interval{owners[i], polygon.ref, edge, begin / 255.0, end / 255.0,
                         interpolate(a, b, begin / 255.0), interpolate(a, b, end / 255.0)};
+                    if (detail::activeAccount) detail::limit(BudgetResource::BoundaryIntervals,
+                        artifact.intervals.size(), 1, detail::activeAccount->limits.maxBoundaryIntervals);
                     artifact.intervals.push_back(interval);
                     ++result.stats.boundaryIntervals;
                 };
@@ -269,7 +282,7 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
             checkpoint(input.canceled);
             if (input.islandPolicy) {
                 auto& decision = artifact.topology.domain[i];
-                decision = input.islandPolicy(static_cast<IslandId>(i), artifact.topology.metrics[i]);
+                decision = detail::callback(input.islandPolicy, static_cast<IslandId>(i), artifact.topology.metrics[i]);
                 require(decision.state == DomainState::Included || decision.state == DomainState::Excluded ||
                     decision.state == DomainState::Unexplored);
             }
@@ -283,6 +296,7 @@ StageResult<TopologyExtractionArtifact> extractTopology(const BuildInput& input)
         result.value.emplace(std::move(artifact));
         result.status = StageStatus::Success;
     } catch (const Abort& error) { result.status = error.status; }
+    catch (const detail::BuildAbort& error) { result.status = error.status; }
     catch (const std::bad_alloc&) { result.status = StageStatus::OutOfMemory; }
     catch (...) { result.status = StageStatus::CallbackFailed; }
     return result;
@@ -296,7 +310,7 @@ StageResult<SamplingArtifact> sampleBoundaries(const TopologyExtractionArtifact&
         require(std::isfinite(config.sampleSpacing) && config.sampleSpacing > 0);
         for (float limit : {config.maxHorizontalGap, config.maxClimb, config.maxDrop})
             require(std::isfinite(limit) && limit >= 0);
-        std::vector<bool> selected(extraction.topology.islandCount, !options.islands);
+        BuildVector<bool> selected(extraction.topology.islandCount, !options.islands);
         require(extraction.topology.domain.empty() ||
             extraction.topology.domain.size() == extraction.topology.islandCount);
         for (const auto& decision : extraction.topology.domain) {
@@ -316,7 +330,7 @@ StageResult<SamplingArtifact> sampleBoundaries(const TopologyExtractionArtifact&
         SamplingArtifact artifact;
         artifact.topology = extraction.topology;
         artifact.sampleSpacing = config.sampleSpacing;
-        std::set<SampleKey> unique;
+        detail::Set<SampleKey> unique;
         for (const auto& interval : extraction.intervals) {
             checkpoint(options.canceled);
             require(interval.island < selected.size());
@@ -333,6 +347,7 @@ StageResult<SamplingArtifact> sampleBoundaries(const TopologyExtractionArtifact&
         result.value.emplace(std::move(artifact));
         result.status = StageStatus::Success;
     } catch (const Abort& error) { result.status = error.status; }
+    catch (const detail::BuildAbort& error) { result.status = error.status; }
     catch (const std::bad_alloc&) { result.status = StageStatus::OutOfMemory; }
     catch (...) { result.status = StageStatus::CallbackFailed; }
     return result;

@@ -31,6 +31,8 @@ add_library(detour_island_graph
     src/IslandGraphPathfinder.cpp
     src/IslandGraphSerializer.cpp
     src/IslandGraphTopology.cpp
+    src/v2/BuildBudget.cpp
+    src/v2/Production.cpp
     src/v2/Build.cpp
     src/v2/Sampling.cpp
     src/v2/Discovery.cpp
@@ -136,6 +138,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
 
     add_executable(detour_island_graph_tests
         tests/IslandGraphTests.cpp
+        tests/V2BudgetTests.cpp
         tests/V2BuildTests.cpp
         tests/V2SamplingTests.cpp
         tests/V2DiscoveryTests.cpp

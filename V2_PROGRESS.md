@@ -6,9 +6,58 @@ The revised [MVP plan](temp/todo/V2_MVP_PLAN.md) controls scope. Delivered secti
 below describe the existing baseline, not completion of the expanded MVP. The
 follow-up chat was consolidated into the plan and removed.
 
-Pending additions: fully bounded production processing,
-one working host validator, mass-policy migration, lazy native Detour transfers,
-and native transfer integration. Existing host remains on V1.
+Pending additions: one working execution-matched worker validator, mass-policy
+migration, lazy native Detour transfers, and native transfer integration. Existing host remains on V1.
+
+## Bounded production foundation, 2026-09-08
+
+Delivered first library phase for the extractor-owned build architecture. No
+extractor or host integration is included in this phase.
+
+- Added `buildGraphBounded` and `buildSeededGraphBounded`. Both require explicit
+  nonzero allocation/work/count limits, sample/candidate caps, and batch sizes.
+  They return a completed immutable graph, counters, timings, and budget
+  diagnostics; intermediate artifacts are not returned. Existing artifact APIs
+  remain the unbounded analysis/correctness reference.
+- Extract topology once and reuse polygon ownership plus per-island interval
+  ranges. Stream samples/candidates in bounded batches. Exact sample deduplication
+  stays per island; canonical crossing evidence spans all batches, including
+  rejected directions. Seeded expansion uses the same production implementation
+  and only Valid outgoing directions activate new islands.
+- Added allocation-aware `BuildVector` and `BuildUnorderedMap` storage aliases.
+  Artifact fields and graph accessors use these aliases; callers naming concrete
+  `std::vector` types must use the aliases, iterators, or `auto`. Library-owned
+  allocation requests include nested topology, query collection, deduplication,
+  compilation scratch, and final graph storage. Allocation accounts survive graph
+  return; moving storage preserves ownership and copies outside builds are unbounded.
+- Budget accounting checks before allocation/growth and counts old and new storage
+  during reallocation. Exactly the cap is allowed. Overflow and exhausted limits
+  return `BudgetExceeded`; system allocation failure remains `OutOfMemory`.
+  Diagnostics include exhausted resource, limit/attempted usage, peak requested
+  bytes, work units, nearby refs, batch peaks, and unique crossing count.
+- Byte guarantee excludes caller inputs, callback captures/allocations and
+  `std::function` bookkeeping, allocator bookkeeping, and Detour internals. One
+  Detour query uses a fixed 256-node initialization. This is not an RSS or elapsed
+  time guarantee. Work counts explicit traversal/processing operations, not sorting,
+  container bookkeeping, or Detour's internal traversal.
+- Nearby collectors stop retaining results immediately on failure, then propagate
+  failure after the Detour query returns. No truncated query can publish success.
+  Cancellation combines input, validation, and compilation sources throughout.
+  Callback exceptions remain `CallbackFailed`, including callback `bad_alloc`.
+  Callback reentry does not inherit the outer build's resource account.
+- Production limits/batch sizes are execution controls, not new graph identity.
+  Native serializer layout remains format 3; package version remains unchanged.
+  Persisted discovery sample/candidate caps retain their existing semantics.
+- Verification: MSVC x64 Debug build and full library suite passed, 106 tests and
+  3261 assertions. Fixtures cover invalid-input precedence, reference/batch equivalence,
+  directional/domain policies, seeded chains/reverse-only/Unknown, every resource
+  cap, rejected duplicates, dense stacked queries, partial portals/tile order,
+  every exhaustive cancellation checkpoint, callback reentry, and allocation
+  growth/lifetime/overflow.
+
+Benchmarking remains deferred. Controlled completion/failure is implemented;
+production scalability, actual collision validation, graph transport/reference
+identity, link-only worker rebuilds, and host migration remain acceptance work.
 
 ## Library continuation, 2026-09-07
 
@@ -299,14 +348,13 @@ heightfield data remain caller-supplied validator concerns.
 
 ## Next slice
 
-1. Continue library contracts while benchmarking and host integration are deferred.
-2. Bound topology, nearby-query memory, and retained crossing evidence; reduce
-   repeated ownership copies and full interval scans in the seeded pipeline.
-3. Integrate host validation when host work resumes. Current exhaustive
-   `PipelineResult` retains all artifacts and nearby-polygon collection has no
-   separate temporary-memory cap; both need production changes.
-4. Add mass policy and lazy native transfers, and extend
-   persistence as remaining contracts change.
-5. Pass revised acceptance gates before host/settings/report migration and
-   package version 2.0.0. Measure memory and query latency before deciding whether
-   spans or regional routing must enter scope.
+1. Continue library-only work; benchmarking and extractor/host integration remain deferred.
+2. Add soft/strict area preference and lazy native Detour transfers with checked
+   query anchors and bounded per-query transfer cache.
+3. Add the narrow opt-in minimum-area policy, remaining diagnostics and dirty-map
+   fixtures, and update persistence when those contracts change.
+4. Integrate the dedicated extractor post-assembly stage and execution-matched
+   collision validator, matched graph transport, checked host loading, and link-only
+   rebuilds when integration resumes. Use the bounded production APIs.
+5. Benchmark before host migration and package version 2.0.0. Measure candidate
+   memory and routing latency before adopting spans or regional routing.

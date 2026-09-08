@@ -47,7 +47,7 @@ TEST_CASE("v2 canonical geometry retains independently validated directions") {
         REQUIRE(graph.crossings().size() == 1);
         CHECK_FALSE(graph.crossings()[0].traversableAB);
         CHECK(graph.crossings()[0].traversableBA);
-        CHECK(graph.offsets() == std::vector<std::size_t>{0, 0, 1});
+        CHECK(graph.offsets() == BuildVector<std::size_t>{0, 0, 1});
         REQUIRE(graph.traversals().size() == 1);
         CHECK(graph.traversals()[0].reverse);
         CHECK(graph.polygonIslands().at(22) == 1);
@@ -228,7 +228,7 @@ TEST_CASE("v2 retains nearby distinct geometry and deterministic exact duplicate
     CHECK(compiled.stats.exactDuplicates == 1);
     CHECK(compiled.stats.compiledCrossings == 2);
     CHECK((**compiled.value).crossings()[0].crossing.a.position.x == 0);
-    CHECK((**compiled.value).offsets() == std::vector<std::size_t>{0, 2, 4});
+    CHECK((**compiled.value).offsets() == BuildVector<std::size_t>{0, 2, 4});
 }
 
 TEST_CASE("v2 outbound policy remains an island property across different crossings") {
@@ -270,7 +270,7 @@ TEST_CASE("v2 empty completed stages remain distinguishable from failure") {
     REQUIRE(result.value);
     const auto compiled = compileGraph(*result.value);
     REQUIRE(compiled.value);
-    CHECK((**compiled.value).offsets() == std::vector<std::size_t>{0});
+    CHECK((**compiled.value).offsets() == BuildVector<std::size_t>{0});
     CHECK((**compiled.value).crossings().empty());
     static_assert(std::is_const_v<typename std::shared_ptr<const CompiledGraph>::element_type>);
 }

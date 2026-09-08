@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <sstream>
 #include <tuple>
 #include <vector>
 
@@ -553,4 +554,29 @@ TEST_CASE("V2 island policy failures never publish topology") {
     const auto result = extractTopology(input);
     CHECK(result.status == expected);
     CHECK_FALSE(result.value);
+}
+
+
+TEST_CASE("V2 bounded production preserves partial portals under tile allocation order") {
+    const auto run = [](bool reverse) {
+        auto mesh = partialMesh(reverse);
+        BuildInput input;
+        input.navMesh = mesh.get();
+        // Excluding one destination leaves a partial seam and a remaining native component.
+        input.polygonFilter = [](dtPolyRef, const dtMeshTile& tile, const dtPoly& poly) {
+            return !(tile.header->x == 1 && &poly == &tile.polys[1]);
+        };
+        auto c = config();
+        c.maxSamples = c.maxCandidates = 10000;
+        ProductionBuildOptions options{{1024 * 1024, 100000, 100, 100, 100, 100, 100, 200}, 1, 1};
+        const auto reference = buildGraph(input, c);
+        const auto bounded = buildGraphBounded(input, c, options);
+        REQUIRE(reference.compilation.value);
+        REQUIRE(bounded.graph);
+        CHECK(bounded.stats.samples == reference.sampling.stats.samples);
+        CHECK(bounded.stats.boundaryIntervals == reference.sampling.stats.boundaryIntervals);
+        CHECK(bounded.graph->metrics().size() == (**reference.compilation.value).metrics().size());
+        return std::make_pair(bounded.stats.samples, bounded.stats.boundaryIntervals);
+    };
+    CHECK(run(false) == run(true));
 }

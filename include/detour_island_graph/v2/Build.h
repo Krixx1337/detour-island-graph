@@ -1,6 +1,7 @@
 #pragma once
 
 #include <DetourNavMesh.h>
+#include <detour_island_graph/v2/BuildStorage.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -48,7 +49,7 @@ struct BuildCoverage {
     bool seeded = false;
     bool complete = true; // Seeded builds publish only after frontier exhaustion.
     std::uint64_t seedIdentity = 0; // Versioned host seed semantics; zero disables reuse.
-    std::vector<Anchor> seeds; // Checked, projected anchors in canonical order.
+    BuildVector<Anchor> seeds; // Checked, projected anchors in canonical order.
 };
 
 // IDs describe immutable inputs, not pointer addresses. Zero means unversioned.
@@ -92,12 +93,12 @@ struct TopologyArtifact {
     BuildIdentity identity;
     bool customPolygonPolicy = false;
     std::size_t islandCount = 0; // Dense IDs [0, islandCount); no empty islands.
-    std::vector<PolygonIsland> polygons;
+    BuildVector<PolygonIsland> polygons;
     // Empty metrics means unavailable for trusted external producers; otherwise
     // exactly islandCount records. Mesh extraction always supplies metrics.
-    std::vector<IslandMetrics> metrics;
+    BuildVector<IslandMetrics> metrics;
     // Empty means exhaustive inclusion. Otherwise exactly islandCount records.
-    std::vector<IslandDomain> domain;
+    BuildVector<IslandDomain> domain;
     bool customDomainPolicy = false;
     BuildCoverage coverage;
 };
@@ -114,7 +115,7 @@ struct BoundaryInterval {
 
 struct TopologyExtractionArtifact {
     TopologyArtifact topology;
-    std::vector<BoundaryInterval> intervals;
+    BuildVector<BoundaryInterval> intervals;
 };
 
 struct SamplingOptions {
@@ -128,8 +129,8 @@ struct SamplingOptions {
 struct SamplingArtifact {
     TopologyArtifact topology;
     float sampleSpacing = 0;
-    std::vector<BoundaryInterval> intervals;
-    std::vector<Anchor> samples;
+    BuildVector<BoundaryInterval> intervals;
+    BuildVector<Anchor> samples;
 };
 
 struct CrossingCandidate {
@@ -175,7 +176,7 @@ struct CrossingArtifact {
     DiscoveryConfig discovery;
     bool validatorSupplied = false;
     bool customOutboundPolicy = false;
-    std::vector<Crossing> crossings;
+    BuildVector<Crossing> crossings;
 };
 
 enum class CompilePolicy : std::uint8_t { GeometricOnly, ValidatedOnly };
@@ -239,17 +240,17 @@ public:
     const BuildIdentity& identity() const noexcept { return identity_; }
     const DiscoveryConfig& discovery() const noexcept { return discovery_; }
     CompilePolicy policy() const noexcept { return policy_; }
-    const std::vector<CompiledCrossing>& crossings() const noexcept { return crossings_; }
-    const std::vector<Traversal>& traversals() const noexcept { return traversals_; }
+    const BuildVector<CompiledCrossing>& crossings() const noexcept { return crossings_; }
+    const BuildVector<Traversal>& traversals() const noexcept { return traversals_; }
     // Outgoing traversals for island i occupy [offsets[i], offsets[i+1]).
-    const std::vector<std::size_t>& offsets() const noexcept { return offsets_; }
-    const std::unordered_map<dtPolyRef, IslandId>& polygonIslands() const noexcept { return polygonIslands_; }
+    const BuildVector<std::size_t>& offsets() const noexcept { return offsets_; }
+    const BuildUnorderedMap<dtPolyRef, IslandId>& polygonIslands() const noexcept { return polygonIslands_; }
     bool persistentReuseEligible() const noexcept { return persistentReuseEligible_; }
     bool customPolygonPolicy() const noexcept { return customPolygonPolicy_; }
     bool validatorSupplied() const noexcept { return validatorSupplied_; }
     bool customOutboundPolicy() const noexcept { return customOutboundPolicy_; }
-    const std::vector<IslandMetrics>& metrics() const noexcept { return metrics_; }
-    const std::vector<IslandDomain>& domain() const noexcept { return domain_; }
+    const BuildVector<IslandMetrics>& metrics() const noexcept { return metrics_; }
+    const BuildVector<IslandDomain>& domain() const noexcept { return domain_; }
     bool customDomainPolicy() const noexcept { return customDomainPolicy_; }
     const BuildCoverage& coverage() const noexcept { return coverage_; }
     bool includes(IslandId island) const noexcept {
@@ -267,12 +268,12 @@ private:
     bool customOutboundPolicy_ = false;
     bool customDomainPolicy_ = false;
     BuildCoverage coverage_;
-    std::vector<IslandMetrics> metrics_;
-    std::vector<IslandDomain> domain_;
-    std::vector<CompiledCrossing> crossings_;
-    std::vector<Traversal> traversals_;
-    std::vector<std::size_t> offsets_;
-    std::unordered_map<dtPolyRef, IslandId> polygonIslands_;
+    BuildVector<IslandMetrics> metrics_;
+    BuildVector<IslandDomain> domain_;
+    BuildVector<CompiledCrossing> crossings_;
+    BuildVector<Traversal> traversals_;
+    BuildVector<std::size_t> offsets_;
+    BuildUnorderedMap<dtPolyRef, IslandId> polygonIslands_;
 };
 
 // First build stage. The snapshot must be complete, valid, immutable Detour data.
@@ -360,5 +361,65 @@ struct SeededBuildOptions {
 // Intermediate batches are discarded; exact crossing evidence is retained.
 CompileResult buildSeededGraph(const BuildInput& input, const DiscoveryConfig& config,
     const SeededBuildOptions& seeds, const ValidationOptions& validation);
+
+// Production calls require every limit and both batch sizes to be nonzero.
+// maxSamples/maxCandidates in DiscoveryConfig must also be nonzero.
+struct BuildLimits {
+    std::size_t maxAllocationBytes = 0;
+    std::size_t maxWorkUnits = 0;
+    std::size_t maxTopologyPolygons = 0; // Eligible ground polygons retained.
+    std::size_t maxBoundaryIntervals = 0;
+    std::size_t maxNearbyRefsPerQuery = 0;
+    std::size_t maxUniqueCrossings = 0;
+    std::size_t maxCompiledCrossings = 0;
+    std::size_t maxCompiledDirections = 0;
+};
+
+struct ProductionBuildOptions {
+    BuildLimits limits;
+    std::size_t sampleBatchSize = 0;
+    std::size_t candidateBatchSize = 0;
+};
+
+enum class BudgetResource : std::uint8_t {
+    None, AllocationBytes, WorkUnits, TopologyPolygons, BoundaryIntervals,
+    NearbyRefsPerQuery, Samples, Candidates, UniqueCrossings,
+    CompiledCrossings, CompiledDirections
+};
+
+struct BudgetDiagnostics {
+    BudgetResource exhausted = BudgetResource::None;
+    std::size_t limit = 0;
+    std::size_t attempted = 0; // Saturates on arithmetic overflow.
+    std::size_t peakAllocationBytes = 0;
+    std::size_t workUnits = 0;
+    std::size_t peakNearbyRefs = 0;
+    std::size_t peakSampleBatch = 0;
+    std::size_t peakCandidateBatch = 0;
+    std::size_t uniqueCrossings = 0;
+};
+
+struct ProductionBuildResult {
+    StageStatus status = StageStatus::InvalidInput;
+    StageStats stats;
+    StageTimings timings;
+    BudgetDiagnostics budget;
+    std::shared_ptr<const CompiledGraph> graph; // Non-null only on complete success.
+};
+
+// Bounded allocation requests, not RSS: excludes input mesh, callback allocations,
+// callback captures/std::function bookkeeping, allocator bookkeeping and Detour internals (one query initialized with 256 nodes).
+// Work units charge tile slots, polygons/native links, topology index/frontier
+// records, interval/sample attempts, queries/collector refs/destinations, candidate
+// records, validation directions, and compilation record/checkpoint visits.
+// Sorting/container bookkeeping and Detour's internal traversal are not work units.
+// Limits/batch sizes are execution controls and are not serialized graph identity.
+// Existing artifact APIs above remain explicitly unbounded analysis/reference APIs.
+ProductionBuildResult buildGraphBounded(const BuildInput& input, const DiscoveryConfig& config,
+    const ProductionBuildOptions& production, const ValidationOptions& validation = {},
+    const CompileOptions& compilation = {});
+ProductionBuildResult buildSeededGraphBounded(const BuildInput& input, const DiscoveryConfig& config,
+    const SeededBuildOptions& seeds, const ProductionBuildOptions& production,
+    const ValidationOptions& validation);
 
 } // namespace detour_island_graph::v2
