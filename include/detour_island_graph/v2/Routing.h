@@ -50,6 +50,9 @@ struct RouteOptions {
     // is estimated unless the caller explicitly declares measured/model costs.
     bool transferCostEstimated = true;
     bool crossingCostEstimated = true;
+    // Exact landing-anchor dominance, only with built-in costs and no filter.
+    // Disable to retain the reference portal search for diagnostics.
+    bool enableArrivalDominance = true;
 };
 
 enum class RouteStatus : std::uint8_t {
@@ -82,6 +85,10 @@ struct RouteStats {
     std::size_t crossingEvaluations = 0;
     std::size_t heapPops = 0;
     std::size_t staleHeapPops = 0;
+    bool usedArrivalDominance = false;
+    std::size_t arrivalGroups = 0;
+    std::size_t dominatedArrivals = 0;
+    std::size_t arrivalScratchBytes = 0; // Logical grouping storage, excludes capacity.
 };
 
 struct Route {
@@ -111,6 +118,10 @@ struct RouteScratch {
     };
     std::vector<State> states;
     std::vector<HeapEntry> heap;
+    // Rebuilt for each optimized query. No graph association survives reuse.
+    std::vector<std::size_t> arrivalOrder;
+    std::vector<std::size_t> arrivalGroup;
+    std::vector<float> arrivalBest;
 };
 
 // Portal-based routing over compiled traversals. Reuses the graph's
@@ -119,6 +130,11 @@ struct RouteScratch {
 // runs only under fully default costs; any custom cost provider uses
 // Dijkstra. Search stops once the remaining bound cannot beat the best
 // completed route. No Detour transfer integration or cross-query cache.
+// Default queries suppress equal/more expensive arrivals at identical anchors.
+// Grouping is prepared within each query in O(P log P) time and O(P) storage,
+// where P is the number of directed traversals. Suppressed arrivals consume no
+// expansion budget. Equal-cost route choices may differ; fewer expansions can
+// let a query succeed under a budget that stopped the reference search.
 RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId endIsland,
     Point startPosition, Point endPosition, const RouteOptions& options = {},
     RouteScratch* scratch = nullptr);

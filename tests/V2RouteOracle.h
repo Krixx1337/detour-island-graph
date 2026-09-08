@@ -36,12 +36,22 @@ struct PairOutcome {
     std::optional<float> cost;
     RouteStats stats;
     double routeMs=0;
+    RouteStats referenceStats;
+    double referenceMs=0;
 };
 inline bool sameWork(const RouteStats& a,const RouteStats& b) {
     return a.expandedPortals==b.expandedPortals && a.queuedPortals==b.queuedPortals &&
         a.peakOpenSetSize==b.peakOpenSetSize && a.examinedTraversals==b.examinedTraversals &&
         a.transferEvaluations==b.transferEvaluations && a.crossingEvaluations==b.crossingEvaluations &&
-        a.heapPops==b.heapPops && a.staleHeapPops==b.staleHeapPops;
+        a.heapPops==b.heapPops && a.staleHeapPops==b.staleHeapPops &&
+        a.usedArrivalDominance==b.usedArrivalDominance && a.arrivalGroups==b.arrivalGroups &&
+        a.dominatedArrivals==b.dominatedArrivals && a.arrivalScratchBytes==b.arrivalScratchBytes;
+}
+inline void equivalent(const RouteResult& optimized,const RouteResult& reference) {
+    require(optimized.status==reference.status,"Optimized routing status differs from reference");
+    require(bool(optimized.value)==bool(reference.value),"Optimized route presence differs");
+    if(optimized.value)require(std::abs(double(optimized.value->totalCost)-reference.value->totalCost)<=
+        1e-5*std::max(1.0,double(reference.value->totalCost)),"Optimized route cost differs from reference");
 }
 // Independent O(P^2) Dijkstra. Directed states come from crossings, never
 // production adjacency or search scratch. Restricted to small fixture graphs.
@@ -105,7 +115,7 @@ inline std::vector<PairOutcome> checkAllRoutes(const CompiledGraph& graph, const
         if(c.traversableAB) edges[c.crossing.a.island].push_back(c.crossing.b.island);
         if(c.traversableBA) edges[c.crossing.b.island].push_back(c.crossing.a.island);
     }
-    std::vector<PairOutcome> outcomes; RouteScratch scratch;
+    std::vector<PairOutcome> outcomes; RouteScratch scratch,referenceScratch;
     for(IslandId from=0;from<n;++from) if(graph.includes(from)) {
         std::vector<bool> reachable(n); std::vector<IslandId> queue{from};reachable[from]=true;
         for(std::size_t j=0;j<queue.size();++j) for(auto next:edges[queue[j]]) if(!reachable[next]) {reachable[next]=true;queue.push_back(next);}
@@ -114,6 +124,12 @@ inline std::vector<PairOutcome> checkAllRoutes(const CompiledGraph& graph, const
             const auto begin=std::chrono::steady_clock::now();
             auto r=findRoute(graph,from,to,positions[from],positions[to],options,&scratch);
             const double routeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+            options.enableArrivalDominance=false;
+            const auto referenceBegin=std::chrono::steady_clock::now();
+            const auto reference=findRoute(graph,from,to,positions[from],positions[to],options,&referenceScratch);
+            const double referenceMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-referenceBegin).count();
+            equivalent(r,reference);
+            if(reference.value)checkRoute(graph,from,to,positions[from],positions[to],*reference.value);
             auto expected=from==to?RouteStatus::SameIsland:reachable[to]?RouteStatus::Success:RouteStatus::NoPath;
             require(r.status==expected,"Routing disagrees with independent BFS");
             if(r.status==RouteStatus::Success) {
@@ -126,7 +142,7 @@ inline std::vector<PairOutcome> checkAllRoutes(const CompiledGraph& graph, const
                 }
             } else require(!r.value,"Unexpected route for non-success status");
             outcomes.push_back({from,to,r.status,r.value?r.value->legs.size():0,r.stats.expandedPortals,
-                r.stats.queuedPortals,r.stats.peakOpenSetSize,r.value?std::optional<float>(r.value->totalCost):std::nullopt,r.stats,routeMs});
+                r.stats.queuedPortals,r.stats.peakOpenSetSize,r.value?std::optional<float>(r.value->totalCost):std::nullopt,r.stats,routeMs,reference.stats,referenceMs});
         }
     }
     return outcomes;

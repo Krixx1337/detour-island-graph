@@ -112,7 +112,7 @@ inline void checkGraph(const CompiledGraph& g,const dtNavMesh& mesh,bool small,R
         require(dtStatusSucceed(mesh.getTileAndPolyByRef(ref,&tile,&poly)),"Stress endpoint missing");
         Point p{};for(unsigned j=0;j<poly->vertCount;++j){const auto* v=&tile->verts[poly->verts[j]*3];p.x+=v[0]/poly->vertCount;p.y+=v[1]/poly->vertCount;p.z+=v[2]/poly->vertCount;}return p;
     };
-    RouteScratch scratch;
+    RouteScratch scratch,referenceScratch;
     for(auto pair:std::vector<std::pair<IslandId,IslandId>>{{0,n-1},{n-1,0},{0,n/2},{n/2,n-1}}) {
         std::vector<bool> seen(n);std::vector<IslandId> queue{pair.first};seen[pair.first]=true;
         for(std::size_t i=0;i<queue.size();++i)for(auto next:edges[queue[i]])if(!seen[next]){seen[next]=true;queue.push_back(next);}
@@ -121,9 +121,19 @@ inline void checkGraph(const CompiledGraph& g,const dtNavMesh& mesh,bool small,R
         const auto begin=std::chrono::steady_clock::now();
         auto route=findRoute(g,pair.first,pair.second,start,end,o,&scratch);
         const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        o.enableArrivalDominance=false;
+        const auto referenceBegin=std::chrono::steady_clock::now();
+        const auto reference=findRoute(g,pair.first,pair.second,start,end,o,&referenceScratch);
+        const double referenceMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-referenceBegin).count();
+        fixture_oracle::equivalent(route,reference);
+        if(reference.value)fixture_oracle::checkRoute(g,pair.first,pair.second,start,end,*reference.value);
+        if(n==256 && g.traversals().size()==261120) {
+            require(route.stats.examinedTraversals<=reference.stats.examinedTraversals/10,"Dense routing did not reduce scans tenfold");
+            require(route.stats.examinedTraversals<=13213182,"Dense routing exceeded fixed scan ceiling");
+        }
         if(stats)stats->routes.push_back({pair.first,pair.second,route.status,route.value?route.value->legs.size():0,
             route.stats.expandedPortals,route.stats.queuedPortals,route.stats.peakOpenSetSize,
-            route.value?std::optional<float>(route.value->totalCost):std::nullopt,route.stats,ms});
+            route.value?std::optional<float>(route.value->totalCost):std::nullopt,route.stats,ms,reference.stats,referenceMs});
         if(stats){stats->routeExpanded+=route.stats.expandedPortals;stats->routeQueued+=route.stats.queuedPortals;}
         require(route.status==(seen[pair.second]?RouteStatus::Success:RouteStatus::NoPath),"Stress route differs from BFS");
         if(route.value)fixture_oracle::checkRoute(g,pair.first,pair.second,start,end,*route.value);
@@ -155,8 +165,10 @@ inline Result run(const std::string& name,const std::vector<Rect>& rects,Discove
         for(std::size_t i=0;i<routeCount;++i) {
             const auto& original=result.routes[routeBegin+i];const auto& decodedRoute=result.routes[routeBegin+routeCount+i];
             require(original.status==decodedRoute.status && original.cost==decodedRoute.cost &&
-                fixture_oracle::sameWork(original.stats,decodedRoute.stats),"Scenario decoded route work changed");
-            if(routeBegin)require(fixture_oracle::sameWork(result.routes[i].stats,original.stats),"Scenario batch route work changed");
+                fixture_oracle::sameWork(original.stats,decodedRoute.stats) &&
+                fixture_oracle::sameWork(original.referenceStats,decodedRoute.referenceStats),"Scenario decoded route work changed");
+            if(routeBegin)require(fixture_oracle::sameWork(result.routes[i].stats,original.stats) &&
+                fixture_oracle::sameWork(result.routes[i].referenceStats,original.referenceStats),"Scenario batch route work changed");
         }
         result.status=built.status;result.islands=rects.size();result.directions=built.graph->traversals().size();
         result.work=built.budget.workUnits;result.bytes=built.budget.peakAllocationBytes;result.nearby=built.budget.peakNearbyRefs;

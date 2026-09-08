@@ -3,7 +3,8 @@
 Recorded 2026-09-08 with MSVC x64 Release, default Euclidean costs, and the
 fixture-health runner. Timings are observations, not regression thresholds.
 Concurrent Debug validation may affect elapsed times. Work counters are the
-reproducible baseline. No search optimization is included in this slice.
+reproducible baseline. The following historical tables record the reference search
+before exact-arrival suppression; the comparison at the end records the new path.
 
 ## Workloads and results
 
@@ -74,3 +75,55 @@ evaluations. Filter rejection happens before cost evaluation. Exceptions and
 cancellation preserve work already attempted. Heap pops include stale entries;
 stale pops do not consume expansion budget. Added public fields require rebuilding
 consumers; serialized graph format is unchanged.
+
+## Exact-arrival suppression comparison
+
+Recorded 2026-09-08 after Debug validation finished, with MSVC x64 Release and no
+concurrent Debug test load. Both modes run against the same graph within the same
+runner. Every optimized duration includes grouping preparation. These are observed
+first-report timings, not latency gates; repeated reports agree on deterministic
+fields. The input and compiled graph hashes above remain unchanged.
+
+| Dense original-graph query | Reference scans | Optimized scans | Reference ms | Optimized ms |
+| --- | ---: | ---: | ---: | ---: |
+| 0 to 255 | 132,131,820 | 1,037,340 | 981.77 | 67.28 |
+| 255 to 0 | 132,131,820 | 1,037,340 | 950.71 | 61.29 |
+| 0 to 128 | 33,163,260 | 519,180 | 244.80 | 45.94 |
+| 128 to 255 | 32,645,100 | 515,100 | 249.19 | 46.45 |
+
+All four queries exceed the required tenfold scan reduction. The long queries
+expand 1,017 arrivals instead of 129,541. Grouping produces 1,024 exact anchors and
+uses 4,182,016 logical bytes, about 3.99 MiB, in addition to existing route scratch.
+This excludes vector capacity and allocator overhead. Queue counts remain unchanged
+in these dense queries because suppression happens when popping arrivals, after
+they have been queued.
+
+The real-fixture table covers every ordered included pair for original graphs,
+batch 1, standalone triangle-world coverage. Durations are totals over each query
+sequence, with separate scratch for each mode.
+
+| Fixture | Queries | Reference scans | Optimized scans | Reference ms | Optimized ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Pandora | 625 | 2,184 | 2,184 | 0.12 | 1.08 |
+| Steelribs | 225 | 474,751 | 201,697 | 3.97 | 4.89 |
+
+Preparation adds overhead to small queries. Steelribs examines fewer traversals but
+still takes slightly longer overall; Pandora has no scan reduction. This optimization
+addresses dense routing and is not a universal latency improvement. Callers can set
+`enableArrivalDominance=false` to use the reference search. A future slice should
+measure how to avoid preparation when little search work is expected, or reuse an
+immutable grouping with an explicit graph-lifetime contract. No such cache exists
+in this slice.
+
+Suppression requires identical island, polygon, and numeric position, and a cost
+at least as high as an arrival already expanded there. A strictly cheaper arrival
+can expand again. Cost/filter callbacks disable suppression, preserving their
+reference execution. Dominated pops consume no expansion budget and remain distinct
+from stale heap pops. No crossing is removed and no approximate anchor merge occurs.
+
+Validation: 126 DIG tests and all five Extractor suites pass in Debug and Release.
+Real and procedural fixture queries compare reference and optimized reachability
+and costs. Independent minimum-cost checks retain their existing size limit.
+Repeated reports match outside timings, source SHA-256 checks pass, and within-mode
+batch/serialization work counters match. Fixed dense scan ceilings enforce at least
+tenfold reduction relative to the reference search.

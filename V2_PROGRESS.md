@@ -377,6 +377,20 @@ existing files. Host code remains untouched and deferred.
 
 ## Next slice
 
+Exact-arrival suppression now skips redundant outgoing scans for queries using
+built-in costs and no crossing filter. Grouping preserves exact island/polygon/
+position identity and is rebuilt in query scratch. Custom callbacks retain the
+reference search; `enableArrivalDominance=false` also selects it explicitly.
+Fixture reports compare both modes and retain preparation-inclusive timing and
+logical grouping storage. Graph compilation and serialization are unchanged.
+
+Validation: 126 DIG tests and all five Extractor suites pass in Debug and Release;
+repeated reports and source hashes match. Dense representative queries examine
+64-127 times fewer traversals. Release timings including preparation improve from
+245-982 ms to 46-67 ms. Small real-fixture query sequences remain slightly slower
+due to preparation overhead; the [baseline comparison](docs/v2-routing-baseline.md)
+records both outcomes. No host or graph delivery changes are included.
+
 Routing measurement foundation now exposes traversal scans, cost evaluations, and
 heap/stale pops. Fixture routes have independently checked minimum costs on real
 maps and bounded small procedural graphs. Per-query timings exclude oracle work;

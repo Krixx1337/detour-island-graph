@@ -5,6 +5,7 @@
 #include <limits>
 #include <new>
 #include <utility>
+#include <tuple>
 #include <vector>
 
 namespace detour_island_graph::v2 {
@@ -69,6 +70,54 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
         RouteScratch* work = scratch ? scratch : &local;
         work->states.assign(graph.traversals().size(), RouteScratch::State{});
         work->heap.clear();
+        const bool dominance = options.enableArrivalDominance && useAStar && !options.crossingFilter;
+        result.stats.usedArrivalDominance = dominance;
+        work->arrivalOrder.clear();
+        work->arrivalGroup.clear();
+        work->arrivalBest.clear();
+        if (dominance) {
+            const auto count = graph.traversals().size();
+            work->arrivalOrder.resize(count);
+            work->arrivalGroup.resize(count);
+            result.stats.arrivalScratchBytes = count * 2 * sizeof(std::size_t);
+            const auto destination = [&](std::size_t portal) -> const Anchor& {
+                const auto& t = graph.traversals()[portal];
+                const auto& c = graph.crossings()[t.crossing].crossing;
+                return t.reverse ? c.a : c.b;
+            };
+            const auto key = [](const Anchor& a) {
+                return std::make_tuple(a.island, a.polygon, a.position.x, a.position.y, a.position.z);
+            };
+            for (std::size_t i = 0; i < count; ++i) {
+                checkpoint(options.canceled);
+                const auto& t = graph.traversals()[i];
+                if (t.crossing >= graph.crossings().size()) throw Abort{RouteStatus::InvalidInput};
+                const auto& c = graph.crossings()[t.crossing].crossing;
+                for (const Anchor* a : {&c.a, &c.b}) {
+                    const auto owner = graph.polygonIslands().find(a->polygon);
+                    if (!finite(a->position) || a->island >= islandCount ||
+                        owner == graph.polygonIslands().end() || owner->second != a->island)
+                        throw Abort{RouteStatus::InvalidInput};
+                }
+                work->arrivalOrder[i] = i;
+            }
+            std::sort(work->arrivalOrder.begin(), work->arrivalOrder.end(),
+                [&](std::size_t a, std::size_t b) {
+                    checkpoint(options.canceled);
+                    const auto ka = key(destination(a)), kb = key(destination(b));
+                    return ka < kb || (ka == kb && a < b);
+                });
+            for (std::size_t i = 0; i < count; ++i) {
+                checkpoint(options.canceled);
+                const auto portal = work->arrivalOrder[i];
+                if (i == 0 || key(destination(portal)) != key(destination(work->arrivalOrder[i - 1]))) {
+                    work->arrivalBest.push_back(std::numeric_limits<float>::infinity());
+                    ++result.stats.arrivalGroups;
+                    result.stats.arrivalScratchBytes += sizeof(float);
+                }
+                work->arrivalGroup[portal] = work->arrivalBest.size() - 1;
+            }
+        }
 
         const auto transfer = [&](IslandId island, const Anchor& from, const Anchor& to,
                                   float& cost) {
@@ -159,11 +208,22 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
             // Stale entries consume no expansion budget. A proven result at
             // exactly the cap succeeds without expanding irrelevant portals.
             if (bestPortal != kNoPortal && entry.bound >= bestCost) break;
+            if (dominance) {
+                auto& bestArrival = work->arrivalBest[work->arrivalGroup[entry.portal]];
+                // Identical anchors have identical remaining built-in costs.
+                // Keep portal predecessors intact; only suppress redundant work.
+                if (state.cost >= bestArrival) {
+                    ++result.stats.dominatedArrivals;
+                    continue;
+                }
+            }
             if (options.maxExpandedPortals > 0 &&
                 result.stats.expandedPortals >= options.maxExpandedPortals)
                 throw Abort{RouteStatus::BudgetExceeded};
             state.closed = true;
             ++result.stats.expandedPortals;
+            if (dominance)
+                work->arrivalBest[work->arrivalGroup[entry.portal]] = state.cost;
 
             const Anchor& arrivedAt = state.leg.to;
             if (arrivedAt.island == endIsland) {

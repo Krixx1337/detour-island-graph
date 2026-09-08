@@ -68,6 +68,13 @@ checks and measured work. Optimality applies to the supplied estimated cost mode
 it does not establish actual on-mesh walking paths. Large stress graphs retain
 reachability checks without the quadratic minimum-cost oracle.
 
+Exact-arrival suppression applies only to built-in Euclidean costs without a
+crossing filter. Identical island, polygon, and position give identical remaining
+costs, so an equal or more expensive arrival needs no second outgoing scan. This
+does not merge nearby anchors or remove crossings. Custom callbacks use the
+reference search. Fixture queries compare both modes for reachability and cost;
+large dense queries also enforce a tenfold scan reduction.
+
 The real Pandora and Steelribs fixtures include OBJ collision, baked navmeshes, and
 sanitized bake provenance. Extractor tests rebuild the navmeshes, use OBJ triangles
 for collision, and exercise standalone-complete and incomplete evidence modes.

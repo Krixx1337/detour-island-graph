@@ -9,6 +9,8 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <set>
+#include <tuple>
 #include "V2RouteOracle.h"
 
 namespace {
@@ -365,4 +367,105 @@ TEST_CASE("V2 independent minimum cost oracle covers custom and directed routes"
     else CHECK(route.status==RouteStatus::NoPath);
     CHECK_FALSE(std::isfinite(fixture_oracle::minimumCost(graph,2,0,{4,0,0},{},o)));
     CHECK_FALSE(std::isfinite(fixture_oracle::minimumCost(graph,0,3,{},{},o)));
+}
+
+namespace {
+std::shared_ptr<const CompiledGraph> dominanceGraph(bool distinctPolygon=false) {
+    TopologyArtifact topology;
+    topology.islandCount=4;topology.polygons={{1,0},{2,1},{3,2},{4,3},{5,1}};
+    auto validated=validateCrossings(topology,{1,50,0,0},{
+        {{0,1,{0,0,0}},{1,2,{2,0,0}}},
+        {{0,1,{10,0,0}},{1,distinctPolygon?dtPolyRef(5):dtPolyRef(2),{2,0,0}}},
+        {{1,2,{2,0,0}},{2,3,{3,0,0}}}});
+    REQUIRE(validated.value);auto compiled=compileGraph(*validated.value);REQUIRE(compiled.value);
+    return *compiled.value;
+}
+}
+
+TEST_CASE("V2 arrival dominance suppresses equal and expensive arrivals before budget") {
+    auto graph=dominanceGraph();RouteScratch scratch;
+    auto optimized=findRoute(*graph,0,3,{},{},{},&scratch);
+    RouteOptions off;off.enableArrivalDominance=false;
+    auto reference=findRoute(*graph,0,3,{},{},off);
+    CHECK(optimized.status==RouteStatus::NoPath);
+    CHECK(reference.status==optimized.status);
+    CHECK(optimized.stats.usedArrivalDominance);
+    CHECK(optimized.stats.dominatedArrivals>0);
+    CHECK(optimized.stats.examinedTraversals<reference.stats.examinedTraversals);
+    CHECK(optimized.stats.expandedPortals<=optimized.stats.arrivalGroups);
+    CHECK(optimized.stats.heapPops==optimized.stats.expandedPortals+
+        optimized.stats.staleHeapPops+optimized.stats.dominatedArrivals);
+    RouteOptions cap;cap.maxExpandedPortals=optimized.stats.expandedPortals;
+    CHECK(findRoute(*graph,0,3,{},{},cap).status==RouteStatus::NoPath);
+    --cap.maxExpandedPortals;
+    auto limited=findRoute(*graph,0,3,{},{},cap,&scratch);
+    CHECK(limited.status==RouteStatus::BudgetExceeded);CHECK_FALSE(limited.value);
+    auto reused=findRoute(*graph,0,3,{},{},{},&scratch);
+    CHECK(fixture_oracle::sameWork(reused.stats,optimized.stats));
+    // The expensive incoming traversal is initialized too, but the cheap arrival wins.
+    auto route=findRoute(*graph,0,2,{}, {3,0,0});REQUIRE(route.value);
+    CHECK(route.value->totalCost==doctest::Approx(3));
+    CHECK(fixture_oracle::minimumCost(*graph,0,2,{}, {3,0,0})==doctest::Approx(3));
+}
+
+TEST_CASE("V2 arrival groups preserve exact polygon island and position identity") {
+    auto graph=dominanceGraph(true);
+    using Key=std::tuple<IslandId,dtPolyRef,float,float,float>;
+    std::set<Key> expected;
+    for(const auto& c:graph->crossings()) {
+        auto add=[&](const Anchor& a){expected.emplace(a.island,a.polygon,a.position.x,a.position.y,a.position.z);};
+        if(c.traversableAB)add(c.crossing.b);if(c.traversableBA)add(c.crossing.a);
+    }
+    auto route=findRoute(*graph,0,3,{},{});
+    CHECK(route.stats.arrivalGroups==expected.size());
+    CHECK(route.stats.arrivalGroups==5);
+    TopologyArtifact topology;topology.islandCount=3;topology.polygons={{1,0},{2,1},{3,2}};
+    auto validated=validateCrossings(topology,{1,1,0,0},{
+        {{0,1,{}},{1,2,{}}},{{1,2,{}},{2,3,{}}}});
+    REQUIRE(validated.value);auto compiled=compileGraph(*validated.value);REQUIRE(compiled.value);
+    RouteScratch scratch;
+    findRoute(*graph,0,3,{},{},{},&scratch);
+    auto zero=findRoute(**compiled.value,0,2,{},{},{},&scratch);
+    REQUIRE(zero.value);CHECK(zero.value->totalCost==0);CHECK(zero.stats.arrivalGroups==3);
+    CHECK(fixture_oracle::sameWork(zero.stats,findRoute(**compiled.value,0,2,{},{}).stats));
+}
+
+TEST_CASE("V2 arrival dominance preserves each custom callback execution") {
+    auto graph=dominanceGraph();RouteOptions options;std::size_t calls=0;
+    SUBCASE("transfer") {options.transferCost=[&](IslandId,const Anchor& a,const Anchor& b){++calls;return distance(a.position,b.position);};}
+    SUBCASE("crossing") {options.crossingCost=[&](const CompiledCrossing& c,bool,const RouteCostContext&){++calls;return distance(c.crossing.a.position,c.crossing.b.position);};}
+    SUBCASE("filter") {options.crossingFilter=[&](const CompiledCrossing&,bool reverse,const RouteCostContext&){++calls;return !reverse;};}
+    const auto enabled=findRoute(*graph,0,2,{}, {3,0,0},options);
+    const auto enabledCalls=calls;calls=0;options.enableArrivalDominance=false;
+    const auto disabled=findRoute(*graph,0,2,{}, {3,0,0},options);
+    CHECK_FALSE(enabled.stats.usedArrivalDominance);CHECK(enabled.stats.arrivalGroups==0);
+    CHECK(calls==enabledCalls);CHECK(calls>0);
+    CHECK(fixture_oracle::sameWork(enabled.stats,disabled.stats));fixture_oracle::equivalent(enabled,disabled);
+}
+
+TEST_CASE("V2 arrival preparation cancellation leaves reusable scratch") {
+    auto graph=dominanceGraph();RouteScratch scratch;RouteOptions options;
+    std::size_t checks=0;
+    SUBCASE("collect") {options.canceled=[&]{return ++checks==3;};}
+    SUBCASE("sort") {options.canceled=[&]{return ++checks==graph->traversals().size()+2;};}
+    SUBCASE("group") {options.canceled=[&]{return !scratch.arrivalBest.empty();};}
+    SUBCASE("search") {options.canceled=[&]{return !scratch.heap.empty();};}
+    auto canceled=findRoute(*graph,0,3,{},{},options,&scratch);
+    CHECK(canceled.status==RouteStatus::Canceled);CHECK_FALSE(canceled.value);
+    CHECK(canceled.stats.usedArrivalDominance);
+    auto reused=findRoute(*graph,0,3,{},{},{},&scratch);
+    CHECK(fixture_oracle::sameWork(reused.stats,findRoute(*graph,0,3,{},{}).stats));
+    RouteOptions off;off.enableArrivalDominance=false;
+    auto fallback=findRoute(*graph,0,3,{},{},off,&scratch);
+    CHECK(fixture_oracle::sameWork(fallback.stats,findRoute(*graph,0,3,{},{},off).stats));
+}
+
+TEST_CASE("V2 arrival preparation rejects malformed anchor keys") {
+    auto graph=std::make_shared<CompiledGraph>(*dominanceGraph());
+    auto& crossings=const_cast<BuildVector<CompiledCrossing>&>(graph->crossings());
+    SUBCASE("nonfinite") {crossings[0].crossing.b.position.x=std::numeric_limits<float>::quiet_NaN();}
+    SUBCASE("wrong owner") {crossings[0].crossing.b.polygon=1;}
+    SUBCASE("missing polygon") {crossings[0].crossing.b.polygon=999;}
+    const auto result=findRoute(*graph,0,3,{},{});
+    CHECK(result.status==RouteStatus::InvalidInput);CHECK_FALSE(result.value);
 }
