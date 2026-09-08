@@ -377,6 +377,18 @@ existing files. Host code remains untouched and deferred.
 
 ## Next slice
 
+Adversarial fixture coverage now adds an independent rectangle discovery oracle,
+fixed sparse/dense stress workloads, and a known landing-window sampling limit.
+Extractor reports include procedural collision expectations for stacked floors,
+low ceilings, unsupported landings, hollow shells, narrow platforms, incomplete
+coverage, and absent boundary information. The development script now runs DIG
+tests before Extractor tests and deterministic report comparison.
+
+This slice introduces no cleanup policy or production API changes. Clear hollow
+interiors can pass destination-only teleport checks; no intended-playability label
+is inferred. `breakdown.md` now distinguishes these limitations from measured
+health and resource behavior.
+
 Automated fixture health is now available before host work. The optional portable
 `analyzeGraphHealth` API checks graph invariants and reports directed components,
 distinct neighbors, isolation, and polygon/area-weighted reference reachability.

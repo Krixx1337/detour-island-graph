@@ -29,6 +29,13 @@ mismatches, lost fixture expectations, and exhausted budgets fail validation.
 Production health reporting, host work, and in-game testing stay deferred. Current
 runner requires the local DIG source override until its API is published.
 
+Adversarial tests now check discovery against independent rectangle arithmetic,
+document a coarse/fine sampling landing window, and exercise up to 1,024 sparse
+islands and 256 overlapping layers. Collision scenarios assert destination-only
+teleport semantics, including clear hollow interiors that legitimately pass this
+model. Reports track scenario expectations and resource use. Cleanup policies,
+area preferences, and performance redesigns remain separate future work.
+
 ## Direction
 
 Keep V2's directional crossing model and immutable graph compiler. Expand MVP to

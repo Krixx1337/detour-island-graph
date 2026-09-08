@@ -141,6 +141,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
         tests/IslandGraphTests.cpp
         tests/V2BudgetTests.cpp
         tests/V2HealthTests.cpp
+        tests/V2AdversarialTests.cpp
         tests/V2RealFixtureTests.cpp
         tests/V2BuildTests.cpp
         tests/V2SamplingTests.cpp
