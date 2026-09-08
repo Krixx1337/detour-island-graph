@@ -31,6 +31,14 @@ struct RouteCostContext {
 // arrive with polygon == 0; compiled anchors carry real polygon refs.
 // Must return a finite, nonnegative cost. Null means Euclidean distance.
 using TransferCost = std::function<float(IslandId island, const Anchor& from, const Anchor& to)>;
+enum class TransferStatus : std::uint8_t {
+    Success, Blocked, InvalidInput, BudgetExceeded, Canceled, OutOfMemory, CallbackFailed
+};
+struct TransferResult {
+    TransferStatus status = TransferStatus::Blocked;
+    float cost = 0;
+};
+using TransferEvaluator = std::function<TransferResult(IslandId, const Anchor&, const Anchor&)>;
 // Gap cost for one directed crossing traversal. Must return a finite,
 // nonnegative cost; anything else blocks that traversal. Null means the
 // crossing's Euclidean endpoint distance.
@@ -53,6 +61,8 @@ struct RouteOptions {
     // Exact landing-anchor dominance, only with built-in costs and no filter.
     // Disable to retain the reference portal search for diagnostics.
     bool enableArrivalDominance = true;
+    // Mutually exclusive with transferCost. Fatal failures abort the whole route.
+    TransferEvaluator transferEvaluator;
 };
 
 enum class RouteStatus : std::uint8_t {
@@ -129,7 +139,8 @@ struct RouteScratch {
 // Same-island queries return SameIsland without searching. Geometric A*
 // runs only under fully default costs; any custom cost provider uses
 // Dijkstra. Search stops once the remaining bound cannot beat the best
-// completed route. No Detour transfer integration or cross-query cache.
+// completed route. Optional NativeTransfers.h supplies checked Detour costs.
+// No cross-query result cache.
 // Default queries suppress equal/more expensive arrivals at identical anchors.
 // Grouping is prepared within each query in O(P log P) time and O(P) storage,
 // where P is the number of directed traversals. Suppressed arrivals consume no
@@ -138,5 +149,10 @@ struct RouteScratch {
 RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId endIsland,
     Point startPosition, Point endPosition, const RouteOptions& options = {},
     RouteScratch* scratch = nullptr);
+
+// Explicit endpoints retain polygon references for typed transfer providers.
+// Checks ownership and domain; native projection checks belong to the provider.
+RouteResult findRoute(const CompiledGraph& graph, Anchor start, Anchor end,
+    const RouteOptions& options = {}, RouteScratch* scratch = nullptr);
 
 } // namespace detour_island_graph::v2

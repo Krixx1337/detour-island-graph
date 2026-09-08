@@ -385,6 +385,9 @@ supplies execution-specific costs, units, and adapter integration.
 - Evaluate lazy host Detour transfers during search with a bounded per-query
   cache. Constrain transfers to matching native island and polygon policy; exclude
   generated-action shortcuts and reject partial/truncated path results.
+  The optional library provider is now implemented; see
+  [native transfer contracts](../../docs/v2-native-transfers.md). Host adapter
+  integration and execution calibration remain deferred.
 - Resolve query start/end polygon anchors explicitly. Current polygon-zero query
   endpoints need checked host resolution before native transfer evaluation.
 - Refining only the winning Euclidean route does not establish correct ranking.

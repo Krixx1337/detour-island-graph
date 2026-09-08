@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 #include <detour_island_graph/v2/Build.h>
 #include <DetourNavMeshBuilder.h>
+#ifdef DIG_NATIVE_TRANSFERS
+#include <detour_island_graph/v2/NativeTransfers.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -11,6 +14,14 @@
 #include <sstream>
 #include <tuple>
 #include <vector>
+
+#ifdef DIG_NATIVE_TRANSFERS
+namespace {
+detour_island_graph::v2::NativeTransferOptions nativeLimits() {
+    return {10000,100000,128,128,256,1000,.001f,{}};
+}
+}
+#endif
 
 namespace {
 using namespace detour_island_graph::v2;
@@ -580,3 +591,126 @@ TEST_CASE("V2 bounded production preserves partial portals under tile allocation
     };
     CHECK(run(false) == run(true));
 }
+
+#ifdef DIG_NATIVE_TRANSFERS
+TEST_CASE("V2 native transfers follow corridors and enforce resource limits") {
+    Rect left{0,0,2,8},leftTop{0,8,2,10},top{2,8,8,10},rightTop{8,8,10,10},right{8,0,10,8};
+    left.neighbors[2]=1;leftTop.neighbors[0]=0;leftTop.neighbors[1]=2;
+    top.neighbors[3]=1;top.neighbors[1]=3;rightTop.neighbors[3]=2;
+    rightTop.neighbors[0]=4;right.neighbors[2]=3;
+    auto mesh=singleMesh({left,leftTop,top,rightTop,right},1,{},true);
+    BuildInput input;input.navMesh=mesh.get();
+    const auto built=buildGraph(input,{2,1,1,1,1000,1000});
+    REQUIRE(built.compilation.value);
+    const auto& graph=**built.compilation.value;
+    const auto base=mesh->getPolyRefBase(static_cast<const dtNavMesh&>(*mesh).getTile(0));
+    const Anchor a{0,base,{1,0,1}},b{0,base|4,{9,0,1}};
+    NativeTransferProvider provider;
+    auto o=nativeLimits();
+    REQUIRE(provider.begin(*mesh,graph,0,o)==TransferStatus::Success);
+    const auto result=provider.evaluate(0,a,b);
+    REQUIRE(result.status==TransferStatus::Success);
+    CHECK(result.cost>18); // Direct off-mesh shortcut would cost only 8.
+    const auto baseline=provider.stats();
+    CHECK(provider.evaluate(0,a,b).cost==result.cost);
+    CHECK(provider.stats().cacheHits==1);
+    CHECK(provider.stats().queries==baseline.queries);
+    CHECK(provider.evaluate(0,a,a).cost==0);
+    auto noCache=o;noCache.cacheEntries=1;
+    REQUIRE(provider.begin(*mesh,graph,0,noCache)==TransferStatus::Success);
+    CHECK(provider.evaluate(0,a,b).status==TransferStatus::Success);
+    CHECK(provider.evaluate(0,b,a).status==TransferStatus::Success);
+    CHECK(provider.stats().cacheEntries==1);
+    CHECK(provider.evaluate(0,a,b).cost==result.cost);
+    CHECK(provider.stats().cacheHits==1);
+    auto same=findNativeRoute(graph,*mesh,0,a,b,o,{},&provider);
+    CHECK(same.route.status==RouteStatus::SameIsland);
+    CHECK_FALSE(same.route.value);
+    CHECK(provider.stats().cacheEntries==0);
+    for(int limit=0;limit<4;++limit) {
+        INFO(limit);
+        auto capped=o;
+        if(limit==0)capped.maxNodes=4;
+        if(limit==1)capped.maxCorridor=1;
+        if(limit==2)capped.maxStraightPoints=1;
+        if(limit==3)capped.maxIterations=1;
+        REQUIRE(provider.begin(*mesh,graph,0,capped)==TransferStatus::Success);
+        CHECK(provider.evaluate(0,a,b).status==TransferStatus::BudgetExceeded);
+    }
+    o.maxIterations=baseline.iterations;
+    REQUIRE(provider.begin(*mesh,graph,0,o)==TransferStatus::Success);
+    CHECK(provider.evaluate(0,a,b).status==TransferStatus::Success);
+    o=nativeLimits();o.maxQueries=1;o.cacheEntries=0;
+    REQUIRE(provider.begin(*mesh,graph,0,o)==TransferStatus::Success);
+    CHECK(provider.evaluate(0,a,b).status==TransferStatus::Success);
+    CHECK(provider.evaluate(0,b,a).status==TransferStatus::BudgetExceeded);
+    o=nativeLimits();bool cancel=false;o.canceled=[&]{return cancel;};
+    REQUIRE(provider.begin(*mesh,graph,0,o)==TransferStatus::Success);
+    cancel=true;CHECK(provider.evaluate(0,a,b).status==TransferStatus::Canceled);
+    REQUIRE(provider.begin(*mesh,graph,0,nativeLimits())==TransferStatus::Success);
+    CHECK(provider.evaluate(0,a,b).cost==result.cost);
+    auto wrong=a;wrong.polygon=0;CHECK(provider.checkAnchor(wrong)==TransferStatus::InvalidInput);
+    wrong=a;wrong.island=1;CHECK(provider.checkAnchor(wrong)==TransferStatus::InvalidInput);
+    wrong=a;wrong.position.y=1;CHECK(provider.checkAnchor(wrong)==TransferStatus::InvalidInput);
+    wrong=a;wrong.position.x=std::numeric_limits<float>::quiet_NaN();
+    CHECK(provider.checkAnchor(wrong)==TransferStatus::InvalidInput);
+    CHECK(provider.begin(*mesh,graph,1,nativeLimits())==TransferStatus::InvalidInput);
+    CHECK(provider.evaluate(0,a,b).status==TransferStatus::InvalidInput);
+    auto invalid=nativeLimits();invalid.maxNodes=1;
+    CHECK(provider.begin(*mesh,graph,0,invalid)==TransferStatus::InvalidInput);
+    invalid=nativeLimits();invalid.canceled=[]()->bool{throw std::runtime_error("test");};
+    CHECK(provider.begin(*mesh,graph,0,invalid)==TransferStatus::CallbackFailed);
+}
+
+TEST_CASE("V2 native filter rejects excluded polygons during search") {
+    Rect a{0,0,2,2},b{2,0,4,2},c{4,0,6,2};
+    a.neighbors[1]=1;b.neighbors[3]=0;b.neighbors[1]=2;c.neighbors[3]=1;
+    auto mesh=singleMesh({a,b,c});
+    BuildInput input;input.navMesh=mesh.get();
+    const auto sampled=extractAndSample(input,{1,1,1,1,1000,1000});
+    REQUIRE(sampled.value);
+    auto topology=sampled.value->topology;
+    // Trusted producer fixture retains one island while excluding the bridge.
+    const auto base=mesh->getPolyRefBase(static_cast<const dtNavMesh&>(*mesh).getTile(0));
+    topology.polygons.erase(std::remove_if(topology.polygons.begin(),topology.polygons.end(),
+        [&](const PolygonIsland& p){return p.polygon==(base|1);}),topology.polygons.end());
+    topology.metrics.clear();
+    auto crossings=validateCrossings(topology,{1,1,1,1,1000,1000},{},{});
+    REQUIRE(crossings.value);
+    auto compiled=compileGraph(*crossings.value);
+    REQUIRE(compiled.value);
+    NativeTransferProvider provider;
+    REQUIRE(provider.begin(*mesh,**compiled.value,0,nativeLimits())==TransferStatus::Success);
+    Anchor from{0,base,{1,0,1}},to{0,base|2,{5,0,1}};
+    CHECK(provider.evaluate(0,from,to).status==TransferStatus::Blocked);
+    CHECK(provider.evaluate(0,from,to).status==TransferStatus::Blocked);
+    CHECK(provider.stats().cacheHits==1);
+}
+
+TEST_CASE("V2 native detour changes the selected crossing") {
+    Rect left{0,0,2,8},leftTop{0,8,2,10},top{2,8,8,10},rightTop{8,8,10,10},right{8,0,10,8};
+    left.neighbors[2]=1;leftTop.neighbors[0]=0;leftTop.neighbors[1]=2;
+    top.neighbors[3]=1;top.neighbors[1]=3;rightTop.neighbors[3]=2;
+    rightTop.neighbors[0]=4;right.neighbors[2]=3;
+    auto mesh=singleMesh({left,leftTop,top,rightTop,right,{12,0,14,10}});
+    BuildInput input;input.navMesh=mesh.get();
+    DiscoveryConfig config{2,30,1,1,1000,1000};
+    auto sampled=extractAndSample(input,config);REQUIRE(sampled.value);
+    const auto base=mesh->getPolyRefBase(static_cast<const dtNavMesh&>(*mesh).getTile(0));
+    Anchor start{0,base,{1,0,1}},end{1,base|5,{13,0,1}};
+    const Anchor near{0,base|4,{9,0,1}},detour{0,base,{1,0,7}};
+    auto crossings=validateCrossings(sampled.value->topology,config,{{near,end},{detour,end}});
+    REQUIRE(crossings.value);auto compiled=compileGraph(*crossings.value);REQUIRE(compiled.value);
+    const auto& graph=**compiled.value;
+    const auto estimated=findRoute(graph,start,end);
+    auto native=findNativeRoute(graph,*mesh,0,start,end,nativeLimits());
+    REQUIRE(estimated.value);REQUIRE(native.route.value);
+    CHECK(estimated.value->legs.front().from.polygon==near.polygon);
+    CHECK(native.route.value->legs.front().from.polygon==detour.polygon);
+    CHECK(native.route.value->totalCost==doctest::Approx(6+std::sqrt(180.f)));
+    auto canceled=nativeLimits();std::size_t checks=0;
+    canceled.canceled=[&]{return ++checks>15;};
+    auto failed=findNativeRoute(graph,*mesh,0,start,end,canceled);
+    CHECK(failed.route.status==RouteStatus::Canceled);CHECK_FALSE(failed.route.value);
+}
+#endif

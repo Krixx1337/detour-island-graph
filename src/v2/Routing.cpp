@@ -36,17 +36,24 @@ bool usable(float value) {
 
 } // namespace
 
-RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId endIsland,
-    Point startPosition, Point endPosition, const RouteOptions& options, RouteScratch* scratch) {
+static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anchor endAnchor,
+    const RouteOptions& options, RouteScratch* scratch, bool anchored) {
+    const auto startIsland = startAnchor.island, endIsland = endAnchor.island;
+    const auto startPosition = startAnchor.position, endPosition = endAnchor.position;
     RouteResult result;
     try {
         checkpoint(options.canceled);
-        result.stats.estimatedTransferCost = !options.transferCost || options.transferCostEstimated;
+        result.stats.estimatedTransferCost =
+            (!options.transferCost && !options.transferEvaluator) || options.transferCostEstimated;
         result.stats.estimatedCrossingCost = !options.crossingCost || options.crossingCostEstimated;
         result.stats.estimatedCost = result.stats.estimatedTransferCost || result.stats.estimatedCrossingCost;
         const std::size_t islandCount =
             graph.offsets().empty() ? 0 : graph.offsets().size() - 1;
         if (!finite(startPosition) || !finite(endPosition)) {
+            result.status = RouteStatus::InvalidInput;
+            return result;
+        }
+        if (options.transferCost && options.transferEvaluator) {
             result.status = RouteStatus::InvalidInput;
             return result;
         }
@@ -58,12 +65,21 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
             result.status = RouteStatus::OutOfDomain;
             return result;
         }
+        if (anchored) {
+            for (const auto& a : {startAnchor, endAnchor}) {
+                const auto owner = graph.polygonIslands().find(a.polygon);
+                if (!a.polygon || owner == graph.polygonIslands().end() || owner->second != a.island) {
+                    result.status = RouteStatus::InvalidInput;
+                    return result;
+                }
+            }
+        }
         if (startIsland == endIsland) {
             result.status = RouteStatus::SameIsland;
             return result;
         }
         const RouteCostContext context{graph, startIsland, endIsland};
-        const bool useAStar = !options.transferCost && !options.crossingCost;
+        const bool useAStar = !options.transferCost && !options.transferEvaluator && !options.crossingCost;
         result.stats.usedAStar = useAStar;
 
         RouteScratch local;
@@ -122,6 +138,23 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
         const auto transfer = [&](IslandId island, const Anchor& from, const Anchor& to,
                                   float& cost) {
             ++result.stats.transferEvaluations;
+            if (options.transferEvaluator) {
+                const auto evaluated = options.transferEvaluator(island, from, to);
+                checkpoint(options.canceled);
+                switch (evaluated.status) {
+                case TransferStatus::Success:
+                    if (!usable(evaluated.cost)) throw Abort{RouteStatus::InvalidInput};
+                    cost = evaluated.cost;
+                    return true;
+                case TransferStatus::Blocked: return false;
+                case TransferStatus::InvalidInput: throw Abort{RouteStatus::InvalidInput};
+                case TransferStatus::BudgetExceeded: throw Abort{RouteStatus::BudgetExceeded};
+                case TransferStatus::Canceled: throw Abort{RouteStatus::Canceled};
+                case TransferStatus::OutOfMemory: throw Abort{RouteStatus::OutOfMemory};
+                case TransferStatus::CallbackFailed: throw Abort{RouteStatus::CallbackFailed};
+                }
+                throw Abort{RouteStatus::InvalidInput};
+            }
             cost = options.transferCost ? options.transferCost(island, from, to)
                                         : euclidean(from.position, to.position);
             checkpoint(options.canceled);
@@ -156,7 +189,6 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
                 (std::max)(result.stats.peakOpenSetSize, work->heap.size());
         };
 
-        const Anchor startAnchor{startIsland, 0, startPosition};
         const auto& offsets = graph.offsets();
         for (std::size_t portal = offsets[startIsland]; portal < offsets[startIsland + 1];
              ++portal) {
@@ -186,7 +218,6 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
 
         std::size_t bestPortal = kNoPortal;
         float bestCost = std::numeric_limits<float>::infinity();
-        const Anchor endAnchor{endIsland, 0, endPosition};
         while (!work->heap.empty()) {
             checkpoint(options.canceled);
             std::pop_heap(work->heap.begin(), work->heap.end(),
@@ -297,6 +328,17 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
         result.status = RouteStatus::CallbackFailed;
     }
     return result;
+}
+
+RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId endIsland,
+    Point startPosition, Point endPosition, const RouteOptions& options, RouteScratch* scratch) {
+    return routeImpl(graph, {startIsland, 0, startPosition}, {endIsland, 0, endPosition},
+        options, scratch, false);
+}
+
+RouteResult findRoute(const CompiledGraph& graph, Anchor start, Anchor end,
+    const RouteOptions& options, RouteScratch* scratch) {
+    return routeImpl(graph, start, end, options, scratch, true);
 }
 
 } // namespace detour_island_graph::v2

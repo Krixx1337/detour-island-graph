@@ -16,6 +16,7 @@ option(DETOUR_ISLAND_GRAPH_FETCH_DETOUR
     "Fetch pinned upstream RecastNavigation when Detour is not provided" ON)
 option(DETOUR_ISLAND_GRAPH_DT_POLYREF64
     "Build fetched Detour with 64-bit polygon references" OFF)
+option(DETOUR_ISLAND_GRAPH_NATIVE_TRANSFERS "Build native V2 transfer provider (requires virtual Detour filters)" OFF)
 set(DETOUR_ISLAND_GRAPH_DETOUR_INCLUDE_DIR "" CACHE PATH
     "Directory containing DetourNavMesh.h when Detour is not provided as a CMake target")
 set(DETOUR_ISLAND_GRAPH_DETOUR_LIBRARY "" CACHE FILEPATH
@@ -68,7 +69,7 @@ if(NOT TARGET Detour AND
     set(SOVERSION 1)
     set(LIB_VERSION 1.6.0)
     set(RECASTNAVIGATION_DT_POLYREF64 ${DETOUR_ISLAND_GRAPH_DT_POLYREF64})
-    set(RECASTNAVIGATION_DT_VIRTUAL_QUERYFILTER OFF)
+    set(RECASTNAVIGATION_DT_VIRTUAL_QUERYFILTER ${DETOUR_ISLAND_GRAPH_NATIVE_TRANSFERS})
     set(RECASTNAVIGATION_ENABLE_ASSERTS "$<CONFIG:Debug>")
     add_subdirectory(
         "${recastnavigation_SOURCE_DIR}/Detour"
@@ -96,6 +97,10 @@ else()
 endif()
 
 include(CMakePackageConfigHelpers)
+if(DETOUR_ISLAND_GRAPH_NATIVE_TRANSFERS)
+    target_sources(detour_island_graph PRIVATE src/v2/NativeTransfers.cpp)
+    target_compile_definitions(detour_island_graph PUBLIC DIG_NATIVE_TRANSFERS)
+endif()
 
 install(TARGETS detour_island_graph
     EXPORT detour_island_graph_targets

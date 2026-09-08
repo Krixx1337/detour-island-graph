@@ -8,6 +8,7 @@
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "installDir": "${sourceDir}/out/install/${presetName}",
             "cacheVariables": {
+                "DETOUR_ISLAND_GRAPH_NATIVE_TRANSFERS": "ON",
                 "CMAKE_C_COMPILER": "cl.exe",
                 "CMAKE_CXX_COMPILER": "cl.exe"
             },

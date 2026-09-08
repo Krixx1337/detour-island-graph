@@ -6,8 +6,9 @@ The revised [MVP plan](temp/todo/V2_MVP_PLAN.md) controls scope. Delivered secti
 below describe the existing baseline, not completion of the expanded MVP. The
 follow-up chat was consolidated into the plan and removed.
 
-Pending additions: one working execution-matched worker validator, mass-policy
-migration, lazy native Detour transfers, and native transfer integration. Existing host remains on V1.
+Pending additions include mass-policy migration and host native-transfer integration.
+Extractor supplies the worker validator; the optional library native-transfer
+provider is now implemented. Existing host remains on V1.
 
 ## Bounded production foundation, 2026-09-08
 
@@ -376,6 +377,20 @@ Release runs, invalid configuration, and library/query budget failures preservin
 existing files. Host code remains untouched and deferred.
 
 ## Next slice
+
+Native on-island transfers are implemented as an optional module. Explicit anchor
+checks, ownership-constrained virtual Detour filters, sliced bounded search, typed
+fatal failures, and a bounded per-route cache now feed portal Dijkstra search.
+Extractor fixture reports compare native cached/uncached queries and an independent
+unsliced Detour cost oracle. Host integration remains deferred. See
+[native transfer contracts](docs/v2-native-transfers.md), including the measured
+coarse/detail anchor displacement and fixture-only projection allowance.
+Validation: all 130 DIG tests and all five Extractor suites pass in MSVC Debug
+and Release. Repeated reports and independent source SHA256 checks match.
+Feature-disabled Release builds and 16 routing regression tests also pass.
+Standalone native queries retain 4 Pandora and 22 Steelribs successful ordered
+cross-island pairs. Release batch-1/original all-pairs routing totals are 1.1 ms
+for Pandora and 108 ms for Steelribs, including setup and excluding oracle work.
 
 Exact-arrival suppression now skips redundant outgoing scans for queries using
 built-in costs and no crossing filter. Grouping preserves exact island/polygon/

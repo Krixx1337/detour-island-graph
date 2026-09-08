@@ -7,6 +7,8 @@ It identifies disconnected navmesh islands, discovers potential gap crossings be
 For V2 development, see [implementation progress](V2_PROGRESS.md) and the
 [geometry risk model](docs/v2-geometry-risk-model.md), including collision evidence,
 teleport validation limits, fixture coverage, and performance risks.
+Optional [native transfer routing](docs/v2-native-transfers.md) evaluates bounded
+Detour walking costs between crossing anchors and documents dependency requirements.
 
 ## Design
 

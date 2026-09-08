@@ -408,6 +408,37 @@ TEST_CASE("V2 arrival dominance suppresses equal and expensive arrivals before b
     CHECK(fixture_oracle::minimumCost(*graph,0,2,{}, {3,0,0})==doctest::Approx(3));
 }
 
+TEST_CASE("V2 typed transfers preserve anchors and propagate fatal outcomes") {
+    auto graph=dominanceGraph();RouteScratch scratch;
+    const Anchor start{0,1,{0,0,0}},end{2,3,{3,0,0}};
+    RouteOptions options;options.transferCostEstimated=false;
+    options.transferEvaluator=[](IslandId island,const Anchor& a,const Anchor& b) {
+        CHECK(a.polygon!=0);CHECK(b.polygon!=0);CHECK(a.island==island);CHECK(b.island==island);
+        return TransferResult{TransferStatus::Success,distance(a.position,b.position)};
+    };
+    const auto good=findRoute(*graph,start,end,options,&scratch);
+    REQUIRE(good.value);CHECK(good.value->totalCost==3);
+    CHECK_FALSE(good.stats.usedAStar);CHECK_FALSE(good.stats.usedArrivalDominance);
+    CHECK_FALSE(good.stats.estimatedTransferCost);CHECK(good.stats.estimatedCrossingCost);
+    for(const auto pair:std::vector<std::pair<TransferStatus,RouteStatus>>{
+        {TransferStatus::Blocked,RouteStatus::NoPath},{TransferStatus::InvalidInput,RouteStatus::InvalidInput},
+        {TransferStatus::BudgetExceeded,RouteStatus::BudgetExceeded},{TransferStatus::Canceled,RouteStatus::Canceled},
+        {TransferStatus::OutOfMemory,RouteStatus::OutOfMemory},{TransferStatus::CallbackFailed,RouteStatus::CallbackFailed}}) {
+        auto failed=options;failed.transferEvaluator=[&](IslandId,const Anchor&,const Anchor&){return TransferResult{pair.first};};
+        const auto r=findRoute(*graph,start,end,failed,&scratch);
+        CHECK(r.status==pair.second);CHECK_FALSE(r.value);
+    }
+    auto invalid=options;invalid.transferCost=[](IslandId,const Anchor&,const Anchor&){return 0.f;};
+    CHECK(findRoute(*graph,start,end,invalid).status==RouteStatus::InvalidInput);
+    invalid=options;invalid.transferEvaluator=[](IslandId,const Anchor&,const Anchor&)->TransferResult{throw std::runtime_error("test");};
+    CHECK(findRoute(*graph,start,end,invalid).status==RouteStatus::CallbackFailed);
+    invalid.transferEvaluator=[](IslandId,const Anchor&,const Anchor&){return TransferResult{TransferStatus::Success,-1};};
+    CHECK(findRoute(*graph,start,end,invalid).status==RouteStatus::InvalidInput);
+    auto wrong=start;wrong.polygon=0;
+    CHECK(findRoute(*graph,wrong,end,options).status==RouteStatus::InvalidInput);
+    CHECK(findRoute(*graph,start,end,options,&scratch).value->totalCost==good.value->totalCost);
+}
+
 TEST_CASE("V2 arrival groups preserve exact polygon island and position identity") {
     auto graph=dominanceGraph(true);
     using Key=std::tuple<IslandId,dtPolyRef,float,float,float>;

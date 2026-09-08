@@ -3,6 +3,9 @@
 #include <detour_island_graph/v2/Serialization.h>
 #include <detour_island_graph/v2/Health.h>
 #include "V2RouteOracle.h"
+#ifdef DIG_NATIVE_TRANSFERS
+#include "V2NativeFixture.h"
+#endif
 #include <DetourAlloc.h>
 #include <cstring>
 #include <fstream>
@@ -123,6 +126,13 @@ TEST_CASE("V2 real fixtures match reference discovery across batches") {
             REQUIRE(built.status == StageStatus::Success);
             REQUIRE(built.graph);
             CHECK(serialize(*built.graph) == serialize(graph));
+#ifdef DIG_NATIVE_TRANSFERS
+            CHECK_NOTHROW(native_fixture::check(*built.graph,*mesh));
+            std::istringstream encoded(serialize(*built.graph),std::ios::binary);
+            const auto decoded=GraphSerializer::read(encoded);
+            REQUIRE(decoded.graph);
+            CHECK_NOTHROW(native_fixture::check(*decoded.graph,*mesh));
+#endif
             CHECK(built.budget.peakSampleBatch <= batch);
             CHECK(built.budget.peakCandidateBatch <= batch);
             std::cout << name << " batch=" << batch << " polygons=" << built.stats.eligiblePolygons
