@@ -346,6 +346,35 @@ heightfields. V2 uses portable final-Detour-mesh interval extraction instead;
 no Unreal implementation or Unreal dependency was copied. Rich collision and
 heightfield data remain caller-supplied validator concerns.
 
+## Extractor standalone real-fixture validation, 2026-09-08
+
+Extractor tests now build owned collision snapshots from the existing Pandora and
+Steelribs OBJ sources and verify unchanged matching nav bytes. Test-only trusted
+domains define the supplied triangles as the entire standalone world. Production
+DAT/OBJ coverage remains incomplete.
+
+Strict builds accept 91 Pandora directions and 365 Steelribs directions. Batch sizes
+1 and 64 produce identical graph bytes, which also survive serialization round-trip.
+A fixed Steelribs crossing has independently inspected source support, valid polygon
+references, and a successful cross-island graph route before and after decode.
+Removing the declaration yields no executable links and NoPath for those endpoints.
+Extractor's three CTest suites pass in Debug and Release. This tests graph routing
+with estimated transfer costs, not native Detour paths or live game execution.
+
+## Extractor Job-driven analysis, 2026-09-08
+
+Optional schema-2 Job traversal settings now run capture, snapshot construction,
+and bounded strict discovery after assembly and before nav writing. All movement
+settings and budgets are explicit; nested configuration is strict. Default DAT/OBJ
+coverage stays incomplete. Zero valid directions is successful analysis, and the
+in-memory graph is discarded after diagnostics. No graph output or reuse is enabled.
+
+NDJSON retains existing event names and adds traversal progress and diagnostics.
+Traversal failures use existing navmesh_generation_failed and stop before export.
+CLI fixture checks cover enabled/disabled Jobs, unchanged Debug nav bytes, protected
+Release runs, invalid configuration, and library/query budget failures preserving
+existing files. Host code remains untouched and deferred.
+
 ## Next slice
 
 Extractor integration has resumed. Gw2CollisionExtractor now owns final navmesh
@@ -355,9 +384,9 @@ Coverage assessment requires an explicit trusted source-domain declaration and
 rejects partial parsing or capture defects. Ordinary DAT/OBJ evidence remains
 incomplete; synthetic complete scenes exercise positive strict validation.
 
-1. Establish real source coverage and calibrated host movement inputs, then wire
-   the extractor traversal Job contract and matched graph delivery. Current CLI
-   does not execute traversal or export a graph; live-game completeness is unproven.
+1. Establish real source coverage and calibrated movement inputs, then add matched
+   graph delivery. Current CLI executes traversal analysis but does not export a
+   graph; live-game completeness is unproven. Host work remains deferred.
 2. Add soft/strict area preference and lazy native Detour transfers with checked
    query anchors and bounded per-query transfer cache.
 3. Add the narrow opt-in minimum-area policy, remaining diagnostics and dirty-map

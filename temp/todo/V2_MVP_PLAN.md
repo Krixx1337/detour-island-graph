@@ -8,8 +8,16 @@ delivered code and gaps. Requirements below are not claims of implementation.
 Current execution scope: extractor integration has resumed; benchmarking remains
 deferred by user request. Final mesh assembly, teleport validation, pinned DIG
 dependency, optional collision capture and snapshot coverage assessment are in
-place. DAT/OBJ coverage remains incomplete by default. Traversal Job wiring,
-matched graph delivery, host migration and their acceptance gates remain future work.
+place. Optional Job-driven traversal analysis now runs before nav output, reports
+diagnostics, and fails before export on traversal errors. DAT/OBJ coverage remains
+incomplete by default. Matched graph delivery, host migration and their acceptance
+gates remain future work; analysis does not export the in-memory graph.
+Host work is explicitly deferred. Extractor standalone-world tests now exercise
+positive strict link generation on existing Pandora/Steelribs OBJ fixtures, byte
+determinism, serialization and cross-island graph routing. Their test-only coverage
+declarations describe the supplied OBJ world, not complete original-game collision.
+Ordinary incomplete evidence still produces no executable links. See V2_PROGRESS.md
+for measured results; live calibration and native transfer routing remain unverified.
 
 ## Direction
 
