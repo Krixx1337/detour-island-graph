@@ -4,6 +4,10 @@
 
 It identifies disconnected navmesh islands, discovers potential gap crossings between them, and supports high-level routing across the resulting graph. This is useful for vertically layered or fragmented maps with cliffs, broken bridges, rooftops, platforms, and other discontinuities.
 
+For V2 development, see [implementation progress](V2_PROGRESS.md) and the
+[geometry risk model](docs/v2-geometry-risk-model.md), including collision evidence,
+teleport validation limits, fixture coverage, and performance risks.
+
 ## Design
 
 - **Responsive, map-agnostic tuning:** Required gap limits describe agent capabilities. Density defaults scale relative to traversal capability rather than assuming fixed map units or dimensions.

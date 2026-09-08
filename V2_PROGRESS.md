@@ -386,8 +386,9 @@ tests before Extractor tests and deterministic report comparison.
 
 This slice introduces no cleanup policy or production API changes. Clear hollow
 interiors can pass destination-only teleport checks; no intended-playability label
-is inferred. `breakdown.md` now distinguishes these limitations from measured
-health and resource behavior.
+is inferred. The [geometry risk model](docs/v2-geometry-risk-model.md) distinguishes
+these limitations from measured health and resource behavior and records fixture
+coverage and rules for future changes.
 
 Automated fixture health is now available before host work. The optional portable
 `analyzeGraphHealth` API checks graph invariants and reports directed components,
