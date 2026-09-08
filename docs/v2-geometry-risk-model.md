@@ -63,6 +63,11 @@ that broad-phase work is the bottleneck.
 
 ## What the fixtures establish
 
+The [routing baseline](v2-routing-baseline.md) records independent minimum-cost
+checks and measured work. Optimality applies to the supplied estimated cost model;
+it does not establish actual on-mesh walking paths. Large stress graphs retain
+reachability checks without the quadratic minimum-cost oracle.
+
 The real Pandora and Steelribs fixtures include OBJ collision, baked navmeshes, and
 sanitized bake provenance. Extractor tests rebuild the navmeshes, use OBJ triangles
 for collision, and exercise standalone-complete and incomplete evidence modes.

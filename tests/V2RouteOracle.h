@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <chrono>
 
 namespace fixture_oracle {
 using namespace detour_island_graph::v2;
@@ -33,8 +34,58 @@ struct PairOutcome {
     RouteStatus status;
     std::size_t legs,expanded,queued,peakOpen;
     std::optional<float> cost;
+    RouteStats stats;
+    double routeMs=0;
 };
-inline std::vector<PairOutcome> checkAllRoutes(const CompiledGraph& graph, const dtNavMesh& mesh) {
+inline bool sameWork(const RouteStats& a,const RouteStats& b) {
+    return a.expandedPortals==b.expandedPortals && a.queuedPortals==b.queuedPortals &&
+        a.peakOpenSetSize==b.peakOpenSetSize && a.examinedTraversals==b.examinedTraversals &&
+        a.transferEvaluations==b.transferEvaluations && a.crossingEvaluations==b.crossingEvaluations &&
+        a.heapPops==b.heapPops && a.staleHeapPops==b.staleHeapPops;
+}
+// Independent O(P^2) Dijkstra. Directed states come from crossings, never
+// production adjacency or search scratch. Restricted to small fixture graphs.
+inline double minimumCost(const CompiledGraph& graph, IslandId from, IslandId to,
+    Point start, Point end, const RouteOptions& options = {}) {
+    struct Edge { Anchor a,b; std::size_t crossing; bool reverse; };
+    std::vector<Edge> edges;
+    RouteCostContext context{graph,from,to};
+    for(std::size_t i=0;i<graph.crossings().size();++i) {
+        const auto& c=graph.crossings()[i];
+        for(bool reverse:{false,true}) if(reverse?c.traversableBA:c.traversableAB) {
+            if(options.crossingFilter && !options.crossingFilter(c,reverse,context))continue;
+            edges.push_back({reverse?c.crossing.b:c.crossing.a,reverse?c.crossing.a:c.crossing.b,i,reverse});
+        }
+    }
+    const double infinity=std::numeric_limits<double>::infinity();
+    auto valid=[](double c){return std::isfinite(c)&&c>=0;};
+    auto transfer=[&](const Anchor& a,const Anchor& b)->double {
+        return options.transferCost?options.transferCost(a.island,a,b):distance(a.position,b.position);
+    };
+    auto gap=[&](const Edge& e)->double {
+        return options.crossingCost?options.crossingCost(graph.crossings()[e.crossing],e.reverse,context):distance(e.a.position,e.b.position);
+    };
+    std::vector<double> costs(edges.size(),infinity);
+    std::vector<bool> done(edges.size());
+    for(std::size_t i=0;i<edges.size();++i) if(edges[i].a.island==from) {
+        const auto t=transfer({from,0,start},edges[i].a),g=gap(edges[i]);
+        if(valid(t)&&valid(g))costs[i]=t+g;
+    }
+    double best=infinity;
+    for(std::size_t step=0;step<edges.size();++step) {
+        std::size_t next=edges.size();
+        for(std::size_t i=0;i<edges.size();++i)if(!done[i]&&(next==edges.size()||costs[i]<costs[next]))next=i;
+        if(next==edges.size()||!std::isfinite(costs[next]))break;
+        done[next]=true;const auto& at=edges[next].b;
+        if(at.island==to) {auto t=transfer(at,{to,0,end});if(valid(t))best=std::min(best,costs[next]+t);}
+        for(std::size_t i=0;i<edges.size();++i)if(!done[i]&&edges[i].a.island==at.island) {
+            const auto t=transfer(at,edges[i].a),g=gap(edges[i]);
+            if(valid(t)&&valid(g))costs[i]=std::min(costs[i],costs[next]+t+g);
+        }
+    }
+    return best;
+}
+inline std::vector<PairOutcome> checkAllRoutes(const CompiledGraph& graph, const dtNavMesh& mesh, bool optimality=true) {
     const auto n=graph.domain().size();
     std::vector<dtPolyRef> refs(n); std::vector<Point> positions(n);
     for(auto p:graph.polygonIslands()) if(p.second<n && (!refs[p.second] || p.first<refs[p.second])) refs[p.second]=p.first;
@@ -60,16 +111,22 @@ inline std::vector<PairOutcome> checkAllRoutes(const CompiledGraph& graph, const
         for(std::size_t j=0;j<queue.size();++j) for(auto next:edges[queue[j]]) if(!reachable[next]) {reachable[next]=true;queue.push_back(next);}
         for(IslandId to=0;to<n;++to) if(graph.includes(to)) {
             RouteOptions options;options.maxExpandedPortals=100000;options.maxQueuedPortals=1000000;
+            const auto begin=std::chrono::steady_clock::now();
             auto r=findRoute(graph,from,to,positions[from],positions[to],options,&scratch);
+            const double routeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
             auto expected=from==to?RouteStatus::SameIsland:reachable[to]?RouteStatus::Success:RouteStatus::NoPath;
             require(r.status==expected,"Routing disagrees with independent BFS");
             if(r.status==RouteStatus::Success) {
                 require(r.value.has_value(),"Missing successful route");
                 require(r.stats.estimatedTransferCost && r.stats.estimatedCrossingCost,"Default cost provenance changed");
                 checkRoute(graph,from,to,positions[from],positions[to],*r.value);
+                if(optimality) {
+                    const auto minimum=minimumCost(graph,from,to,positions[from],positions[to]);
+                    require(std::isfinite(minimum)&&std::abs(minimum-r.value->totalCost)<=1e-5*std::max(1.0,minimum),"Route is not minimum cost");
+                }
             } else require(!r.value,"Unexpected route for non-success status");
             outcomes.push_back({from,to,r.status,r.value?r.value->legs.size():0,r.stats.expandedPortals,
-                r.stats.queuedPortals,r.stats.peakOpenSetSize,r.value?std::optional<float>(r.value->totalCost):std::nullopt});
+                r.stats.queuedPortals,r.stats.peakOpenSetSize,r.value?std::optional<float>(r.value->totalCost):std::nullopt,r.stats,routeMs});
         }
     }
     return outcomes;

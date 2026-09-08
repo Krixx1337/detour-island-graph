@@ -75,6 +75,13 @@ struct RouteStats {
     bool estimatedTransferCost = true;
     bool estimatedCrossingCost = true;
     bool usedAStar = false;
+    // Attempts, including initial scans and built-in cost evaluations. Partial
+    // counts survive aborted queries; rejected filters do not evaluate costs.
+    std::size_t examinedTraversals = 0;
+    std::size_t transferEvaluations = 0;
+    std::size_t crossingEvaluations = 0;
+    std::size_t heapPops = 0;
+    std::size_t staleHeapPops = 0;
 };
 
 struct Route {

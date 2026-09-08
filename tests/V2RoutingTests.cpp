@@ -9,6 +9,7 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include "V2RouteOracle.h"
 
 namespace {
 using namespace detour_island_graph::v2;
@@ -183,6 +184,11 @@ TEST_CASE("V2 routing budgets cancellation input and callback failures") {
     CHECK(limited.status == RouteStatus::BudgetExceeded);
     CHECK_FALSE(limited.value);
 
+    CHECK(limited.stats.queuedPortals == 1);
+    CHECK(limited.stats.examinedTraversals == 2);
+    CHECK(limited.stats.transferEvaluations == 2);
+    CHECK(limited.stats.crossingEvaluations == 2);
+
     RouteOptions canceled;
     canceled.canceled = [] { return true; };
     CHECK(findRoute(*graph, 0, 1, {0, 0, 0}, {6, 0, 0}, canceled).status == RouteStatus::Canceled);
@@ -292,6 +298,8 @@ TEST_CASE("V2 routing drains stale entries without charging expansion budget") {
     CHECK(result.status == RouteStatus::NoPath);
     CHECK(result.stats.expandedPortals == 3);
     CHECK(result.stats.queuedPortals == 4);
+    CHECK(result.stats.heapPops == 4);
+    CHECK(result.stats.staleHeapPops == 1);
 }
 
 TEST_CASE("V2 routing observes cancellation triggered by final transfer") {
@@ -307,4 +315,54 @@ TEST_CASE("V2 routing observes cancellation triggered by final transfer") {
     const auto result = findRoute(*graph, 0, 1, {}, {6, 0, 0}, options);
     CHECK(result.status == RouteStatus::Canceled);
     CHECK_FALSE(result.value);
+}
+
+TEST_CASE("V2 route counters preserve attempts and scratch survives aborts") {
+    TopologyArtifact topology;topology.islandCount=2;topology.polygons={{1,0},{2,1}};
+    auto validated=validateCrossings(topology,{1,20,0,0},{{{0,1,{}},{1,2,{1,0,0}}}});
+    REQUIRE(validated.value);auto compiled=compileGraph(*validated.value);REQUIRE(compiled.value);
+    const auto& graph=**compiled.value;RouteScratch scratch;RouteOptions options;
+    SUBCASE("filtered") {options.crossingFilter=[](const CompiledCrossing&,bool,const RouteCostContext&){return false;};}
+    SUBCASE("throwing transfer") {options.transferCost=[](IslandId,const Anchor&,const Anchor&)->float{throw std::runtime_error("cost");};}
+    SUBCASE("canceled after transfer") {
+        bool cancel=false;options.canceled=[&]{return cancel;};
+        options.transferCost=[&](IslandId,const Anchor&,const Anchor&){cancel=true;return 0.f;};
+        auto r=findRoute(graph,0,1,{}, {1,0,0},options,&scratch);
+        CHECK(r.status==RouteStatus::Canceled);CHECK(r.stats.transferEvaluations==1);CHECK(r.stats.crossingEvaluations==0);
+        options={};
+    }
+    auto r=findRoute(graph,0,1,{}, {1,0,0},options,&scratch);
+    CHECK(r.stats.examinedTraversals==1);
+    if(options.crossingFilter) {CHECK(r.stats.transferEvaluations==0);CHECK(r.stats.heapPops==0);}
+    else if(options.transferCost) {CHECK(r.status==RouteStatus::CallbackFailed);CHECK(r.stats.transferEvaluations==1);CHECK(r.stats.crossingEvaluations==0);}
+    else {CHECK(r.stats.transferEvaluations==2);CHECK(r.stats.crossingEvaluations==1);CHECK(r.stats.heapPops==1);}
+    const auto reused=findRoute(graph,0,1,{}, {1,0,0},{},&scratch),fresh=findRoute(graph,0,1,{}, {1,0,0});
+    REQUIRE(reused.value);REQUIRE(fresh.value);CHECK(reused.value->totalCost==fresh.value->totalCost);
+    CHECK(reused.stats.examinedTraversals==fresh.stats.examinedTraversals);
+    CHECK(reused.stats.transferEvaluations==fresh.stats.transferEvaluations);
+    CHECK(reused.stats.crossingEvaluations==fresh.stats.crossingEvaluations);
+    CHECK(reused.stats.heapPops==fresh.stats.heapPops);CHECK(reused.stats.staleHeapPops==fresh.stats.staleHeapPops);
+    CHECK(reused.stats.expandedPortals==fresh.stats.expandedPortals);CHECK(reused.stats.queuedPortals==fresh.stats.queuedPortals);
+}
+
+TEST_CASE("V2 independent minimum cost oracle covers custom and directed routes") {
+    TopologyArtifact topology;topology.islandCount=4;topology.polygons={{1,0},{2,1},{3,2},{4,3}};
+    auto validated=validateCrossings(topology,{1,20,0,0},{
+        {{0,1,{}},{1,2,{1,0,0}}},{{0,1,{}},{1,2,{2,0,0}}},{{1,2,{3,0,0}},{2,3,{4,0,0}}}});
+    REQUIRE(validated.value);auto compiled=compileGraph(*validated.value);REQUIRE(compiled.value);
+    const auto& graph=**compiled.value;RouteOptions o;
+    o.crossingFilter=[](const CompiledCrossing&,bool reverse,const RouteCostContext&){return !reverse;};
+    o.transferCost=[](IslandId,const Anchor&,const Anchor&){return 0.f;};
+    o.crossingCost=[](const CompiledCrossing&,bool,const RouteCostContext&){return 1.f;};
+    double expected=2;
+    SUBCASE("equal competing routes") {}
+    SUBCASE("zero costs") {o.crossingCost=[](const CompiledCrossing&,bool,const RouteCostContext&){return 0.f;};expected=0;}
+    SUBCASE("expensive early arrival") {o.transferCost=[](IslandId i,const Anchor& a,const Anchor&){return i==1&&a.position.x==1?100.f:0.f;};}
+    SUBCASE("blocked transfers") {o.transferCost=[](IslandId i,const Anchor&,const Anchor&){return i==1?std::numeric_limits<float>::infinity():0.f;};expected=std::numeric_limits<double>::infinity();}
+    const auto minimum=fixture_oracle::minimumCost(graph,0,2,{}, {4,0,0},o);
+    CHECK(minimum==expected);const auto route=findRoute(graph,0,2,{}, {4,0,0},o);
+    if(std::isfinite(expected)){REQUIRE(route.value);CHECK(route.value->totalCost==doctest::Approx(expected));}
+    else CHECK(route.status==RouteStatus::NoPath);
+    CHECK_FALSE(std::isfinite(fixture_oracle::minimumCost(graph,2,0,{4,0,0},{},o)));
+    CHECK_FALSE(std::isfinite(fixture_oracle::minimumCost(graph,0,3,{},{},o)));
 }

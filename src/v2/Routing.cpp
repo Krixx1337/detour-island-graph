@@ -72,12 +72,14 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
 
         const auto transfer = [&](IslandId island, const Anchor& from, const Anchor& to,
                                   float& cost) {
+            ++result.stats.transferEvaluations;
             cost = options.transferCost ? options.transferCost(island, from, to)
                                         : euclidean(from.position, to.position);
             checkpoint(options.canceled);
             return usable(cost);
         };
         const auto gap = [&](const CompiledCrossing& crossing, bool reverse, float& cost) {
+            ++result.stats.crossingEvaluations;
             cost = options.crossingCost ? options.crossingCost(crossing, reverse, context)
                                         : euclidean(crossing.crossing.a.position,
                                               crossing.crossing.b.position);
@@ -110,6 +112,7 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
         for (std::size_t portal = offsets[startIsland]; portal < offsets[startIsland + 1];
              ++portal) {
             checkpoint(options.canceled);
+            ++result.stats.examinedTraversals;
             const Traversal& traversal = graph.traversals()[portal];
             if (traversal.crossing >= graph.crossings().size()) {
                 result.status = RouteStatus::InvalidInput;
@@ -143,12 +146,16 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
                 });
             const auto entry = work->heap.back();
             work->heap.pop_back();
+            ++result.stats.heapPops;
             if (entry.portal >= work->states.size()) {
                 result.status = RouteStatus::InvalidInput;
                 return result;
             }
             auto& state = work->states[entry.portal];
-            if (state.closed || entry.cost != state.cost) continue;
+            if (state.closed || entry.cost != state.cost) {
+                ++result.stats.staleHeapPops;
+                continue;
+            }
             // Stale entries consume no expansion budget. A proven result at
             // exactly the cap succeeds without expanding irrelevant portals.
             if (bestPortal != kNoPortal && entry.bound >= bestCost) break;
@@ -176,6 +183,7 @@ RouteResult findRoute(const CompiledGraph& graph, IslandId startIsland, IslandId
             }
             for (std::size_t next = offsets[island]; next < offsets[island + 1]; ++next) {
                 checkpoint(options.canceled);
+                ++result.stats.examinedTraversals;
                 const Traversal& traversal = graph.traversals()[next];
                 if (traversal.crossing >= graph.crossings().size()) {
                     result.status = RouteStatus::InvalidInput;

@@ -92,11 +92,12 @@ struct Result {
     std::size_t expectedCandidates=0,missing=0,extra=0,islands=0,directions=0,work=0,bytes=0,nearby=0;
     std::size_t routeExpanded=0,routeQueued=0,limit=0,attempted=0;
     double durationMs=0;
+    std::vector<fixture_oracle::PairOutcome> routes;
 };
 inline void checkGraph(const CompiledGraph& g,const dtNavMesh& mesh,bool small,Result* stats=nullptr) {
     const auto h=analyzeGraphHealth(g);require(h.status==StageStatus::Success && h.value && h.value->healthy(),"Scenario graph unhealthy");
     if(small) {
-        for(const auto& pair:fixture_oracle::checkAllRoutes(g,mesh))if(stats){stats->routeExpanded+=pair.expanded;stats->routeQueued+=pair.queued;}
+        for(const auto& pair:fixture_oracle::checkAllRoutes(g,mesh,g.traversals().size()<=512))if(stats){stats->routeExpanded+=pair.expanded;stats->routeQueued+=pair.queued;stats->routes.push_back(pair);}
         return;
     }
     const auto n=static_cast<IslandId>(g.domain().size());
@@ -111,12 +112,18 @@ inline void checkGraph(const CompiledGraph& g,const dtNavMesh& mesh,bool small,R
         require(dtStatusSucceed(mesh.getTileAndPolyByRef(ref,&tile,&poly)),"Stress endpoint missing");
         Point p{};for(unsigned j=0;j<poly->vertCount;++j){const auto* v=&tile->verts[poly->verts[j]*3];p.x+=v[0]/poly->vertCount;p.y+=v[1]/poly->vertCount;p.z+=v[2]/poly->vertCount;}return p;
     };
+    RouteScratch scratch;
     for(auto pair:std::vector<std::pair<IslandId,IslandId>>{{0,n-1},{n-1,0},{0,n/2},{n/2,n-1}}) {
         std::vector<bool> seen(n);std::vector<IslandId> queue{pair.first};seen[pair.first]=true;
         for(std::size_t i=0;i<queue.size();++i)for(auto next:edges[queue[i]])if(!seen[next]){seen[next]=true;queue.push_back(next);}
         RouteOptions o;o.maxExpandedPortals=1000000;o.maxQueuedPortals=2000000;
         const auto start=center(pair.first),end=center(pair.second);
-        auto route=findRoute(g,pair.first,pair.second,start,end,o);
+        const auto begin=std::chrono::steady_clock::now();
+        auto route=findRoute(g,pair.first,pair.second,start,end,o,&scratch);
+        const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        if(stats)stats->routes.push_back({pair.first,pair.second,route.status,route.value?route.value->legs.size():0,
+            route.stats.expandedPortals,route.stats.queuedPortals,route.stats.peakOpenSetSize,
+            route.value?std::optional<float>(route.value->totalCost):std::nullopt,route.stats,ms});
         if(stats){stats->routeExpanded+=route.stats.expandedPortals;stats->routeQueued+=route.stats.queuedPortals;}
         require(route.status==(seen[pair.second]?RouteStatus::Success:RouteStatus::NoPath),"Stress route differs from BFS");
         if(route.value)fixture_oracle::checkRoute(g,pair.first,pair.second,start,end,*route.value);
@@ -136,12 +143,21 @@ inline Result run(const std::string& name,const std::vector<Rect>& rects,Discove
         for(const auto& k:oracle)result.missing+=actual.count(k)==0;
         for(const auto& k:actual)result.extra+=oracle.count(k)==0;
         require(!result.missing && !result.extra,(name+": analytic discovery oracle mismatch").c_str());
+        const auto routeBegin=result.routes.size();
         checkGraph(*built.graph,*mesh,rects.size()<=16,&result);
+        const auto routeCount=result.routes.size()-routeBegin;
         const auto serialized=bytes(*built.graph);
         if(!first.empty())require(first==serialized,"Scenario batch mismatch");first=serialized;
         std::istringstream stream(serialized,std::ios::binary);auto decoded=GraphSerializer::read(stream);
         require(decoded.status==SerializationStatus::Success && decoded.graph,"Scenario decode failed");
         require(bytes(*decoded.graph)==serialized,"Scenario round-trip mismatch");checkGraph(*decoded.graph,*mesh,rects.size()<=16,&result);
+        require(result.routes.size()==routeBegin+2*routeCount,"Scenario route count changed");
+        for(std::size_t i=0;i<routeCount;++i) {
+            const auto& original=result.routes[routeBegin+i];const auto& decodedRoute=result.routes[routeBegin+routeCount+i];
+            require(original.status==decodedRoute.status && original.cost==decodedRoute.cost &&
+                fixture_oracle::sameWork(original.stats,decodedRoute.stats),"Scenario decoded route work changed");
+            if(routeBegin)require(fixture_oracle::sameWork(result.routes[i].stats,original.stats),"Scenario batch route work changed");
+        }
         result.status=built.status;result.islands=rects.size();result.directions=built.graph->traversals().size();
         result.work=built.budget.workUnits;result.bytes=built.budget.peakAllocationBytes;result.nearby=built.budget.peakNearbyRefs;
     }

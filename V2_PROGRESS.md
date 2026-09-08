@@ -377,6 +377,17 @@ existing files. Host code remains untouched and deferred.
 
 ## Next slice
 
+Routing measurement foundation now exposes traversal scans, cost evaluations, and
+heap/stale pops. Fixture routes have independently checked minimum costs on real
+maps and bounded small procedural graphs. Per-query timings exclude oracle work;
+build stage timings are reported separately. See the [routing baseline](docs/v2-routing-baseline.md)
+for reproducible work counts and the next optimization target. Search behavior,
+graph serialization, and host integration remain unchanged.
+
+Validation for this foundation: 121 DIG tests and all five Extractor suites pass
+in MSVC Debug and Release. Repeated fixture reports match outside timings and
+independent source SHA-256 checks pass in both configurations.
+
 Adversarial fixture coverage now adds an independent rectangle discovery oracle,
 fixed sparse/dense stress workloads, and a known landing-window sampling limit.
 Extractor reports include procedural collision expectations for stacked floors,
