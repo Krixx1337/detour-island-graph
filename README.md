@@ -9,6 +9,8 @@ For V2 development, see [implementation progress](V2_PROGRESS.md) and the
 teleport validation limits, fixture coverage, and performance risks.
 Optional [native transfer routing](docs/v2-native-transfers.md) evaluates bounded
 Detour walking costs between crossing anchors and documents dependency requirements.
+Optional [area preferences](docs/v2-area-preferences.md) favor larger intermediate
+islands or enforce an explicit minimum area during routing.
 
 ## Design
 

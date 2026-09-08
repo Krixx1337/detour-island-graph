@@ -57,6 +57,37 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
             result.status = RouteStatus::InvalidInput;
             return result;
         }
+        const auto& preference = options.areaPreference;
+        if (!std::isfinite(preference.preferredAreaSquareMeters) || preference.preferredAreaSquareMeters < 0 ||
+            !usable(preference.maxEntryPenalty) ||
+            !std::isfinite(preference.minimumIntermediateAreaSquareMeters) || preference.minimumIntermediateAreaSquareMeters < 0 ||
+            (preference.maxEntryPenalty > 0 && preference.preferredAreaSquareMeters == 0))
+            throw Abort{RouteStatus::InvalidInput};
+        const bool areaActive = preference.maxEntryPenalty > 0 || preference.minimumIntermediateAreaSquareMeters > 0;
+        const double units = graph.identity().unitsPerMeter;
+        if (areaActive) {
+            if (!std::isfinite(units) || units <= 0 || graph.metrics().size() != islandCount)
+                throw Abort{RouteStatus::InvalidInput};
+            for (const auto& metric : graph.metrics()) {
+                checkpoint(options.canceled);
+                const double area = metric.surfaceArea / units / units;
+                if (!std::isfinite(metric.surfaceArea) || metric.surfaceArea < 0 || !std::isfinite(area) ||
+                    (metric.surfaceArea > 0 && area == 0))
+                    throw Abort{RouteStatus::InvalidInput};
+            }
+        }
+        const auto exempt = [&](IslandId island) { return island == startIsland || island == endIsland; };
+        const auto area = [&](IslandId island) {
+            if (island >= islandCount) throw Abort{RouteStatus::InvalidInput};
+            return graph.metrics()[island].surfaceArea / units / units;
+        };
+        const auto allowed = [&](IslandId island) {
+            return !areaActive || exempt(island) || area(island) >= preference.minimumIntermediateAreaSquareMeters;
+        };
+        const auto penalty = [&](IslandId island) -> float {
+            if (!areaActive || exempt(island) || preference.maxEntryPenalty == 0) return 0;
+            return float(preference.maxEntryPenalty * (std::max)(0.0, 1.0 - area(island) / preference.preferredAreaSquareMeters));
+        };
         if (startIsland >= islandCount || endIsland >= islandCount) {
             result.status = RouteStatus::InvalidIsland;
             return result;
@@ -79,7 +110,7 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
             return result;
         }
         const RouteCostContext context{graph, startIsland, endIsland};
-        const bool useAStar = !options.transferCost && !options.transferEvaluator && !options.crossingCost;
+        const bool useAStar = !areaActive && !options.transferCost && !options.transferEvaluator && !options.crossingCost;
         result.stats.usedAStar = useAStar;
 
         RouteScratch local;
@@ -166,7 +197,11 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
                                         : euclidean(crossing.crossing.a.position,
                                               crossing.crossing.b.position);
             checkpoint(options.canceled);
-            return usable(cost);
+            if (!usable(cost)) return false;
+            const auto destination = reverse ? crossing.crossing.a.island : crossing.crossing.b.island;
+            cost += penalty(destination);
+            if (!usable(cost)) throw Abort{RouteStatus::InvalidInput};
+            return true;
         };
         const auto heuristic = [&](const Anchor& from) {
             return useAStar ? euclidean(from.position, endPosition) : 0.0f;
@@ -206,12 +241,14 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
                 result.status = RouteStatus::InvalidInput;
                 return result;
             }
+            if (!allowed(to.island)) continue;
             if (options.crossingFilter && !options.crossingFilter(compiled, traversal.reverse, context))
                 continue;
             float transferCost = 0, gapCost = 0;
             if (!transfer(startIsland, startAnchor, from, transferCost)) continue;
             if (!gap(compiled, traversal.reverse, gapCost)) continue;
             const float gCost = transferCost + gapCost;
+            if (areaActive && !usable(gCost)) throw Abort{RouteStatus::InvalidInput};
             if (!usable(gCost)) continue;
             push(portal, {traversal.crossing, traversal.reverse, from, to}, gCost, heuristic(to));
         }
@@ -259,10 +296,13 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
             const Anchor& arrivedAt = state.leg.to;
             if (arrivedAt.island == endIsland) {
                 float finish = 0;
-                if (transfer(endIsland, arrivedAt, endAnchor, finish) && usable(state.cost + finish) &&
-                    state.cost + finish < bestCost) {
-                    bestCost = state.cost + finish;
-                    bestPortal = entry.portal;
+                if (transfer(endIsland, arrivedAt, endAnchor, finish)) {
+                    const float total = state.cost + finish;
+                    if (areaActive && !usable(total)) throw Abort{RouteStatus::InvalidInput};
+                    if (usable(total) && total < bestCost) {
+                        bestCost = total;
+                        bestPortal = entry.portal;
+                    }
                 }
             }
             if (entry.bound >= bestCost) continue;
@@ -288,6 +328,7 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
                     result.status = RouteStatus::InvalidInput;
                     return result;
                 }
+                if (!allowed(to.island)) continue;
                 if (options.crossingFilter &&
                     !options.crossingFilter(compiled, traversal.reverse, context))
                     continue;
@@ -295,6 +336,7 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
                 if (!transfer(island, arrivedAt, from, transferCost)) continue;
                 if (!gap(compiled, traversal.reverse, gapCost)) continue;
                 const float gCost = state.cost + transferCost + gapCost;
+                if (areaActive && !usable(gCost)) throw Abort{RouteStatus::InvalidInput};
                 if (!usable(gCost)) continue;
                 auto& target = work->states[next];
                 if (gCost >= target.cost) continue;
@@ -317,6 +359,13 @@ static RouteResult routeImpl(const CompiledGraph& graph, Anchor startAnchor, Anc
              cursor = work->states[cursor].previous)
             route.legs.push_back(work->states[cursor].leg);
         std::reverse(route.legs.begin(), route.legs.end());
+        double penaltySum = 0;
+        for (const auto& leg : route.legs) {
+            checkpoint(options.canceled);
+            penaltySum += penalty(leg.to.island);
+        }
+        route.areaPenaltyCost = float(penaltySum);
+        if (!usable(route.areaPenaltyCost)) throw Abort{RouteStatus::InvalidInput};
         route.totalCost = bestCost;
         result.value.emplace(std::move(route));
         result.status = RouteStatus::Success;

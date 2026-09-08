@@ -1,6 +1,7 @@
 #pragma once
 #include <detour_island_graph/v2/NativeTransfers.h>
 #include "V2RouteOracle.h"
+#include "V2AreaOracle.h"
 #include <DetourNavMeshQuery.h>
 #include <map>
 #include <string>
@@ -53,7 +54,8 @@ inline float referenceCost(const CompiledGraph& graph,const dtNavMesh& mesh,Anch
         {points[i*3],points[i*3+1],points[i*3+2]});
     return float(cost);
 }
-inline std::vector<Outcome> check(const CompiledGraph& graph, const dtNavMesh& mesh) {
+inline std::vector<Outcome> check(const CompiledGraph& graph, const dtNavMesh& mesh,
+    IslandAreaPreference preference = {}, bool native = true) {
     dtNavMeshQuery audit; require(dtStatusSucceed(audit.init(&mesh,32)),"Audit init failed");
     double maxProjection=0;
     for(const auto& c:graph.crossings()) for(const auto& a:{c.crossing.a,c.crossing.b}) {
@@ -84,24 +86,30 @@ inline std::vector<Outcome> check(const CompiledGraph& graph, const dtNavMesh& m
     std::vector<Outcome> outcomes;
     for (const auto& a:endpoints) for(const auto& b:endpoints) {
         auto settings=options(); RouteOptions routing;
+        routing.areaPreference=preference;
         routing.maxExpandedPortals=1000000;routing.maxQueuedPortals=2000000;
         const auto started=std::chrono::steady_clock::now();
-        auto result=findNativeRoute(graph,mesh,graph.identity().mesh,a.second,b.second,settings,routing,&provider,&scratch);
+        NativeRouteResult result;
+        if(native) result=findNativeRoute(graph,mesh,graph.identity().mesh,a.second,b.second,settings,routing,&provider,&scratch);
+        else result.route=findRoute(graph,a.second,b.second,routing,&scratch);
         const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
         settings.cacheEntries=0;
-        auto uncached=findNativeRoute(graph,mesh,graph.identity().mesh,a.second,b.second,settings,routing,&reference);
+        NativeRouteResult uncached;
+        if(native) uncached=findNativeRoute(graph,mesh,graph.identity().mesh,a.second,b.second,settings,routing,&reference);
+        else uncached.route=findRoute(graph,a.second,b.second,routing);
         fixture_oracle::equivalent(result.route,uncached.route);
+        if(result.route.value) require(result.route.value->areaPenaltyCost==uncached.route.value->areaPenaltyCost,"Area cache mismatch");
         if (result.route.status!=RouteStatus::Success && result.route.status!=RouteStatus::NoPath &&
             result.route.status!=RouteStatus::SameIsland) throw std::runtime_error("Native fixture query failed " +
                 std::to_string(a.first)+" -> "+std::to_string(b.first)+" status="+std::to_string(int(result.route.status))+
                 " queries="+std::to_string(result.transfers.queries));
         if (a.first!=b.first) {
-            require(!result.route.stats.estimatedTransferCost && result.route.stats.estimatedCrossingCost &&
+            if(native) require(!result.route.stats.estimatedTransferCost && result.route.stats.estimatedCrossingCost &&
                 !result.route.stats.usedAStar && !result.route.stats.usedArrivalDominance,"Native provenance mismatch");
             using Key=std::tuple<IslandId,dtPolyRef,float,float,float,dtPolyRef,float,float,float>;
             std::map<Key,float> costs;
             RouteOptions oracle;
-            oracle.transferCost=[&](IslandId island,Anchor from,Anchor to) {
+            if(native) oracle.transferCost=[&](IslandId island,Anchor from,Anchor to) {
                 if (!from.polygon) from=a.second;
                 if (!to.polygon) to=b.second;
                 const Key key{island,from.polygon,from.position.x,from.position.y,from.position.z,
@@ -111,27 +119,49 @@ inline std::vector<Outcome> check(const CompiledGraph& graph, const dtNavMesh& m
                 const auto cost=referenceCost(graph,mesh,from,to);
                 costs.emplace(key,cost);return cost;
             };
+            area_fixture::configure(oracle,preference);
             const auto minimum=fixture_oracle::minimumCost(graph,a.first,b.first,a.second.position,b.second.position,oracle);
             require(std::isfinite(minimum)==bool(result.route.value),"Native oracle reachability differs");
             if(result.route.value) {
                 require(std::abs(minimum-result.route.value->totalCost)<=1e-5*std::max(1.0,minimum),"Native oracle cost differs");
-                double cost=0;Anchor at=a.second;
+                double cost=0,penalties=0;Anchor at=a.second;
                 for(const auto& leg:result.route.value->legs) {
                     require(leg.crossing<graph.crossings().size(),"Native leg crossing missing");
                     const auto& c=graph.crossings()[leg.crossing];
                     require((leg.reverse?c.traversableBA:c.traversableAB) &&
                         fixture_oracle::same(leg.from,leg.reverse?c.crossing.b:c.crossing.a) &&
                         fixture_oracle::same(leg.to,leg.reverse?c.crossing.a:c.crossing.b),"Native leg invalid");
-                    cost+=oracle.transferCost(at.island,at,leg.from)+fixture_oracle::distance(leg.from.position,leg.to.position);
+                    const RouteCostContext context{graph,a.first,b.first};
+                    require(oracle.crossingFilter(c,leg.reverse,context),"Area cutoff violated");
+                    cost+=(native?oracle.transferCost(at.island,at,leg.from):fixture_oracle::distance(at.position,leg.from.position))+
+                        oracle.crossingCost(c,leg.reverse,context);
+                    penalties+=area_fixture::penalty(graph,leg.to.island,a.first,b.first,preference);
                     at=leg.to;
                 }
                 require(at.island==b.first,"Native route ends on wrong island");
-                cost+=oracle.transferCost(at.island,at,b.second);
+                cost+=native?oracle.transferCost(at.island,at,b.second):fixture_oracle::distance(at.position,b.second.position);
                 require(std::abs(cost-result.route.value->totalCost)<=1e-5*std::max(1.0,cost),"Native route leg costs differ");
+                require(std::abs(penalties-result.route.value->areaPenaltyCost)<=1e-5*std::max(1.0,penalties),"Area penalty subtotal differs");
             }
         }
         outcomes.push_back({a.first,b.first,std::move(result),ms});
     }
     return outcomes;
+}
+inline void checkProfiles(const CompiledGraph& graph,const dtNavMesh& mesh) {
+    for(bool native:{false,true}) {
+        const auto baseline=check(graph,mesh,{},native);
+        for(const auto& profile:area_fixture::profiles()) {
+            if(std::string(profile.name)=="neutral") continue;
+            const auto outcomes=check(graph,mesh,profile.preference,native);
+            for(std::size_t i=0;i<outcomes.size();++i) {
+                const auto& before=baseline[i].result.route;
+                const auto& after=outcomes[i].result.route;
+                require(!after.value || bool(before.value),"Area policy created reachability");
+                if(profile.preference.minimumIntermediateAreaSquareMeters==0)
+                    require(before.status==after.status,"Soft area policy changed reachability");
+            }
+        }
+    }
 }
 }

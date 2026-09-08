@@ -12,6 +12,7 @@
 #include <set>
 #include <tuple>
 #include "V2RouteOracle.h"
+#include "V2AreaOracle.h"
 
 namespace {
 using namespace detour_island_graph::v2;
@@ -380,6 +381,139 @@ std::shared_ptr<const CompiledGraph> dominanceGraph(bool distinctPolygon=false) 
     REQUIRE(validated.value);auto compiled=compileGraph(*validated.value);REQUIRE(compiled.value);
     return *compiled.value;
 }
+}
+
+namespace {
+std::shared_ptr<const CompiledGraph> areaGraph(double units=1, bool extra=false, double small=1, bool metrics=true) {
+    TopologyArtifact t;t.identity.unitsPerMeter=units;t.islandCount=extra?5:4;
+    t.polygons={{1,0},{2,1},{3,2},{4,3}};
+    if(extra) {t.polygons.push_back({5,4});t.polygons.push_back({6,1});}
+    if(metrics) {
+        for(double a:{0.0,small,100.0,0.0}) t.metrics.push_back({1,a*units*units,{},{}});
+        if(extra) {t.metrics[1].polygonCount=2;t.metrics.push_back({1,1e12*units*units,{},{}});}
+    }
+    auto v=validateCrossings(t,{1,100,0,0},{
+        {{0,1,{0,0,0}},{1,2,{1,0,0}}},{{1,2,{1,0,0}},{3,4,{2,0,0}}},
+        {{0,1,{0,0,0}},{2,3,{1,0,2}}},{{2,3,{1,0,2}},{3,4,{2,0,0}}}});
+    REQUIRE(v.value);auto c=compileGraph(*v.value);REQUIRE(c.value);return *c.value;
+}
+}
+
+TEST_CASE("V2 area preferences rank routes and preserve endpoint exemptions") {
+    for(bool extra:{false,true}) for(double units:{1.0,10.0}) {
+        auto graph=areaGraph(units,extra);RouteScratch scratch;RouteOptions o;
+        auto neutral=findRoute(*graph,0,3,{}, {2,0,0},o,&scratch);
+        REQUIRE(neutral.value);CHECK(neutral.value->totalCost==2);CHECK(neutral.value->legs[0].to.island==1);
+        for(const auto& profile:area_fixture::profiles()) {
+            o.areaPreference=profile.preference;
+            auto r=findRoute(*graph,0,3,{}, {2,0,0},o,&scratch);REQUIRE(r.value);
+            RouteOptions oracle;area_fixture::configure(oracle,o.areaPreference);
+            CHECK(r.value->totalCost==doctest::Approx(fixture_oracle::minimumCost(*graph,0,3,{}, {2,0,0},oracle)));
+            const bool active=o.areaPreference.maxEntryPenalty>0 || o.areaPreference.minimumIntermediateAreaSquareMeters>0;
+            CHECK(r.value->legs[0].to.island==(active?2:1));CHECK(r.value->areaPenaltyCost==0);
+            CHECK(r.stats.usedAStar==!active);CHECK(r.stats.usedArrivalDominance==!active);
+            CHECK(r.stats.estimatedTransferCost);CHECK(r.stats.estimatedCrossingCost);
+            auto reverse=findRoute(*graph,3,0,{2,0,0},{},o);REQUIRE(reverse.value);
+            CHECK(reverse.value->totalCost==doctest::Approx(r.value->totalCost));
+        }
+        o.areaPreference={100,1,0};auto low=findRoute(*graph,0,3,{}, {2,0,0},o);
+        REQUIRE(low.value);CHECK(low.value->areaPenaltyCost==doctest::Approx(.99));CHECK(low.value->totalCost==doctest::Approx(2.99));
+        o.areaPreference={0,0,100};CHECK(findRoute(*graph,0,3,{}, {2,0,0},o).status==RouteStatus::Success);
+        o.areaPreference.minimumIntermediateAreaSquareMeters=101;
+        CHECK(findRoute(*graph,0,3,{}, {2,0,0},o).status==RouteStatus::NoPath);
+        CHECK(findRoute(*graph,0,1,{}, {1,0,0},o).status==RouteStatus::Success);
+        CHECK(findRoute(*graph,0,0,{},{},o).status==RouteStatus::SameIsland);
+        o={};auto reused=findRoute(*graph,0,3,{}, {2,0,0},o,&scratch);
+        CHECK(fixture_oracle::sameWork(neutral.stats,reused.stats));
+    }
+}
+
+TEST_CASE("V2 area preference validation and callback composition") {
+    auto graph=areaGraph();RouteOptions o;o.areaPreference={100,10,101};
+    o.transferCost=[](IslandId,const Anchor&,const Anchor&)->float {throw std::runtime_error("must not evaluate");};
+    CHECK(findRoute(*graph,0,3,{}, {2,0,0},o).status==RouteStatus::NoPath);
+    o={};o.areaPreference={100,1,0};
+    o.transferEvaluator=[](IslandId,const Anchor&,const Anchor&){return TransferResult{TransferStatus::Success,0};};
+    o.transferCostEstimated=false;o.crossingCostEstimated=false;
+    o.crossingCost=[](const CompiledCrossing&,bool,const RouteCostContext&){return 1.f;};
+    o.crossingFilter=[](const CompiledCrossing& c,bool reverse,const RouteCostContext&){return (reverse?c.crossing.a:c.crossing.b).island!=2;};
+    auto custom=findRoute(*graph,0,3,{}, {2,0,0},o);REQUIRE(custom.value);
+    CHECK(custom.value->totalCost==doctest::Approx(2.99));CHECK_FALSE(custom.stats.estimatedCost);
+    auto missing=areaGraph(1,false,1,false);
+    CHECK(findRoute(*missing,0,3,{}, {2,0,0},o).status==RouteStatus::InvalidInput);
+    CHECK(findRoute(*missing,0,3,{}, {2,0,0}).status==RouteStatus::Success);
+    for(const auto p:std::vector<IslandAreaPreference>{{-1,0,0},{1,-1,0},{1,0,-1},{0,1,0},
+        {std::numeric_limits<double>::infinity(),0,0},{1,std::numeric_limits<float>::quiet_NaN(),0},
+        {1,0,std::numeric_limits<double>::quiet_NaN()}}) {
+        RouteOptions bad;bad.areaPreference=p;
+        auto r=findRoute(*graph,0,3,{}, {2,0,0},bad);CHECK(r.status==RouteStatus::InvalidInput);CHECK_FALSE(r.value);
+    }
+    o={};o.areaPreference={100,1,0};int checks=0;o.canceled=[&]{return ++checks==3;};
+    CHECK(findRoute(*graph,0,3,{}, {2,0,0},o).status==RouteStatus::Canceled);
+    o.canceled={};auto zero=areaGraph(1,false,0);auto r=findRoute(*zero,0,3,{}, {2,0,0},o);
+    REQUIRE(r.value);CHECK(r.value->areaPenaltyCost==1);
+    auto hugeUnits=areaGraph(1,false,1);
+    o.areaPreference={100,(std::numeric_limits<float>::max)(),0};
+    o.crossingCost=[](const CompiledCrossing&,bool,const RouteCostContext&){return (std::numeric_limits<float>::max)();};
+    CHECK(findRoute(*hugeUnits,0,3,{}, {2,0,0},o).status==RouteStatus::InvalidInput);
+}
+
+TEST_CASE("V2 area penalties charge repeated intermediate entries") {
+    TopologyArtifact t;t.islandCount=4;t.polygons={{1,0},{2,1},{3,2},{4,3}};
+    t.metrics={{1,0,{},{}},{1,1,{},{}},{1,100,{},{}},{1,0,{},{}}};
+    auto v=validateCrossings(t,{1,100,0,0},{
+        {{0,1,{}},{1,2,{1,0,0}}},{{1,2,{1,0,0}},{2,3,{2,0,0}}},
+        {{1,2,{3,0,0}},{2,3,{2,0,0}}},{{1,2,{3,0,0}},{3,4,{4,0,0}}}});
+    REQUIRE(v.value);auto c=compileGraph(*v.value);REQUIRE(c.value);
+    RouteOptions o;o.areaPreference={100,1,0};
+    o.transferCost=[](IslandId,const Anchor& a,const Anchor& b){
+        return a.position.x==b.position.x?0.f:std::numeric_limits<float>::infinity();
+    };
+    o.crossingFilter=[](const CompiledCrossing& c,bool reverse,const RouteCostContext&) {
+        return reverse==(c.crossing.a.position.x==3 && c.crossing.b.island==2);
+    };
+    auto r=findRoute(**c.value,0,3,{}, {4,0,0},o);REQUIRE(r.value);
+    REQUIRE(r.value->legs.size()==4);CHECK(r.value->legs[0].to.island==1);CHECK(r.value->legs[2].to.island==1);
+    CHECK(r.value->areaPenaltyCost==doctest::Approx(1.98));CHECK(r.value->totalCost==doctest::Approx(5.98));
+}
+
+TEST_CASE("V2 area policies reject corrupt metrics and converted areas") {
+    auto graph=std::make_shared<CompiledGraph>(*areaGraph());
+    auto& metrics=const_cast<BuildVector<IslandMetrics>&>(graph->metrics());
+    auto& identity=const_cast<BuildIdentity&>(graph->identity());
+    SUBCASE("missing") {metrics.clear();}
+    SUBCASE("partial") {metrics.pop_back();}
+    SUBCASE("negative") {metrics[1].surfaceArea=-1;}
+    SUBCASE("nan") {metrics[1].surfaceArea=std::numeric_limits<double>::quiet_NaN();}
+    SUBCASE("infinite") {metrics[1].surfaceArea=std::numeric_limits<double>::infinity();}
+    SUBCASE("units zero") {identity.unitsPerMeter=0;}
+    SUBCASE("units negative") {identity.unitsPerMeter=-1;}
+    SUBCASE("units nan") {identity.unitsPerMeter=std::numeric_limits<double>::quiet_NaN();}
+    SUBCASE("conversion overflow") {identity.unitsPerMeter=1e-200;}
+    SUBCASE("conversion underflow") {identity.unitsPerMeter=1e200;}
+    RouteOptions o;o.areaPreference={100,1,0};
+    auto r=findRoute(*graph,0,3,{}, {2,0,0},o);CHECK(r.status==RouteStatus::InvalidInput);CHECK_FALSE(r.value);
+    CHECK(findRoute(*graph,0,0,{},{},o).status==RouteStatus::InvalidInput);
+}
+
+TEST_CASE("V2 area policies exempt revisited start islands") {
+    TopologyArtifact t;t.islandCount=3;t.polygons={{1,0},{2,1},{3,2}};
+    t.metrics={{1,0,{},{}},{1,100,{},{}},{1,0,{},{}}};
+    auto v=validateCrossings(t,{1,100,0,0},{
+        {{0,1,{}},{1,2,{1,0,0}}},{{0,1,{2,0,0}},{1,2,{1,0,0}}},
+        {{0,1,{2,0,0}},{2,3,{3,0,0}}}});
+    REQUIRE(v.value);auto c=compileGraph(*v.value);REQUIRE(c.value);
+    RouteOptions o;o.areaPreference={100,10,25};
+    o.transferCost=[](IslandId,const Anchor& a,const Anchor& b){
+        return a.position.x==b.position.x?0.f:std::numeric_limits<float>::infinity();
+    };
+    auto r=findRoute(**c.value,0,2,{}, {3,0,0},o);REQUIRE(r.value);
+    REQUIRE(r.value->legs.size()==3);CHECK(r.value->legs[1].to.island==0);
+    CHECK(r.value->areaPenaltyCost==0);CHECK(r.value->totalCost==3);
+    o.maxQueuedPortals=1;RouteScratch scratch;
+    auto capped=findRoute(**c.value,0,2,{}, {3,0,0},o,&scratch);
+    CHECK(capped.status==RouteStatus::BudgetExceeded);CHECK_FALSE(capped.value);
+    o.maxQueuedPortals=0;CHECK(findRoute(**c.value,0,2,{}, {3,0,0},o,&scratch).status==RouteStatus::Success);
 }
 
 TEST_CASE("V2 arrival dominance suppresses equal and expensive arrivals before budget") {

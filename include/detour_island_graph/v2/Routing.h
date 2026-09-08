@@ -47,6 +47,17 @@ using CrossingCost =
 using CrossingFilter =
     std::function<bool(const CompiledCrossing& crossing, bool reverse, const RouteCostContext&)>;
 
+// Query-time preference, independent of build domain and collision evidence.
+struct IslandAreaPreference {
+    double preferredAreaSquareMeters = 0;
+    float maxEntryPenalty = 0; // Same units as movement costs.
+    double minimumIntermediateAreaSquareMeters = 0;
+};
+// Both controls default off. Each entry into an intermediate island adds
+// maxEntryPenalty * max(0, 1 - area / preferredAreaSquareMeters). Strict minimum
+// rejects smaller intermediates; equality and start/end islands are allowed.
+// Active controls require complete metrics and use Dijkstra without dominance.
+
 struct RouteOptions {
     TransferCost transferCost;
     CrossingCost crossingCost;
@@ -63,6 +74,7 @@ struct RouteOptions {
     bool enableArrivalDominance = true;
     // Mutually exclusive with transferCost. Fatal failures abort the whole route.
     TransferEvaluator transferEvaluator;
+    IslandAreaPreference areaPreference;
 };
 
 enum class RouteStatus : std::uint8_t {
@@ -104,6 +116,7 @@ struct RouteStats {
 struct Route {
     std::vector<RouteLink> legs;
     float totalCost = 0;
+    float areaPenaltyCost = 0; // Included in totalCost; not physical distance.
 };
 
 struct RouteResult {
@@ -137,7 +150,7 @@ struct RouteScratch {
 // Portal-based routing over compiled traversals. Reuses the graph's
 // precomputed offsets; no mutable search state lives in the shared graph.
 // Same-island queries return SameIsland without searching. Geometric A*
-// runs only under fully default costs; any custom cost provider uses
+// runs only under fully default costs and inactive area controls; any custom cost provider uses
 // Dijkstra. Search stops once the remaining bound cannot beat the best
 // completed route. Optional NativeTransfers.h supplies checked Detour costs.
 // No cross-query result cache.

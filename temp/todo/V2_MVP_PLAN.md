@@ -376,6 +376,8 @@ includes a reusable Detour transfer provider and bounded per-query cache; host w
 supplies execution-specific costs, units, and adapter integration.
 
 - Prefer soft nonnegative penalties for entering small intermediate islands.
+  Query-time soft and strict controls are implemented; see
+  [area preference contracts](../../docs/v2-area-preferences.md).
   Keep strict minimum-intermediate-mass policy explicitly selectable; it may
   intentionally return no path. Preserve intended destination exemptions.
 - Prefer area over polygon count. Use stable world-unit thresholds or versioned

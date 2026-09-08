@@ -6,7 +6,7 @@ The revised [MVP plan](temp/todo/V2_MVP_PLAN.md) controls scope. Delivered secti
 below describe the existing baseline, not completion of the expanded MVP. The
 follow-up chat was consolidated into the plan and removed.
 
-Pending additions include mass-policy migration and host native-transfer integration.
+Pending additions include host policy migration and host native-transfer integration.
 Extractor supplies the worker validator; the optional library native-transfer
 provider is now implemented. Existing host remains on V1.
 
@@ -377,6 +377,13 @@ Release runs, invalid configuration, and library/query budget failures preservin
 existing files. Host code remains untouched and deferred.
 
 ## Next slice
+
+Area-based query preferences are implemented. Soft entry penalties and an optional
+strict intermediate-area cutoff compose with native/custom movement costs. Both
+default off; start and destination are exempt. Missing metrics fail explicitly
+when enabled. See [area preference contracts](docs/v2-area-preferences.md).
+Fixture health now compares four policy profiles under Euclidean and native costs.
+Host integration, production calibration, and build-time area exclusion remain deferred.
 
 Native on-island transfers are implemented as an optional module. Explicit anchor
 checks, ownership-constrained virtual Detour filters, sliced bounded search, typed

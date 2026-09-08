@@ -127,11 +127,11 @@ TEST_CASE("V2 real fixtures match reference discovery across batches") {
             REQUIRE(built.graph);
             CHECK(serialize(*built.graph) == serialize(graph));
 #ifdef DIG_NATIVE_TRANSFERS
-            CHECK_NOTHROW(native_fixture::check(*built.graph,*mesh));
+            CHECK_NOTHROW(native_fixture::checkProfiles(*built.graph,*mesh));
             std::istringstream encoded(serialize(*built.graph),std::ios::binary);
             const auto decoded=GraphSerializer::read(encoded);
             REQUIRE(decoded.graph);
-            CHECK_NOTHROW(native_fixture::check(*decoded.graph,*mesh));
+            CHECK_NOTHROW(native_fixture::checkProfiles(*decoded.graph,*mesh));
 #endif
             CHECK(built.budget.peakSampleBatch <= batch);
             CHECK(built.budget.peakCandidateBatch <= batch);
