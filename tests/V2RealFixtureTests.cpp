@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include <detour_island_graph/v2/Build.h>
 #include <detour_island_graph/v2/Serialization.h>
+#include <detour_island_graph/v2/Health.h>
+#include "V2RouteOracle.h"
 #include <DetourAlloc.h>
 #include <cstring>
 #include <fstream>
@@ -99,6 +101,11 @@ TEST_CASE("V2 real fixtures match reference discovery across batches") {
         REQUIRE(reference.status == StageStatus::Success);
         REQUIRE(reference.compilation.value);
         const auto& graph = **reference.compilation.value;
+        const auto health = analyzeGraphHealth(graph);
+        REQUIRE(health.status == StageStatus::Success);
+        REQUIRE(health.value);
+        CHECK(health.value->healthy());
+        CHECK_NOTHROW(fixture_oracle::checkAllRoutes(graph, *mesh));
         REQUIRE_FALSE(graph.crossings().empty());
         const bool pandora = std::string(name) == "pandora";
         CHECK(reference.sampling.value->topology.polygons.size() == (pandora ? 134 : 69));

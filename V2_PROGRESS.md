@@ -377,6 +377,32 @@ existing files. Host code remains untouched and deferred.
 
 ## Next slice
 
+Automated fixture health is now available before host work. The optional portable
+`analyzeGraphHealth` API checks graph invariants and reports directed components,
+distinct neighbors, isolation, and polygon/area-weighted reference reachability.
+Analysis has explicit size limits and cancellation; it does not change serialized
+graphs or run implicitly during builds. A completed analysis can contain issues;
+callers must inspect `healthy()` as well as the result status.
+
+Extractor's opt-in fixture runner shares the existing OBJ bake/collision helpers,
+checks every ordered included island pair against independent BFS, validates route
+legs and estimated costs, and repeats health/routing checks across batches and
+serialization. JSON/text artifacts record identities, settings, coverage, validation
+reasons, resource usage, and route outcomes. The development script repeats reports
+and compares all fields except timings. New target uses the local DIG override;
+the published dependency pin and production CLI contracts remain unchanged.
+
+Standalone Pandora has 91 directions but only 4 successful ordered cross-island
+pairs; Steelribs has 365 directions and 22 successful pairs. These are descriptive
+measurements, not completeness targets. Incomplete evidence still produces zero
+strict traversals. Host, in-game validation, and native transfer routing remain
+deferred. See Extractor `docs/fixture-health.md` for commands and report semantics.
+
+Validation: all 116 DIG tests passed in MSVC Debug and Release. All five Extractor
+CTest suites passed in both configurations. Repeated reports matched outside
+timings, source SHA-256 checks passed, and missing-fixture/output-write failures
+returned nonzero. No host or in-game checks were required for this slice.
+
 Extractor integration has resumed. Gw2CollisionExtractor now owns final navmesh
 assembly, the execution-matched teleport destination validator, a pinned DIG
 dependency, optional unfiltered collision capture, and owned collision snapshots.

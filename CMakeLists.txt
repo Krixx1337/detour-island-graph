@@ -39,6 +39,7 @@ add_library(detour_island_graph
     src/v2/Pipeline.cpp
     src/v2/Routing.cpp
     src/v2/Serialization.cpp
+    src/v2/Health.cpp
 )
 add_library(detour_island_graph::detour_island_graph ALIAS detour_island_graph)
 
@@ -139,6 +140,7 @@ if(DETOUR_ISLAND_GRAPH_BUILD_TESTS)
     add_executable(detour_island_graph_tests
         tests/IslandGraphTests.cpp
         tests/V2BudgetTests.cpp
+        tests/V2HealthTests.cpp
         tests/V2RealFixtureTests.cpp
         tests/V2BuildTests.cpp
         tests/V2SamplingTests.cpp

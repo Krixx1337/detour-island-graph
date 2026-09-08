@@ -19,6 +19,16 @@ declarations describe the supplied OBJ world, not complete original-game collisi
 Ordinary incomplete evidence still produces no executable links. See V2_PROGRESS.md
 for measured results; live calibration and native transfer routing remain unverified.
 
+Automated health checks now support fixture-first iteration. DIG exposes opt-in,
+size-limited structural and directed-connectivity analysis. Extractor's development
+runner checks every ordered included island pair against independent BFS, validates
+route legs/costs, repeats batches and serialization, and writes JSON/text reports.
+The test script compares repeated deterministic fields and checks source hashes.
+Connectivity and timing statistics are descriptive; invariant failures, route
+mismatches, lost fixture expectations, and exhausted budgets fail validation.
+Production health reporting, host work, and in-game testing stay deferred. Current
+runner requires the local DIG source override until its API is published.
+
 ## Direction
 
 Keep V2's directional crossing model and immutable graph compiler. Expand MVP to
