@@ -13,6 +13,11 @@ diagnostics, and fails before export on traversal errors. DAT/OBJ coverage remai
 incomplete by default. Extractor now supports opt-in single-file `navBundle` delivery,
 bounded matching mesh/graph reload, and atomic publication after verification.
 Existing nav-only output remains the default. Host migration remains deferred.
+OBJ link-only rebuild is now implemented through optional `inputBundlePath` jobs.
+It reloads matching collision, verifies source/import provenance, preserves exact
+baked nav bytes, and atomically replaces the graph without Recast. Both real
+fixtures verify equivalence, including changed movement reach. DAT rebuild remains
+pending; old bundles need a new full bake to acquire rebuild provenance.
 Host work is explicitly deferred. Extractor standalone-world tests now exercise
 positive strict link generation on existing Pandora/Steelribs OBJ fixtures, byte
 determinism, serialization and cross-island graph routing. Their test-only coverage

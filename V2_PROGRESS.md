@@ -1,5 +1,33 @@
 # V2 MVP implementation status
 
+## Extractor OBJ link-only rebuild, 2026-09-09
+
+Extractor now accepts optional Job `inputBundlePath` for OBJ bundle rebuilds. It
+reloads matching collision, validates versioned source/import provenance, and
+regenerates traversal on the loaded mesh without Recast. Original MSET bytes,
+polygon references, mesh identity, and baked settings survive unchanged. The old
+graph is released before rebuilding; publication still validates a temporary bundle
+before atomic replacement. Older bundles load normally but require a new full bake
+to acquire rebuild provenance. Rebuild jobs omit `recastSettings`.
+
+Pandora and Steelribs tests compare full-bake and rebuilt graph bytes, validation
+counts, health, native walking, and area preferences for batches 1 and 64. Fresh
+collision imports cover incomplete evidence and standalone triangle worlds. With
+horizontal movement reach reduced to 0.25 m, standalone valid directions fall from
+91 to 24 on Pandora and 365 to 0 on Steelribs; both rebuilds match their corresponding
+full-bake graphs and preserve exact nav bytes. CLI tests cover protected publication,
+repeated in-place rebuild, provenance mismatch, forged coverage metadata, and
+failure preservation. No DIG code or serialization changes are needed.
+
+Validation passed in Debug and Release across all six Extractor CTest suites.
+Repeated fixture reports match after excluding timings; independent source SHA-256
+checks pass. CLI suites must run serially across configurations because they share
+the extraction mutex. No host or human testing was required.
+
+DAT rebuilds, production collision completeness, movement calibration, aggregate
+bundle memory budgeting, and host integration remain deferred. Fixture declarations
+still describe supplied triangles only. No dependency pin or publishing changes.
+
 ## Extractor matched bundle delivery, 2026-09-09
 
 Extractor adds opt-in `outputFormat: "navBundle"` without changing DIG APIs or
