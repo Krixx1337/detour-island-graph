@@ -65,3 +65,14 @@ deterministic comparisons. Equal-cost tie changes can count as changed routes.
 Area does not prove local width, clearance, safety, collision completeness, or
 intended playability. Host calibration and build-time domain heuristics remain
 separate work.
+
+Validation on 2026-09-09: all 135 DIG tests and all five Extractor suites pass
+in Debug and Release. Repeated reports and independent source hashes match in
+both configurations. The native-disabled build passes 21 focused routing checks.
+The expanded Extractor fixture suite uses a 600-second CTest timeout; its old
+120-second timeout was insufficient for Debug policy/oracle comparisons.
+
+With the fixed standalone test profiles, Steelribs soft preference changes four
+native routes without losing reachability. Strict and combined profiles each
+change nine native routes, including five lost routes. Pandora routes remain
+unchanged. These results demonstrate policy effects, not production calibration.
