@@ -1,5 +1,61 @@
 # V2 MVP implementation status
 
+## Autonomous acceptance audit, 2026-09-09
+
+[The acceptance matrix](docs/v2-acceptance.md) maps current non-host contracts to
+production code and named regression checks. Existing scale, translation,
+retessellation and tile-order tests already cover the declared synthetic cases.
+The audit adds DAT read/parse and malformed/missing-bundle failure coverage,
+including raw/protected output preservation, no Recast work, and a successful retry.
+The focused new regression passes 64 assertions without a production-code fix.
+
+Extractor adds `scripts/test_v2_acceptance.ps1 -DigSource <DIG checkout>`. It runs
+Debug/Release DIG and Extractor tests plus repeated fixture reports, followed by a
+separate DIG Debug build without native transfers. Fixture validation explicitly
+enables native transfers and rejects an empty CTest selection. Generated results
+record source revisions, dirty-state flags and report paths beneath `out/`.
+
+Full acceptance passed: all 135 DIG tests in Debug and Release, all seven Extractor
+suites in both configurations, and all 132 DIG Debug tests without native transfers.
+Repeated fixture reports match exactly after excluding timings, with source SHA-256,
+bundle identity, rebuild equivalence and accounted-budget checks passing in both
+configurations. An isolated injected child failure also verified that the wrapper
+stops and records failed check/overall status. After the audit, the user explicitly
+deferred the built-in minimum-area build-domain policy. Custom domain callbacks
+and route-area preferences remain implemented. No known required feature work
+remains in the currently accepted fixture-tested DIG/Extractor scope; this does
+not establish full V2 rollout readiness.
+Production source coverage, real DAT archive/index acceptance, host integration,
+movement calibration, large-map benchmarking and strict process-memory accounting
+remain deferred. No public API, wire format, dependency pin or host changes.
+
+## Extractor DAT link-only rebuild, 2026-09-09
+
+Extractor now accepts DAT `inputBundlePath` jobs through the shared OBJ rebuild
+path. New full-bake bundles record versioned DAT provenance: resolved file ID,
+actual PARM GUID or absence, decompressed map SHA-256 and size, extraction toggles,
+and separate hashes of bake geometry and fresh collision capture. Hashing streams
+existing buffers before traversal consumes capture; paths and whole-DAT hashing
+are excluded. Parser, filtering, or coordinate changes require a revision bump.
+
+Rebuild requires exact provenance and original source/protection identity. Requested
+GUIDs require matching PARM. Older bundles require a full bake to acquire provenance.
+The worker preserves original MSET bytes and baked settings, skips Recast, refreshes
+coverage, and atomically replaces the graph. DAT, Job, and active index output aliases
+are rejected. Ordinary DAT coverage remains incomplete; HAVK failure stays nonfatal.
+
+Automated tests inject generated PARM/TRN/HAVK payloads into production parsing.
+They cover raw/protected full bake and rebuild, separate and in-place publication,
+GUID and provenance rejection, geometry category hashing, coverage refresh, budget
+failure, and Job/alias validation. Pandora and Steelribs retain shared rebuild and
+health regression coverage. Real DAT archive reading and index lookup remain
+unverified by these synthetic payload tests. Host and in-game testing remain deferred.
+No DIG code, dependency pin, or Job/NDJSON schema changes.
+
+All seven Extractor CTest suites pass in Debug and Release. Repeated fixture
+reports in both configurations match exactly after excluding timings, with independent source
+SHA-256 and accounted-budget checks passing.
+
 ## Extractor bundle memory accounting, 2026-09-09
 
 Extractor adds a default 1 GiB `maxWorkingBytes` limit alongside existing individual
@@ -52,9 +108,10 @@ Repeated fixture reports match after excluding timings; independent source SHA-2
 checks pass. CLI suites must run serially across configurations because they share
 the extraction mutex. No host or human testing was required.
 
-DAT rebuilds, production collision completeness, movement calibration, aggregate
-bundle memory budgeting, and host integration remain deferred. Fixture declarations
-still describe supplied triangles only. No dependency pin or publishing changes.
+DAT rebuilds and aggregate bundle memory budgeting were deferred at this phase;
+the newer entries above record their implementation. Production collision
+completeness, movement calibration, and host integration remain deferred. Fixture
+declarations still describe supplied triangles only. No dependency pin or publishing changes.
 
 ## Extractor matched bundle delivery, 2026-09-09
 
@@ -542,13 +599,7 @@ Coverage assessment requires an explicit trusted source-domain declaration and
 rejects partial parsing or capture defects. Ordinary DAT/OBJ evidence remains
 incomplete; synthetic complete scenes exercise positive strict validation.
 
-1. Establish real source coverage and calibrated movement inputs, then add matched
-   graph delivery. Current CLI executes traversal analysis but does not export a
-   graph; live-game completeness is unproven. Host work remains deferred.
-2. Add soft/strict area preference and lazy native Detour transfers with checked
-   query anchors and bounded per-query transfer cache.
-3. Add the narrow opt-in minimum-area policy, remaining diagnostics and dirty-map
-   fixtures, and update persistence when those contracts change.
-4. Add checked host loading and link-only rebuilds using bounded production APIs.
-5. Benchmark before host migration and package version 2.0.0. Measure candidate
-   memory and routing latency before adopting spans or regional routing.
+The earlier integration order is superseded by the dated entries above and the
+[acceptance matrix](docs/v2-acceptance.md). Matched graph delivery, link-only
+rebuilds, area route preferences and native transfers are implemented. Deferred
+policy, integration and evidence work are listed there.

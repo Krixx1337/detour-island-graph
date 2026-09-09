@@ -1,9 +1,12 @@
 # DetourIslandGraph V2 MVP
 
-Revised 2026-09-08 after inspection of the owned Recast pipeline and selection of
-an extractor-owned post-assembly traversal-build stage.
+Revised 2026-09-09 after the autonomous acceptance audit of the extractor-owned
+post-assembly traversal-build stage and portable library.
 This document controls MVP scope. [V2_PROGRESS.md](../../V2_PROGRESS.md) records
 delivered code and gaps. Requirements below are not claims of implementation.
+The [acceptance matrix](../../docs/v2-acceptance.md) identifies named automated
+evidence and deferred checks. The built-in minimum-area build policy was explicitly
+deferred by the user after the audit and is no longer an MVP implementation blocker.
 
 Current execution scope: extractor integration has resumed; benchmarking remains
 deferred by user request. Final mesh assembly, teleport validation, pinned DIG
@@ -13,11 +16,14 @@ diagnostics, and fails before export on traversal errors. DAT/OBJ coverage remai
 incomplete by default. Extractor now supports opt-in single-file `navBundle` delivery,
 bounded matching mesh/graph reload, and atomic publication after verification.
 Existing nav-only output remains the default. Host migration remains deferred.
-OBJ link-only rebuild is now implemented through optional `inputBundlePath` jobs.
+DAT and OBJ link-only rebuilds are now implemented through optional `inputBundlePath` jobs.
 It reloads matching collision, verifies source/import provenance, preserves exact
 baked nav bytes, and atomically replaces the graph without Recast. Both real
-fixtures verify equivalence, including changed movement reach. DAT rebuild remains
-pending; old bundles need a new full bake to acquire rebuild provenance.
+fixtures verify equivalence, including changed movement reach. DAT rebuild verifies
+map payload, resolved identity, extraction flags, and separate bake/capture geometry
+hashes. Synthetic map payloads exercise production parsing and rebuild without a DAT
+archive; real archive/index acceptance remains deferred. Old bundles need a new full
+bake to acquire rebuild provenance.
 Extractor bundle operations now enforce a default 1 GiB aggregate logical working
 budget, preflight native tile storage, avoid graph input copies, and release output
 buffers before publication reload. Fixture reports expose accounted load/write
@@ -46,8 +52,9 @@ Adversarial tests now check discovery against independent rectangle arithmetic,
 document a coarse/fine sampling landing window, and exercise up to 1,024 sparse
 islands and 256 overlapping layers. Collision scenarios assert destination-only
 teleport semantics, including clear hollow interiors that legitimately pass this
-model. Reports track scenario expectations and resource use. Cleanup policies,
-area preferences, and performance redesigns remain separate future work.
+model. Reports track scenario expectations and resource use. The built-in
+minimum-area build policy and performance redesigns remain separate future work;
+soft/strict route-area preferences are implemented.
 
 ## Direction
 
@@ -112,7 +119,9 @@ execution, cache acceptance, and immutable publication. Implement the validator
 outside the portable library with semantics matching the host controller. Keep one
 builder and one versioned movement definition across producer and consumer.
 
-Inspection of `C:/Users/User/source/repos/Gw2CollisionExtractor` established:
+The original pre-implementation inspection of Gw2CollisionExtractor established
+the following baseline. Final assembly and traversal validation have since shipped,
+as recorded above:
 
 - `src/Processors/NavMesh/RecastProcessor.cpp` builds Detour tile blobs and writes
   them with `tileRef = 0`; it does not assemble a final `dtNavMesh`. The consumer's
@@ -132,8 +141,8 @@ Inspection of `C:/Users/User/source/repos/Gw2CollisionExtractor` established:
   mode; the production navmesh output does not hand collision to the host.
   Successful baking alone does not establish complete collision evidence.
 
-Inspection of `E:/Projects/CPP/kx-vision-private2/GW2NavMeshBuilder` and the host
-loaders also established:
+Historical inspection of the obsolete GW2NavMeshBuilder and host loaders also
+established the following. GW2NavMeshBuilder is not the current implementation:
 
 - `GW2NavMeshBuilder.cpp` reads OBJ, bakes tile blobs, and writes `.nav` with zero
   tile references. It supplies neither final mesh assembly nor a jump validator.
@@ -151,7 +160,8 @@ bake and routing needs the compiled graph. Avoid mandatory collision export,
 decode, indexing, and map-sized collision storage in the host. Preserve obstacles
 needed for execution checks independently of ground walkability policy; record
 omissions and return Unknown where collision coverage is insufficient. Collision
-availability alone does not mean the validator has shipped.
+availability alone does not establish coverage. The destination validator has
+shipped, with incomplete ordinary DAT/OBJ evidence remaining conservative.
 
 Keep the library C++17 without GW2 parsing, Recast heightfield dependencies, or host
 controller logic. Extend the extractor's stateless job/output contract explicitly
@@ -237,9 +247,10 @@ deployment, with explicit geometric fallback:
    evidence, retain Unknown and use only explicit GeometricOnly output.
 5. Preserve every island's domain state and every accepted direction's provenance.
 
-Keep built-in heuristic scope narrow: an opt-in minimum-area threshold through the
-domain policy, with a stable exclusion reason and policy identity. Preserve all
-eligible islands by default. Defer built-in polygon-count, vertical-strip, density,
+Defer the built-in minimum-area threshold by explicit user direction. Reconsider
+only when measured workloads justify the optional loss of small-island routes;
+any future implementation needs a stable exclusion reason and policy identity.
+Preserve all eligible islands by default. Defer built-in polygon-count, vertical-strip, density,
 and cumulative-area classifiers until fixtures demonstrate useful tradeoffs.
 Custom domain policies remain available. No fixed garbage-removal rate or claim
 that heuristic exclusion validates geometry.
@@ -494,28 +505,28 @@ checks explicitly; do not mark them passed.
 
 ## 8. Remaining implementation order and exclusions
 
-1. Finish resource bounds and bounded exhaustive batching for raw `dtNavMesh`:
-   topology, sampling, nearby-query storage, retained evidence, final output,
-   cancellation, and deterministic completion or explicit failure.
-2. Finish soft/strict area-based mass preference and lazy native Detour transfers
-   with checked query anchors and a bounded per-query cache.
-3. Add the narrow opt-in minimum-area policy with reasons and identity. Complete
-   serialization, diagnostics, and dirty-mesh regression fixtures. Reapplying a
-   policy that restores unsampled islands requires discovery for those islands;
-   retained metrics alone cannot recover omitted crossings.
-4. When integration work resumes, add final mesh assembly and the dedicated V2
-   traversal stage to Gw2CollisionExtractor while matching collision is resident.
-   Implement the execution-matched validator, host-supplied movement job settings,
-   matched navmesh/graph delivery, and checked host loading/reference identity.
-   Add link-only rebuilds using existing navmesh and matching collision
-   re-extraction. Version collision coverage/transform, movement semantics, and
-   cache identity together. Keep trusted seeded mode tested; seeds remain optional.
-   Validate clearance, missing-collision, export/load, and rebuild fixtures before
-   claiming ValidatedOnly readiness or switching the host to V2.
-5. Benchmark later per current user direction. Then resolve measured blockers and
-   complete host migration, diagnostics/UI, cache replacement, and package version.
+Delivered: bounded exhaustive production, optional seeded builds, metrics/domain
+serialization, graph health, soft/strict route-area preferences, native transfers,
+Extractor assembly and destination validation, matched bundle delivery, OBJ/DAT
+link-only rebuilds, and logical bundle memory limits. The acceptance matrix records
+their automated evidence and the limits of those claims.
 
-Deferred: universal collision engine or physical jump solver, authoritative
+No known required feature implementation remains in the currently accepted
+fixture-tested DIG/Extractor scope. Remaining work is maintenance and the deferred
+validation/integration below, not a claim of full V2 rollout readiness.
+
+1. Keep the autonomous acceptance command passing as implementation evolves.
+   Close concrete contract failures with focused regression cases, preserving
+   the existing real-fixture oracles and optional seeded coverage.
+2. When evidence work resumes, verify actual DAT archive/index integration and
+   production coverage, then calibrate movement semantics. Ordinary DAT/OBJ output
+   must remain conservative until coverage is independently established.
+3. Benchmark later per current user direction. Then resolve measured blockers and
+   complete checked host loading/reference identity, policy propagation, movement
+   execution, diagnostics/UI, cache replacement, and package version. Host and
+   dependency publication remain deferred; fixture acceptance does not switch them.
+
+Deferred: built-in minimum-area build-domain policy, universal collision engine or physical jump solver, authoritative
 automatic interior classifier or sink pruning, built-in shape/statistical
 classifiers, auto-seeded geometric subset builds, multiple movement profiles per
 artifact, spans and approximate pruning, regional routing and same-island shortcuts,

@@ -116,11 +116,14 @@ build and test both repositories and compare repeated reports. Add
 6. Update this document and a fixture when a new failure class or guarantee appears.
    Keep completion status and benchmark snapshots in [V2 progress](../V2_PROGRESS.md).
 
-Soft area penalties, minimum-area exclusion, and gameplay-region labels remain
-policy work. Penalties can change route preference but do not by themselves reduce
-candidate-generation work or identify all unwanted surfaces. Native on-island
-transfer routing also remains deferred; current estimated transfer costs do not
-establish actual walking paths or distances.
+Soft/strict route-area preferences and optional native on-island transfers are now
+implemented and fixture-tested. Area penalties do not reduce candidate-generation
+work or identify unwanted surfaces. The built-in minimum-area build-domain policy
+is explicitly deferred by the user; gameplay-region labels also remain outside
+current implementation scope. Native transfers measure Detour
+corridors under declared filters; they do not establish game execution or globally
+optimal continuous-space paths. Default Euclidean transfers remain estimated. See
+the [acceptance matrix](v2-acceptance.md) for evidence and remaining limits.
 
 No measured percentage of unwanted navmesh surfaces is established. Map-specific
 layer heights, island counts, and claims about earlier performance require recorded
