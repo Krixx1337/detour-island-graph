@@ -10,14 +10,16 @@ deferred by user request. Final mesh assembly, teleport validation, pinned DIG
 dependency, optional collision capture and snapshot coverage assessment are in
 place. Optional Job-driven traversal analysis now runs before nav output, reports
 diagnostics, and fails before export on traversal errors. DAT/OBJ coverage remains
-incomplete by default. Matched graph delivery, host migration and their acceptance
-gates remain future work; analysis does not export the in-memory graph.
+incomplete by default. Extractor now supports opt-in single-file `navBundle` delivery,
+bounded matching mesh/graph reload, and atomic publication after verification.
+Existing nav-only output remains the default. Host migration remains deferred.
 Host work is explicitly deferred. Extractor standalone-world tests now exercise
 positive strict link generation on existing Pandora/Steelribs OBJ fixtures, byte
 determinism, serialization and cross-island graph routing. Their test-only coverage
 declarations describe the supplied OBJ world, not complete original-game collision.
 Ordinary incomplete evidence still produces no executable links. See V2_PROGRESS.md
-for measured results; live calibration and native transfer routing remain unverified.
+for measured results; native transfer routing is verified on fixtures. Live movement
+calibration remains unverified.
 
 Automated health checks now support fixture-first iteration. DIG exposes opt-in,
 size-limited structural and directed-connectivity analysis. Extractor's development

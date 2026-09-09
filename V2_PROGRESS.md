@@ -1,5 +1,21 @@
 # V2 MVP implementation status
 
+## Extractor matched bundle delivery, 2026-09-09
+
+Extractor adds opt-in `outputFormat: "navBundle"` without changing DIG APIs or
+serialization. It hashes exact raw nav bytes before graph construction, stores
+nav, graph, and metadata in a protected versioned bundle, and validates a fresh
+load before atomic publication. The reusable loader owns the restored mesh and
+immutable graph and rejects mismatched hashes, identities, and polygon references.
+
+Pandora and Steelribs health variants now route on freshly loaded bundle meshes,
+including native transfers and area preferences. Artifact tests cover corruption,
+limits, mismatched graph sections, failed writes, and process termination before
+replacement. CLI tests exercise ordinary incomplete coverage and preserve existing
+output on failure. Host integration, production collision coverage, and movement
+calibration remain deferred. Development continues through the existing local DIG
+source override; no dependency pin or publication changes are included.
+
 ## Revised MVP scope, 2026-09-07
 
 The revised [MVP plan](temp/todo/V2_MVP_PLAN.md) controls scope. Delivered sections
