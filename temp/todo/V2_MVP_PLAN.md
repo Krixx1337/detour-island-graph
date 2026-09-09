@@ -18,6 +18,12 @@ It reloads matching collision, verifies source/import provenance, preserves exac
 baked nav bytes, and atomically replaces the graph without Recast. Both real
 fixtures verify equivalence, including changed movement reach. DAT rebuild remains
 pending; old bundles need a new full bake to acquire rebuild provenance.
+Extractor bundle operations now enforce a default 1 GiB aggregate logical working
+budget, preflight native tile storage, avoid graph input copies, and release output
+buffers before publication reload. Fixture reports expose accounted load/write
+peaks. This excludes caller-owned data, JSON/codec internals and DIG compiler
+overhead; it is not a process RAM cap. Strict allocation and whole-pipeline memory
+limits remain future work. No host or DIG wire/API changes are required.
 Host work is explicitly deferred. Extractor standalone-world tests now exercise
 positive strict link generation on existing Pandora/Steelribs OBJ fixtures, byte
 determinism, serialization and cross-island graph routing. Their test-only coverage

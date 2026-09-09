@@ -1,5 +1,33 @@
 # V2 MVP implementation status
 
+## Extractor bundle memory accounting, 2026-09-09
+
+Extractor adds a default 1 GiB `maxWorkingBytes` limit alongside existing individual
+bundle limits. Load/write APIs optionally report peak accounted bytes and rejected
+reservation size. Reservations precede large buffers, include known codec copies,
+Detour storage and the configured DIG decode allowance, and cover publication reload.
+Writer serializes directly into one sized buffer and releases it before validation;
+reader preflights all tile payloads and reads graph bytes without a string copy.
+
+This is logical bundle-operation accounting, not a strict heap or process RAM cap.
+DIG compiler/container overhead, JSON DOM, codec workspace, allocator overhead and
+caller-owned data remain outside the guarantee. Whole-pipeline memory hardening and
+strict allocator integration are separate future work. No DIG code, serialization,
+Job/NDJSON, host, or dependency-pin changes are needed.
+
+Tests cover both fixtures, exact budget boundaries, retained nav, codec overlap,
+oversized payloads, self-consistent malformed counts and publication preservation.
+Fixture reports include deterministic load/write reservation peaks. Nav/graph bytes,
+health and routing must remain equivalent through export, reload and link rebuild.
+
+Validation passed across all six Extractor suites in Debug and Release. Final-code
+artifact and CLI checks pass in both configurations; each final fixture-health run
+passes 448 assertions. Release repeated reports match excluding timings. Debug
+before/after-build reports match excluding timings and the expected executable
+SHA change, verified against the rebuilt executable. Independent fixture SHA checks
+pass. Fixture accounting peaks are about 256 MiB because the configured DIG decode
+allowance dominates these small maps; these values are not RAM measurements.
+
 ## Extractor OBJ link-only rebuild, 2026-09-09
 
 Extractor now accepts optional Job `inputBundlePath` for OBJ bundle rebuilds. It
